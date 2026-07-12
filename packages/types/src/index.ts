@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export * from "#src/measurements";
+
 export const healthResponseSchema = z.object({
     status: z.enum(["ok", "error"]),
     service: z.literal("kinetix-api"),
