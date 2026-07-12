@@ -18,7 +18,7 @@
         "lint:fix": "eslint . --fix",
         "typecheck": "turbo run typecheck",
         "test": "turbo run test",
-        "check": "prettier --check . && eslint . --max-warnings=0 && turbo run typecheck test build",
+        "check": "prettier --check . && turbo run build && eslint . --max-warnings=0 && turbo run typecheck test",
         "db:generate": "corepack pnpm --filter @kinetix/db db:generate",
         "db:migrate": "corepack pnpm --filter @kinetix/db db:migrate",
         "db:studio": "corepack pnpm --filter @kinetix/db db:studio"
