@@ -38,7 +38,7 @@ describe("Training measurements", () => {
         expect(Rpe.from(7.5).value.toString()).toBe("7.5");
         expect(Rir.from(0).value).toBe(0);
         expect(SubjectiveRating.from(5).value).toBe(5);
-        expect(() => Mass.from(-1, "kg")).toThrowError(expect.objectContaining({ code: "MEASUREMENT_NEGATIVE" }));
+        expect(() => Mass.from(-1, "kg")).toThrow(expect.objectContaining({ code: "MEASUREMENT_NEGATIVE" }));
     });
 
     it("preserves null separately from zero at the Drizzle boundary", () => {
