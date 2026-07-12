@@ -54,6 +54,15 @@ packages/
   types/     shared Zod contracts and TypeScript types
 ```
 
+The proposed module boundaries, data ownership, communication patterns, and
+folder conventions are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The first implementation scope is defined in the
+[Training module PRD](docs/prd/TRAINING.md).
+Its proposed implementation is detailed in the
+[Training technical design](docs/design/TRAINING.md).
+The dependency-ordered delivery backlog is documented in the
+[Training MVP issue plan](docs/planning/TRAINING_ISSUES.md).
+
 ## Common commands
 
 | Command                          | Purpose                                         |
