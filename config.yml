@@ -2,22 +2,22 @@
 # Run from the repository root so every pane inherits this working directory.
 workspace: kinetix
 tabs:
-  - name: Code
-    commands: ['nvim .']
+    - name: Code
+      commands: ["nvim ."]
 
-  - name: Infra
-    commands: ['docker compose up postgres']
+    - name: Infra
+      commands: ["docker compose up postgres"]
 
-  - name: Dev
-    layout: split-vertical
-    panes:
-      # Turborepo starts the API, web app, CLI watcher, and shared package watchers.
-      - commands: ['pnpm dev']
-      # Keep a free shell for migrations, kin commands, checks, and curl requests.
-      - commands: ['zsh']
+    - name: Dev
+      layout: split-vertical
+      panes:
+          # Turborepo starts the API, web app, CLI watcher, and shared package watchers.
+          - commands: ["pnpm dev"]
+          # Keep a free shell for migrations, kin commands, checks, and curl requests.
+          - commands: ["zsh"]
 
-  - name: Codex
-    commands: ['codex']
+    - name: Codex
+      commands: ["codex"]
 
-  - name: Git
-    commands: ['lazygit']
+    - name: Git
+      commands: ["lazygit"]

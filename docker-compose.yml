@@ -1,23 +1,23 @@
 name: kinetix
 
 services:
-  postgres:
-    image: postgres:17-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-kinetix}
-      POSTGRES_USER: ${POSTGRES_USER:-kinetix}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kinetix}
-    ports:
-      - '${POSTGRES_PORT:-5432}:5432'
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 5s
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
+    postgres:
+        image: postgres:17-alpine
+        restart: unless-stopped
+        environment:
+            POSTGRES_DB: ${POSTGRES_DB:-kinetix}
+            POSTGRES_USER: ${POSTGRES_USER:-kinetix}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kinetix}
+        ports:
+            - "${POSTGRES_PORT:-5432}:5432"
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+            interval: 5s
+            timeout: 5s
+            retries: 10
+            start_period: 5s
+        volumes:
+            - postgres-data:/var/lib/postgresql/data
 
 volumes:
-  postgres-data:
+    postgres-data:

@@ -1,32 +1,39 @@
 {
-  "name": "@kinetix/api",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "build": "nest build",
-    "dev": "nest start --watch",
-    "start": "node dist/main.js",
-    "start:prod": "node dist/main.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
-  },
-  "dependencies": {
-    "@kinetix/config": "workspace:*",
-    "@kinetix/db": "workspace:*",
-    "@kinetix/types": "workspace:*",
-    "@nestjs/common": "^11.1.28",
-    "@nestjs/config": "^4.0.4",
-    "@nestjs/core": "^11.1.28",
-    "@nestjs/platform-express": "^11.1.28",
-    "@nestjs/swagger": "^11.4.5",
-    "drizzle-orm": "^0.45.2",
-    "helmet": "^8.2.0",
-    "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.2"
-  },
-  "devDependencies": {
-    "@nestjs/cli": "^11.0.24",
-    "@nestjs/schematics": "^11.1.0"
-  }
+    "name": "@kinetix/api",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "imports": {
+        "#src/*": {
+            "types": "./src/*",
+            "development": "./src/*",
+            "default": "./dist/*"
+        }
+    },
+    "scripts": {
+        "build": "nest build",
+        "dev": "nest start --watch",
+        "start": "node dist/main.js",
+        "start:prod": "node dist/main.js",
+        "typecheck": "tsc -p tsconfig.json --noEmit",
+        "test": "vitest run"
+    },
+    "dependencies": {
+        "@kinetix/config": "workspace:*",
+        "@kinetix/db": "workspace:*",
+        "@kinetix/types": "workspace:*",
+        "@nestjs/common": "^11.1.28",
+        "@nestjs/config": "^4.0.4",
+        "@nestjs/core": "^11.1.28",
+        "@nestjs/platform-express": "^11.1.28",
+        "@nestjs/swagger": "^11.4.5",
+        "drizzle-orm": "^0.45.2",
+        "helmet": "^8.2.0",
+        "reflect-metadata": "^0.2.2",
+        "rxjs": "^7.8.2"
+    },
+    "devDependencies": {
+        "@nestjs/cli": "^11.0.24",
+        "@nestjs/schematics": "^11.1.0"
+    }
 }

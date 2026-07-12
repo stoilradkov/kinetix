@@ -1,29 +1,36 @@
 {
-  "name": "@kinetix/kin",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "bin": {
-    "kin": "./dist/index.js"
-  },
-  "files": [
-    "dist"
-  ],
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
-  },
-  "dependencies": {
-    "@kinetix/config": "workspace:*",
-    "@kinetix/types": "workspace:*",
-    "chalk": "^5.6.2",
-    "commander": "^15.0.0",
-    "dotenv": "^17.4.2"
-  },
-  "devDependencies": {
-    "tsx": "^4.23.0"
-  }
+    "name": "@kinetix/kin",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "imports": {
+        "#src/*": {
+            "types": "./src/*",
+            "development": "./src/*",
+            "default": "./dist/*"
+        }
+    },
+    "bin": {
+        "kin": "./dist/index.js"
+    },
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsc -p tsconfig.json",
+        "dev": "tsx watch src/index.ts",
+        "start": "node dist/index.js",
+        "typecheck": "tsc -p tsconfig.json --noEmit",
+        "test": "vitest run"
+    },
+    "dependencies": {
+        "@kinetix/config": "workspace:*",
+        "@kinetix/types": "workspace:*",
+        "chalk": "^5.6.2",
+        "commander": "^15.0.0",
+        "dotenv": "^17.4.2"
+    },
+    "devDependencies": {
+        "tsx": "^4.23.0"
+    }
 }

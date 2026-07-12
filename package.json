@@ -1,41 +1,41 @@
 {
-  "name": "kinetix",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Kinetix full-stack TypeScript monorepo",
-  "license": "UNLICENSED",
-  "engines": {
-    "node": ">=22.13.0"
-  },
-  "packageManager": "pnpm@11.11.0",
-  "scripts": {
-    "build": "turbo run build",
-    "dev": "turbo run dev --parallel",
-    "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "kin": "pnpm --filter @kinetix/kin start --",
-    "lint": "eslint . --max-warnings=0",
-    "lint:fix": "eslint . --fix",
-    "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
-    "check": "prettier --check . && eslint . --max-warnings=0 && turbo run typecheck test build",
-    "db:generate": "corepack pnpm --filter @kinetix/db db:generate",
-    "db:migrate": "corepack pnpm --filter @kinetix/db db:migrate",
-    "db:studio": "corepack pnpm --filter @kinetix/db db:studio"
-  },
-  "devDependencies": {
-    "@eslint/js": "^10.0.1",
-    "@types/node": "^22.20.1",
-    "eslint": "^10.6.0",
-    "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-react-hooks": "^7.1.1",
-    "eslint-plugin-react-refresh": "^0.5.3",
-    "globals": "^17.7.0",
-    "prettier": "^3.9.5",
-    "prettier-plugin-tailwindcss": "^0.8.0",
-    "turbo": "2.10.4",
-    "typescript": "5.9.3",
-    "typescript-eslint": "^8.63.0",
-    "vitest": "^4.1.10"
-  }
+    "name": "kinetix",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Kinetix full-stack TypeScript monorepo",
+    "license": "UNLICENSED",
+    "engines": {
+        "node": ">=22.13.0"
+    },
+    "packageManager": "pnpm@11.11.0",
+    "scripts": {
+        "build": "turbo run build",
+        "dev": "turbo run dev --parallel",
+        "format": "prettier --write .",
+        "format:check": "prettier --check .",
+        "kin": "pnpm --filter @kinetix/kin start --",
+        "lint": "eslint . --max-warnings=0",
+        "lint:fix": "eslint . --fix",
+        "typecheck": "turbo run typecheck",
+        "test": "turbo run test",
+        "check": "prettier --check . && eslint . --max-warnings=0 && turbo run typecheck test build",
+        "db:generate": "corepack pnpm --filter @kinetix/db db:generate",
+        "db:migrate": "corepack pnpm --filter @kinetix/db db:migrate",
+        "db:studio": "corepack pnpm --filter @kinetix/db db:studio"
+    },
+    "devDependencies": {
+        "@eslint/js": "^10.0.1",
+        "@types/node": "^22.20.1",
+        "eslint": "^10.6.0",
+        "eslint-config-prettier": "^10.1.8",
+        "eslint-plugin-react-hooks": "^7.1.1",
+        "eslint-plugin-react-refresh": "^0.5.3",
+        "globals": "^17.7.0",
+        "prettier": "^3.9.5",
+        "prettier-plugin-tailwindcss": "^0.8.0",
+        "turbo": "2.10.4",
+        "typescript": "5.9.3",
+        "typescript-eslint": "^8.63.0",
+        "vitest": "^4.1.10"
+    }
 }

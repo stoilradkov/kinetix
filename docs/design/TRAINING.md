@@ -458,21 +458,17 @@ with:
 
 ```ts
 interface ExerciseSnapshotV1 {
-  schemaVersion: 1;
-  exerciseId: string;
-  exerciseVersion: number;
-  name: string;
-  equipmentTypeId?: string;
-  movementPatternId?: string;
-  classification?: 'compound' | 'isolation';
-  laterality?: 'bilateral' | 'unilateral';
-  repetitionSemantics: 'total' | 'per_side' | 'alternating';
-  loadModel:
-    | 'external_only'
-    | 'full_bodyweight_plus_added_minus_assistance'
-    | 'manual_effective_load'
-    | 'none';
-  muscles: Array<{ muscleGroupId: string; role: 'primary' | 'secondary' }>;
+    schemaVersion: 1;
+    exerciseId: string;
+    exerciseVersion: number;
+    name: string;
+    equipmentTypeId?: string;
+    movementPatternId?: string;
+    classification?: "compound" | "isolation";
+    laterality?: "bilateral" | "unilateral";
+    repetitionSemantics: "total" | "per_side" | "alternating";
+    loadModel: "external_only" | "full_bodyweight_plus_added_minus_assistance" | "manual_effective_load" | "none";
+    muscles: Array<{ muscleGroupId: string; role: "primary" | "secondary" }>;
 }
 ```
 
@@ -737,35 +733,35 @@ History is never rewound or deleted.
 Representative Zod-facing types:
 
 ```ts
-type MassInput = { value: number; unit: 'kg' } | { value: number; unit: 'lb' };
+type MassInput = { value: number; unit: "kg" } | { value: number; unit: "lb" };
 
-type DistanceInput = { value: number; unit: 'm' | 'cm' | 'km' | 'mi' };
+type DistanceInput = { value: number; unit: "m" | "cm" | "km" | "mi" };
 
 type DurationInput = {
-  value: number;
-  unit: 'ms' | 's' | 'min' | 'h';
+    value: number;
+    unit: "ms" | "s" | "min" | "h";
 };
 
 interface PerformedSetMeasurementsInput {
-  reps?: number;
-  externalLoad?: MassInput;
-  bodyweight?: MassInput;
-  addedLoad?: MassInput;
-  assistanceLoad?: MassInput;
-  effectiveLoad?: MassInput;
-  duration?: DurationInput;
-  distance?: DistanceInput;
-  powerWatts?: number;
-  rpe?: number;
-  rir?: number;
-  tempo?: {
-    eccentric?: DurationInput;
-    bottomPause?: DurationInput;
-    concentric?: DurationInput;
-    topPause?: DurationInput;
-  };
-  restBefore?: DurationInput;
-  restAfter?: DurationInput;
+    reps?: number;
+    externalLoad?: MassInput;
+    bodyweight?: MassInput;
+    addedLoad?: MassInput;
+    assistanceLoad?: MassInput;
+    effectiveLoad?: MassInput;
+    duration?: DurationInput;
+    distance?: DistanceInput;
+    powerWatts?: number;
+    rpe?: number;
+    rir?: number;
+    tempo?: {
+        eccentric?: DurationInput;
+        bottomPause?: DurationInput;
+        concentric?: DurationInput;
+        topPause?: DurationInput;
+    };
+    restBefore?: DurationInput;
+    restAfter?: DurationInput;
 }
 ```
 
@@ -775,13 +771,13 @@ Contracts use discriminated activity unions:
 type ActivityInput = StrengthActivityInput | RunningActivityInput;
 
 interface StrengthActivityInput {
-  type: 'strength';
-  // ordered occurrences/groups/sets
+    type: "strength";
+    // ordered occurrences/groups/sets
 }
 
 interface RunningActivityInput {
-  type: 'running';
-  // optional summary, steps, splits, environment
+    type: "running";
+    // optional summary, steps, splits, environment
 }
 ```
 
@@ -794,13 +790,13 @@ same schemas. Persistence/domain mapping remains server-only.
 
 ```ts
 interface BulkProgramEnvelopeV1 {
-  schemaVersion: 1;
-  source: {
-    namespace: string;
-    generatedBy?: string;
-  };
-  mode: 'create' | 'upsert';
-  program: BulkProgramInputV1;
+    schemaVersion: 1;
+    source: {
+        namespace: string;
+        generatedBy?: string;
+    };
+    mode: "create" | "upsert";
+    program: BulkProgramInputV1;
 }
 ```
 
@@ -848,37 +844,37 @@ and requires a new preview.
 
 ```ts
 type ConditionV1 =
-  | { all: ConditionV1[] }
-  | { any: ConditionV1[] }
-  | { not: ConditionV1 }
-  | {
-      metric: {
-        key: MetricKey;
-        scope: 'session' | 'exercise' | 'block' | 'program';
-        window?: { kind: 'sessions' | 'days' | 'weeks'; value: number };
-        filters?: Record<string, string | number | boolean>;
+    | { all: ConditionV1[] }
+    | { any: ConditionV1[] }
+    | { not: ConditionV1 }
+    | {
+          metric: {
+              key: MetricKey;
+              scope: "session" | "exercise" | "block" | "program";
+              window?: { kind: "sessions" | "days" | "weeks"; value: number };
+              filters?: Record<string, string | number | boolean>;
+          };
+          operator: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "between";
+          value: number | [number, number] | boolean;
       };
-      operator: 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'between';
-      value: number | [number, number] | boolean;
-    };
 
 type ActionV1 =
-  | { type: 'adjust_load'; mode: 'absolute' | 'percent'; value: number }
-  | { type: 'adjust_reps'; value: number }
-  | { type: 'adjust_sets'; value: number }
-  | { type: 'set_effort_target'; rpe?: number; rir?: number }
-  | {
-      type: 'adjust_run_target';
-      field: 'duration' | 'distance' | 'pace' | 'power';
-      mode: 'absolute' | 'percent';
-      value: number;
-    }
-  | { type: 'substitute_exercise'; exerciseId: string }
-  | { type: 'repeat_block' }
-  | { type: 'insert_deload' }
-  | { type: 'reschedule_session'; offsetDays: number }
-  | { type: 'skip_session'; reason: string }
-  | { type: 'recommendation'; messageTemplate: string };
+    | { type: "adjust_load"; mode: "absolute" | "percent"; value: number }
+    | { type: "adjust_reps"; value: number }
+    | { type: "adjust_sets"; value: number }
+    | { type: "set_effort_target"; rpe?: number; rir?: number }
+    | {
+          type: "adjust_run_target";
+          field: "duration" | "distance" | "pace" | "power";
+          mode: "absolute" | "percent";
+          value: number;
+      }
+    | { type: "substitute_exercise"; exerciseId: string }
+    | { type: "repeat_block" }
+    | { type: "insert_deload" }
+    | { type: "reschedule_session"; offsetDays: number }
+    | { type: "skip_session"; reason: string }
+    | { type: "recommendation"; messageTemplate: string };
 ```
 
 The actual contracts use Zod discriminated unions and field-specific value/unit
@@ -944,11 +940,11 @@ claim medical injury probability.
 
 ```ts
 interface MetricCalculator {
-  readonly key: string;
-  readonly version: number;
-  readonly dependencies: readonly DependencyKey[];
+    readonly key: string;
+    readonly version: number;
+    readonly dependencies: readonly DependencyKey[];
 
-  calculate(context: MetricContext): Promise<MetricResult[]>;
+    calculate(context: MetricContext): Promise<MetricResult[]>;
 }
 ```
 

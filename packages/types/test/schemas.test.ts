@@ -1,17 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from "vitest";
 
-import { createProjectSchema } from '../src/index.js';
+import { healthResponseSchema } from "#src/index.js";
 
-describe('createProjectSchema', () => {
-  it('accepts a valid project', () => {
-    expect(
-      createProjectSchema.parse({ name: 'Kinetix', slug: 'kinetix' }),
-    ).toEqual({ name: 'Kinetix', slug: 'kinetix' });
-  });
-
-  it('rejects a non URL-safe slug', () => {
-    expect(() =>
-      createProjectSchema.parse({ name: 'Kinetix', slug: 'Not safe' }),
-    ).toThrow();
-  });
+describe("healthResponseSchema", () => {
+    it("preserves the health wire contract", () => {
+        expect(
+            healthResponseSchema.parse({
+                status: "ok",
+                service: "kinetix-api",
+                timestamp: "2026-07-12T12:00:00.000Z",
+            }),
+        ).toMatchObject({ status: "ok", service: "kinetix-api" });
+    });
 });

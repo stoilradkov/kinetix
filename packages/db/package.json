@@ -1,39 +1,46 @@
 {
-  "name": "@kinetix/db",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+    "name": "@kinetix/db",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "imports": {
+        "#src/*": {
+            "types": "./src/*",
+            "development": "./src/*",
+            "default": "./dist/*"
+        }
     },
-    "./schema": {
-      "types": "./dist/schema.d.ts",
-      "import": "./dist/schema.js"
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        },
+        "./schema": {
+            "types": "./dist/schema/index.d.ts",
+            "import": "./dist/schema/index.js"
+        }
+    },
+    "files": [
+        "dist",
+        "drizzle"
+    ],
+    "scripts": {
+        "build": "tsc -p tsconfig.json",
+        "dev": "tsc -p tsconfig.json --watch",
+        "typecheck": "tsc -p tsconfig.json --noEmit",
+        "test": "vitest run",
+        "db:generate": "drizzle-kit generate",
+        "db:migrate": "drizzle-kit migrate",
+        "db:studio": "drizzle-kit studio"
+    },
+    "dependencies": {
+        "drizzle-orm": "^0.45.2",
+        "postgres": "^3.4.9"
+    },
+    "devDependencies": {
+        "dotenv": "^17.4.2",
+        "drizzle-kit": "^0.31.10"
     }
-  },
-  "files": [
-    "dist",
-    "drizzle"
-  ],
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "dev": "tsc -p tsconfig.json --watch",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:studio": "drizzle-kit studio"
-  },
-  "dependencies": {
-    "drizzle-orm": "^0.45.2",
-    "postgres": "^3.4.9"
-  },
-  "devDependencies": {
-    "dotenv": "^17.4.2",
-    "drizzle-kit": "^0.31.10"
-  }
 }

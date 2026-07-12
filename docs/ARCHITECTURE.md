@@ -114,11 +114,11 @@ Module definitions should expose a small code-level manifest:
 
 ```ts
 interface KinetixModuleDefinition<TSettings> {
-  type: string;
-  version: number;
-  displayName: string;
-  cardinality: 'one' | 'many';
-  settingsSchema: z.ZodType<TSettings>;
+    type: string;
+    version: number;
+    displayName: string;
+    cardinality: "one" | "many";
+    settingsSchema: z.ZodType<TSettings>;
 }
 ```
 
@@ -297,12 +297,12 @@ The provider port should be capability-oriented:
 
 ```ts
 interface HealthProvider {
-  provider: string;
-  capabilities(): ProviderCapabilities;
-  authorize(input: AuthorizationInput): Promise<AuthorizationResult>;
-  refresh(connection: ProviderConnection): Promise<RefreshedCredentials>;
-  pullChanges(input: PullChangesInput): AsyncIterable<ProviderRecordPage>;
-  subscribe?(input: SubscriptionInput): Promise<SubscriptionResult>;
+    provider: string;
+    capabilities(): ProviderCapabilities;
+    authorize(input: AuthorizationInput): Promise<AuthorizationResult>;
+    refresh(connection: ProviderConnection): Promise<RefreshedCredentials>;
+    pullChanges(input: PullChangesInput): AsyncIterable<ProviderRecordPage>;
+    subscribe?(input: SubscriptionInput): Promise<SubscriptionResult>;
 }
 ```
 
