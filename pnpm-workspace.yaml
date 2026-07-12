@@ -1,0 +1,11 @@
+packages:
+  - apps/*
+  - packages/*
+
+engineStrict: true
+injectWorkspacePackages: true
+linkWorkspacePackages: true
+
+allowBuilds:
+  '@scarf/scarf': false
+  esbuild: true
