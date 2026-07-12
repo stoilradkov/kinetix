@@ -1,6 +1,6 @@
 import { Module } from "@nestjs/common";
 
-import { trainingModuleDefinition } from "#src/modules/training/application/index.js";
+import { trainingModuleDefinition } from "#src/modules/training/application/index";
 
 export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
 

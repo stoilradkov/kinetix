@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { HealthController } from "#src/health/health.controller.js";
-import type { HealthService } from "#src/health/health.service.js";
+import { HealthController } from "#src/health/health.controller";
+import type { HealthService } from "#src/health/health.service";
 
 describe("HealthController", () => {
     it("returns the service health", () => {

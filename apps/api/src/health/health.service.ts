@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 
 import type { HealthResponse } from "@kinetix/types";
 
-import { DatabaseService } from "#src/database/database.service.js";
+import { DatabaseService } from "#src/database/database.service";
 
 @Injectable()
 export class HealthService {

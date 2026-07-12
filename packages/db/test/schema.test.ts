@@ -1,7 +1,7 @@
 import { getTableName } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
-import * as schema from "#src/schema/index.js";
+import * as schema from "#src/schema/index";
 
 describe("database schema boundaries", () => {
     it("exports the platform module instance registry", () => {

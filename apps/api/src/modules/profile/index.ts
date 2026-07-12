@@ -1,2 +1,2 @@
-export { profileModuleDefinition } from "#src/modules/profile/application/index.js";
-export { ProfileModule } from "#src/modules/profile/profile.module.js";
+export { profileModuleDefinition } from "#src/modules/profile/application/index";
+export { ProfileModule } from "#src/modules/profile/profile.module";

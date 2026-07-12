@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseApiEnv, parseCliEnv } from "#src/index.js";
+import { parseApiEnv, parseCliEnv } from "#src/index";
 
 describe("environment parsing", () => {
     it("provides local API defaults", () => {

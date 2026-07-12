@@ -5,9 +5,9 @@
     "type": "module",
     "imports": {
         "#src/*": {
-            "types": "./src/*",
-            "development": "./src/*",
-            "default": "./dist/*"
+            "types": "./src/*.ts",
+            "development": "./src/*.ts",
+            "default": "./dist/*.js"
         }
     },
     "scripts": {

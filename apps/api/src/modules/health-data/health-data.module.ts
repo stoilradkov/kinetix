@@ -1,6 +1,6 @@
 import { Module } from "@nestjs/common";
 
-import { healthDataModuleDefinition } from "#src/modules/health-data/application/index.js";
+import { healthDataModuleDefinition } from "#src/modules/health-data/application/index";
 
 export const HEALTH_DATA_MODULE_DEFINITION = Symbol("HEALTH_DATA_MODULE_DEFINITION");
 

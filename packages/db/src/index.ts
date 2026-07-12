@@ -1,7 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
-import * as schema from "#src/schema/index.js";
+import * as schema from "#src/schema/index";
 
 export function createDatabase(url: string) {
     const client = postgres(url, {
@@ -17,5 +17,5 @@ export function createDatabase(url: string) {
 export type DatabaseConnection = ReturnType<typeof createDatabase>;
 export type Database = DatabaseConnection["db"];
 
-export { seedModuleInstances, trainingModuleInstanceSeed } from "#src/seed/module-instances.js";
-export * from "#src/schema/index.js";
+export { seedModuleInstances, trainingModuleInstanceSeed } from "#src/seed/module-instances";
+export * from "#src/schema/index";

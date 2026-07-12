@@ -3,7 +3,7 @@ import { ApiOkResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
 
 import type { HealthResponse } from "@kinetix/types";
 
-import { HealthService } from "#src/health/health.service.js";
+import { HealthService } from "#src/health/health.service";
 
 @ApiTags("health")
 @Controller({ path: "health", version: "1" })

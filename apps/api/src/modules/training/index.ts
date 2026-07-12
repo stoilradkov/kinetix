@@ -1,2 +1,2 @@
-export { trainingModuleDefinition } from "#src/modules/training/application/index.js";
-export { TrainingModule } from "#src/modules/training/training.module.js";
+export { trainingModuleDefinition } from "#src/modules/training/application/index";
+export { TrainingModule } from "#src/modules/training/training.module";

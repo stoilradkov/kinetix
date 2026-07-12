@@ -14,13 +14,13 @@ describe("architecture import boundaries", () => {
     it("allows domain and application code to depend inward", async () => {
         await expect(
             lint(
-                "import type { Clock } from '#src/platform/domain/index.js';\nexport type UsesClock = Clock;",
+                "import type { Clock } from '#src/platform/domain/index';\nexport type UsesClock = Clock;",
                 "apps/api/test/fixtures/domain/allowed.fixture.ts",
             ),
         ).resolves.toEqual([]);
         await expect(
             lint(
-                "import type { Clock } from '#/platform/domain/index.js';\nexport type UsesClock = Clock;",
+                "import type { Clock } from '#src/platform/domain/index';\nexport type UsesClock = Clock;",
                 "apps/api/test/fixtures/application/allowed.fixture.ts",
             ),
         ).resolves.toEqual([]);
@@ -31,12 +31,12 @@ describe("architecture import boundaries", () => {
         ["domain Drizzle import", "import { sql } from 'drizzle-orm';\nexport { sql };", "domain"],
         [
             "application infrastructure import",
-            "import { Adapter } from '#src/modules/training/infrastructure/adapter.js';\nexport { Adapter };",
+            "import { Adapter } from '#src/modules/training/infrastructure/adapter';\nexport { Adapter };",
             "application",
         ],
         [
             "cross-module infrastructure import",
-            "import { Adapter } from '#src/modules/profile/infrastructure/adapter.js';\nexport { Adapter };",
+            "import { Adapter } from '#src/modules/profile/infrastructure/adapter';\nexport { Adapter };",
             "infrastructure",
         ],
         [

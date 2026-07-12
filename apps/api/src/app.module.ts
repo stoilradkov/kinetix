@@ -3,12 +3,12 @@ import { ConfigModule } from "@nestjs/config";
 
 import { parseApiEnv } from "@kinetix/config";
 
-import { DatabaseModule } from "#src/database/database.module.js";
-import { HealthController } from "#src/health/health.controller.js";
-import { HealthService } from "#src/health/health.service.js";
-import { HealthDataModule } from "#src/modules/health-data/index.js";
-import { ProfileModule } from "#src/modules/profile/index.js";
-import { TrainingModule } from "#src/modules/training/index.js";
+import { DatabaseModule } from "#src/database/database.module";
+import { HealthController } from "#src/health/health.controller";
+import { HealthService } from "#src/health/health.service";
+import { HealthDataModule } from "#src/modules/health-data/index";
+import { ProfileModule } from "#src/modules/profile/index";
+import { TrainingModule } from "#src/modules/training/index";
 
 @Module({
     imports: [

@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common";
 
-import { DatabaseService } from "#src/database/database.service.js";
-import type { UnitOfWork } from "#src/platform/application/index.js";
+import { DatabaseService } from "#src/database/database.service";
+import type { UnitOfWork } from "#src/platform/application/index";
 
 @Injectable()
 export class DatabaseUnitOfWork implements UnitOfWork {

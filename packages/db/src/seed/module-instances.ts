@@ -1,5 +1,5 @@
-import type { Database } from "#src/index.js";
-import { moduleInstances } from "#src/schema/platform.js";
+import type { Database } from "#src/index";
+import { moduleInstances } from "#src/schema/platform";
 
 export const trainingModuleInstanceSeed = {
     id: "00000000-0000-4000-8000-000000000001",

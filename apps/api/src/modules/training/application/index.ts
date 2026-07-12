@@ -1,4 +1,4 @@
-import type { KinetixModuleDefinition } from "#src/platform/application/index.js";
+import type { KinetixModuleDefinition } from "#src/platform/application/index";
 
 export const trainingModuleDefinition = {
     type: "training",

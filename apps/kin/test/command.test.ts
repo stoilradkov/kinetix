@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createProgram } from "#src/command.js";
+import { createProgram } from "#src/command";
 
 describe("kin", () => {
     it("prints local information", async () => {

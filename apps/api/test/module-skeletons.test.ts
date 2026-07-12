@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { healthDataModuleDefinition, HealthDataModule } from "#src/modules/health-data/index.js";
-import { profileModuleDefinition, ProfileModule } from "#src/modules/profile/index.js";
-import { trainingModuleDefinition, TrainingModule } from "#src/modules/training/index.js";
+import { healthDataModuleDefinition, HealthDataModule } from "#src/modules/health-data/index";
+import { profileModuleDefinition, ProfileModule } from "#src/modules/profile/index";
+import { trainingModuleDefinition, TrainingModule } from "#src/modules/training/index";
 
 describe("bounded module skeletons", () => {
     it("publish stable application definitions", () => {
