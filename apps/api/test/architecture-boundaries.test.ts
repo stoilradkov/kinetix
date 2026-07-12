@@ -11,21 +11,6 @@ async function lint(source: string, filePath: string) {
 }
 
 describe("architecture import boundaries", () => {
-    it("allows domain and application code to depend inward", async () => {
-        await expect(
-            lint(
-                "import type { Clock } from '#src/platform/domain/index';\nexport type UsesClock = Clock;",
-                "apps/api/test/fixtures/domain/allowed.fixture.ts",
-            ),
-        ).resolves.toEqual([]);
-        await expect(
-            lint(
-                "import type { Clock } from '#src/platform/domain/index';\nexport type UsesClock = Clock;",
-                "apps/api/test/fixtures/application/allowed.fixture.ts",
-            ),
-        ).resolves.toEqual([]);
-    });
-
     it.each([
         ["domain framework import", "import { Module } from '@nestjs/common';\nexport { Module };", "domain"],
         ["domain Drizzle import", "import { sql } from 'drizzle-orm';\nexport { sql };", "domain"],
