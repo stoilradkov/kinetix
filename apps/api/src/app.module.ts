@@ -9,6 +9,7 @@ import { HealthService } from "#src/health/health.service";
 import { HealthDataModule } from "#src/modules/health-data/index";
 import { ProfileModule } from "#src/modules/profile/index";
 import { TrainingModule } from "#src/modules/training/index";
+import { PlatformModule } from "#src/platform/platform.module";
 
 @Module({
     imports: [
@@ -19,6 +20,7 @@ import { TrainingModule } from "#src/modules/training/index";
             validate: (config: Record<string, unknown>) => parseApiEnv(config),
         }),
         DatabaseModule,
+        PlatformModule,
         ProfileModule,
         HealthDataModule,
         TrainingModule,

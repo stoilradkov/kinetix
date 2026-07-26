@@ -15,9 +15,11 @@ The snapshot boundary is the consistency boundary of the aggregate: a Program sn
 
 Snapshot serializers live in the application layer (with module-specific implementations) rather than domain entities. They emit the current schema version and must validate or migrate older snapshot shapes before producing domain state. Public history contracts expose revision metadata and a versioned resource representation, never raw persistence JSON.
 
-Mutations use optimistic expected-version checks and a Unit of Work. The application coordinator writes normalized state, appends its revision, and emits transactional events together. Repositories participate in the supplied transaction and never open hidden transactions.
+Creation writes normalized state and version 1 together. Mutations use optimistic expected-version checks and a Unit of Work: the current root is loaded for update through an aggregate-specific state port, its stored version is compared before domain behavior runs, and the application coordinator writes normalized state, appends its revision, and emits transactional events together. Repositories participate in the supplied transaction and never open hidden transactions.
 
 Restore is a new mutation: the selected snapshot is validated/migrated, saved as current state at `current version + 1`, and appended with source `restore`. Existing revisions are never updated, deleted, or renumbered.
+
+History is exposed through aggregate-specific application handlers. Each handler validates/migrates stored snapshots and maps them to a versioned public resource; the generic HTTP controller never returns persistence JSON directly. History entries carry version ETags and restore requires the current ETag through `If-Match`.
 
 ## Consequences
 

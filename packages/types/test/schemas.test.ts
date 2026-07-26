@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { distanceSchema, durationSchema, massSchema, paceSchema, rpeSchema } from "#src/index";
+import {
+    distanceSchema,
+    durationSchema,
+    massSchema,
+    paceSchema,
+    restoreRevisionRequestSchema,
+    revisionHistoryResponseSchema,
+    rpeSchema,
+} from "#src/index";
 
 describe("measurement schemas", () => {
     it("accepts every public unit", () => {
@@ -17,6 +25,53 @@ describe("measurement schemas", () => {
         expect(distanceSchema.safeParse({ value: -1, unit: "m" }).success).toBe(false);
         expect(rpeSchema.safeParse(7.25).success).toBe(false);
         expect(rpeSchema.safeParse(7.5).success).toBe(true);
+    });
+});
+
+describe("revision schemas", () => {
+    it("requires a public resource and ETag for every history item", () => {
+        expect(
+            revisionHistoryResponseSchema.parse({
+                items: [
+                    {
+                        version: 2,
+                        etag: '"2"',
+                        schemaVersion: 1,
+                        source: "user",
+                        actorId: null,
+                        reason: null,
+                        summary: "Renamed program",
+                        correlationId: "request-1",
+                        createdAt: "2026-07-26T12:00:00.000Z",
+                        resource: { name: "Base" },
+                    },
+                ],
+                nextCursor: null,
+            }),
+        ).toMatchObject({ items: [{ etag: '"2"', resource: { name: "Base" } }] });
+        expect(
+            revisionHistoryResponseSchema.safeParse({
+                items: [
+                    {
+                        version: 2,
+                        etag: '"2"',
+                        schemaVersion: 1,
+                        source: "user",
+                        actorId: null,
+                        reason: null,
+                        summary: "Missing public resource",
+                        correlationId: "request-1",
+                        createdAt: "2026-07-26T12:00:00.000Z",
+                    },
+                ],
+                nextCursor: null,
+            }).success,
+        ).toBe(false);
+    });
+
+    it("accepts only restore metadata because the target version is in the route", () => {
+        expect(restoreRevisionRequestSchema.parse({ reason: " undo " })).toEqual({ reason: "undo" });
+        expect(restoreRevisionRequestSchema.safeParse({ version: 1 }).success).toBe(false);
     });
 });
 

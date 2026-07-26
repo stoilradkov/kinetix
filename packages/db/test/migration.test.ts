@@ -26,5 +26,7 @@ describe("initial module migration", () => {
         expect(migration).toContain('CREATE TABLE "entity_revisions"');
         expect(migration).toContain('"schema_version" integer NOT NULL');
         expect(migration).toContain('CREATE UNIQUE INDEX "entity_revisions_entity_version_unique"');
+        expect(migration).toContain('"entity_revisions_version_positive"');
+        expect(migration).toContain('"version" DESC');
     });
 });

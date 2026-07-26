@@ -15,6 +15,13 @@
             "when": 1783868384356,
             "tag": "0001_gray_terrax",
             "breakpoints": true
+        },
+        {
+            "idx": 2,
+            "version": "7",
+            "when": 1785067376022,
+            "tag": "0002_living_warhawk",
+            "breakpoints": true
         }
     ]
 }

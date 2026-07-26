@@ -10,6 +10,10 @@ export function revisionSource(value: string): RevisionSource {
 export class AggregateVersion {
     private constructor(readonly value: number) {}
 
+    static initial(): AggregateVersion {
+        return new AggregateVersion(1);
+    }
+
     static from(value: number): AggregateVersion {
         if (!Number.isSafeInteger(value) || value < 1) throw new Error("Aggregate version must be a positive integer");
         return new AggregateVersion(value);
