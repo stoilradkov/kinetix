@@ -106,7 +106,111 @@ describe("kin", () => {
         expect(error).toBeInstanceOf(CliApiError);
         expect(cliExitCode(error)).toBe(6);
     });
+
+    it("sends non-interactive merge JSON with both expected versions and idempotency", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () => Response.json(mergeResource("applied")));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync([
+            "node",
+            "kin",
+            "training",
+            "exercises",
+            "merge",
+            "--canonical",
+            ids.canonical,
+            "--merged",
+            ids.merged,
+            "--canonical-version",
+            "2",
+            "--merged-version",
+            "3",
+            "--idempotency-key",
+            "merge-1",
+            "--reason",
+            "Imported duplicate",
+            "--json",
+        ]);
+
+        const [url, init] = request.mock.calls[0]!;
+        expect(url).toContain("/training/catalog/exercise-merges");
+        expect(init?.method).toBe("POST");
+        expect((init?.headers as Headers).get("idempotency-key")).toBe("merge-1");
+        expect(JSON.parse(String(init?.body))).toEqual({
+            canonicalExerciseId: ids.canonical,
+            mergedExerciseId: ids.merged,
+            expectedCanonicalVersion: 2,
+            expectedMergedVersion: 3,
+            reason: "Imported duplicate",
+        });
+        expect(output).toHaveBeenCalledWith(JSON.stringify(mergeResource("applied")));
+    });
+
+    it("requires all revert versions and sends the merge ETag", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () => Response.json(mergeResource("reverted")));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync([
+            "node",
+            "kin",
+            "training",
+            "exercises",
+            "revert-merge",
+            ids.merge,
+            "--merge-version",
+            "1",
+            "--canonical-version",
+            "2",
+            "--merged-version",
+            "4",
+            "--idempotency-key",
+            "revert-1",
+            "--json",
+        ]);
+
+        const [, init] = request.mock.calls[0]!;
+        const headers = init?.headers as Headers;
+        expect(headers.get("if-match")).toBe('"1"');
+        expect(headers.get("idempotency-key")).toBe("revert-1");
+        expect(JSON.parse(String(init?.body))).toEqual({
+            expectedCanonicalVersion: 2,
+            expectedMergedVersion: 4,
+        });
+        expect(output).toHaveBeenCalledWith(JSON.stringify(mergeResource("reverted")));
+    });
 });
+
+const ids = {
+    canonical: "0198a4db-d8da-7000-8000-000000000011",
+    merged: "0198a4db-d8da-7000-8000-000000000012",
+    merge: "0198a4db-d8da-7000-8000-000000000013",
+} as const;
+
+function mergeResource(status: "applied" | "reverted") {
+    return {
+        schemaVersion: 1,
+        id: ids.merge,
+        status,
+        version: status === "applied" ? 1 : 2,
+        canonicalExercise: { id: ids.canonical, name: "Bench Press", version: 2 },
+        mergedExercise: { id: ids.merged, name: "Imported Bench Press", version: 3 },
+        mergedExerciseVersionAfterApply: 4,
+        revertedCanonicalExerciseVersion: status === "reverted" ? 2 : null,
+        revertedMergedExerciseVersion: status === "reverted" ? 5 : null,
+        redirectedAliases: ["Imported Bench Press"],
+        externalIds: [],
+        referenceImpact: [],
+        totalReferenceCount: 0,
+        affectedExerciseIds: [ids.canonical, ids.merged],
+        affectedFamilyExerciseIds: [ids.canonical, ids.merged],
+        reason: null,
+        revertReason: status === "reverted" ? "Not duplicates" : null,
+        appliedAt: "2026-07-26T12:00:00.000Z",
+        revertedAt: status === "reverted" ? "2026-07-26T13:00:00.000Z" : null,
+    };
+}
 
 function jobResource(state: "running" | "succeeded" | "failed") {
     return {

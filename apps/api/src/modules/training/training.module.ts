@@ -4,7 +4,10 @@ import { Module } from "@nestjs/common";
 
 import {
     EXERCISE_CATALOG_COMMANDS,
+    EXERCISE_MERGE_REPOSITORY,
+    EXERCISE_MERGE_SERVICE,
     EXERCISE_MUTATION_SERVICE,
+    EXERCISE_REFERENCE_UPDATER,
     EXERCISE_REPOSITORY,
     EXERCISE_REVISION_HANDLER,
     SEED_TRAINING_CATALOG,
@@ -13,6 +16,7 @@ import {
     TRAINING_CATALOG_SEED_REPOSITORY,
     TRAINING_EXERCISE_CATALOG,
     ExerciseCatalogCommands,
+    ExerciseMergeService,
     ExerciseRevisionHandler,
     SeedTrainingCatalog,
     TrainingExerciseCatalog,
@@ -20,15 +24,25 @@ import {
     exerciseDefinitionSerializer,
     trainingModuleDefinition,
     type ExerciseRepository,
+    type ExerciseMergeRepository,
+    type ExerciseReferenceUpdater,
     type TrainingCatalogReader,
     type TrainingCatalogSeedRepository,
 } from "#src/modules/training/application/index";
 import type { ExerciseDefinitionState } from "#src/modules/training/domain/index";
 import { DrizzleTrainingCatalogRepository } from "#src/modules/training/infrastructure/drizzle-training-catalog-repository";
+import {
+    DrizzleExerciseMergeRepository,
+    DrizzleExerciseReferenceUpdater,
+} from "#src/modules/training/infrastructure/drizzle-exercise-merge-repository";
 import { ExerciseRevisionRegistrar } from "#src/modules/training/infrastructure/exercise-revision-registrar";
 import { trainingCatalogSeed } from "#src/modules/training/infrastructure/seed/training-catalog";
 import { TrainingCatalogSeedRunner } from "#src/modules/training/infrastructure/seed/training-catalog-runner";
-import { ExerciseDefinitionController, TrainingCatalogController } from "#src/modules/training/presentation/index";
+import {
+    ExerciseDefinitionController,
+    ExerciseMergeController,
+    TrainingCatalogController,
+} from "#src/modules/training/presentation/index";
 import {
     OUTBOX_WRITER,
     REVISION_STORE,
@@ -43,9 +57,11 @@ import type { DomainEvent } from "#src/platform/domain/index";
 export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
 
 @Module({
-    controllers: [TrainingCatalogController, ExerciseDefinitionController],
+    controllers: [TrainingCatalogController, ExerciseDefinitionController, ExerciseMergeController],
     providers: [
         DrizzleTrainingCatalogRepository,
+        DrizzleExerciseMergeRepository,
+        DrizzleExerciseReferenceUpdater,
         {
             provide: TRAINING_MODULE_DEFINITION,
             useValue: trainingModuleDefinition,
@@ -61,6 +77,14 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         {
             provide: EXERCISE_REPOSITORY,
             useExisting: DrizzleTrainingCatalogRepository,
+        },
+        {
+            provide: EXERCISE_MERGE_REPOSITORY,
+            useExisting: DrizzleExerciseMergeRepository,
+        },
+        {
+            provide: EXERCISE_REFERENCE_UPDATER,
+            useExisting: DrizzleExerciseReferenceUpdater,
         },
         {
             provide: SEED_TRAINING_CATALOG,
@@ -100,9 +124,37 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         },
         {
             provide: TRAINING_EXERCISE_CATALOG,
-            useFactory: (repository: ExerciseRepository, revisions: RevisionStore) =>
-                new TrainingExerciseCatalog(repository, revisions),
-            inject: [EXERCISE_REPOSITORY, REVISION_STORE],
+            useFactory: (repository: ExerciseRepository, revisions: RevisionStore, merges: ExerciseMergeRepository) =>
+                new TrainingExerciseCatalog(repository, revisions, merges),
+            inject: [EXERCISE_REPOSITORY, REVISION_STORE, EXERCISE_MERGE_REPOSITORY],
+        },
+        {
+            provide: EXERCISE_MERGE_SERVICE,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                exercises: ExerciseRepository,
+                merges: ExerciseMergeRepository,
+                references: ExerciseReferenceUpdater,
+                mutations: RevisionMutationService<ExerciseDefinitionState, DomainEvent>,
+                events: OutboxWriter,
+            ) =>
+                new ExerciseMergeService({
+                    unitOfWork,
+                    exercises,
+                    merges,
+                    references,
+                    mutations,
+                    events,
+                    generateId: randomUUID,
+                }),
+            inject: [
+                UNIT_OF_WORK,
+                EXERCISE_REPOSITORY,
+                EXERCISE_MERGE_REPOSITORY,
+                EXERCISE_REFERENCE_UPDATER,
+                EXERCISE_MUTATION_SERVICE,
+                OUTBOX_WRITER,
+            ],
         },
         {
             provide: EXERCISE_REVISION_HANDLER,

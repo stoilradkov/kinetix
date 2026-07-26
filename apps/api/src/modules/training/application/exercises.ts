@@ -30,6 +30,7 @@ import {
 } from "#src/modules/training/domain/index";
 
 import type { ExerciseCatalogItem } from "#src/modules/training/application/catalog";
+import type { ExerciseMergeRepository } from "#src/modules/training/application/exercise-merges";
 
 export const EXERCISE_REPOSITORY = Symbol("EXERCISE_REPOSITORY");
 export const EXERCISE_MUTATION_SERVICE = Symbol("EXERCISE_MUTATION_SERVICE");
@@ -432,6 +433,12 @@ type ExerciseEventAction =
 
 export interface TrainingExerciseCatalogPort {
     getExercise(id: string): Promise<ExerciseCatalogItem>;
+    resolveCurrentExercise(id: string): Promise<{
+        readonly requestedExerciseId: string;
+        readonly resolvedExerciseId: string;
+        readonly redirected: boolean;
+        readonly exercise: ExerciseCatalogItem;
+    }>;
     listExercises(filter: ExerciseListFilter): Promise<ExerciseCatalogPage>;
     resolveAlias(alias: string): Promise<ExerciseCatalogItem | null>;
     currentSnapshot(exerciseId: string): Promise<ExerciseSnapshotV1>;
@@ -443,12 +450,26 @@ export class TrainingExerciseCatalog<Transaction = unknown> implements TrainingE
     constructor(
         private readonly repository: ExerciseRepository<Transaction>,
         private readonly revisions: RevisionStore<Transaction>,
+        private readonly merges?: Pick<ExerciseMergeRepository<Transaction>, "resolveCanonicalId">,
     ) {}
 
     async getExercise(id: string): Promise<ExerciseCatalogItem> {
         const item = await this.repository.readExercise(validEntityId(id));
         if (!item) throw new ExerciseNotFoundError(id);
         return item;
+    }
+
+    async resolveCurrentExercise(id: string) {
+        const requestedId = validEntityId(id);
+        const resolvedId = this.merges ? await this.merges.resolveCanonicalId(requestedId) : requestedId;
+        const exercise = await this.repository.readExercise(resolvedId);
+        if (!exercise) throw new ExerciseNotFoundError(id);
+        return {
+            requestedExerciseId: requestedId,
+            resolvedExerciseId: resolvedId,
+            redirected: requestedId !== resolvedId,
+            exercise,
+        };
     }
 
     listExercises(filter: ExerciseListFilter): Promise<ExerciseCatalogPage> {
@@ -462,7 +483,9 @@ export class TrainingExerciseCatalog<Transaction = unknown> implements TrainingE
     }
 
     async currentSnapshot(exerciseId: string): Promise<ExerciseSnapshotV1> {
-        const stored = await this.repository.findDefinition(validEntityId(exerciseId));
+        const requestedId = validEntityId(exerciseId);
+        const resolvedId = this.merges ? await this.merges.resolveCanonicalId(requestedId) : requestedId;
+        const stored = await this.repository.findDefinition(resolvedId);
         if (!stored) throw new ExerciseNotFoundError(exerciseId);
         return createExerciseSnapshot(stored.definition, stored.version);
     }
@@ -487,9 +510,14 @@ export class TrainingExerciseCatalog<Transaction = unknown> implements TrainingE
         return createExerciseSnapshot(ExerciseDefinition.rehydrate(state), version);
     }
 
-    areInAnalyticsFamily(leftExerciseId: string, rightExerciseId: string): Promise<boolean> {
-        if (leftExerciseId === rightExerciseId) return Promise.resolve(true);
-        return this.repository.areInAnalyticsFamily(validEntityId(leftExerciseId), validEntityId(rightExerciseId));
+    async areInAnalyticsFamily(leftExerciseId: string, rightExerciseId: string): Promise<boolean> {
+        const rawLeft = validEntityId(leftExerciseId);
+        const rawRight = validEntityId(rightExerciseId);
+        const [leftId, rightId] = this.merges
+            ? await Promise.all([this.merges.resolveCanonicalId(rawLeft), this.merges.resolveCanonicalId(rawRight)])
+            : [rawLeft, rawRight];
+        if (leftId === rightId) return true;
+        return this.repository.areInAnalyticsFamily(leftId, rightId);
     }
 }
 

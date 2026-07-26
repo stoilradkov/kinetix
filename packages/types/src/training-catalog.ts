@@ -246,6 +246,118 @@ export const exerciseSnapshotV1Schema = z
     })
     .strict();
 
+export const exerciseReferenceImpactSchema = z
+    .object({
+        referenceType: z.string().trim().min(1).max(120),
+        count: z.number().int().nonnegative(),
+    })
+    .strict();
+
+export const exerciseExternalIdSchema = z
+    .object({
+        provider: z.string().trim().min(1).max(120),
+        externalId: z.string().trim().min(1).max(500),
+    })
+    .strict();
+
+const exerciseMergeCandidateSchema = z
+    .object({
+        id: z.string().uuid(),
+        name: z.string().min(1),
+        version: z.number().int().positive(),
+    })
+    .strict();
+
+export const exerciseMergePreviewRequestSchema = z
+    .object({
+        canonicalExerciseId: z.string().uuid(),
+        mergedExerciseId: z.string().uuid(),
+        expectedCanonicalVersion: z.number().int().positive(),
+        expectedMergedVersion: z.number().int().positive(),
+    })
+    .strict()
+    .refine(value => value.canonicalExerciseId !== value.mergedExerciseId, {
+        message: "An exercise cannot be merged into itself",
+        path: ["mergedExerciseId"],
+    });
+
+export const mergeExerciseRequestSchema = exerciseMergePreviewRequestSchema
+    .safeExtend({
+        reason: z.string().trim().min(1).max(500).nullable().optional(),
+    })
+    .strict();
+
+export const revertExerciseMergeRequestSchema = z
+    .object({
+        expectedCanonicalVersion: z.number().int().positive(),
+        expectedMergedVersion: z.number().int().positive(),
+        reason: z.string().trim().min(1).max(500).nullable().optional(),
+    })
+    .strict();
+
+export const exerciseMergePreviewResponseSchema = z
+    .object({
+        schemaVersion: z.literal(1),
+        canonicalExercise: exerciseMergeCandidateSchema,
+        mergedExercise: exerciseMergeCandidateSchema,
+        redirectedAliases: z.array(z.string().min(1)),
+        externalIds: z.array(exerciseExternalIdSchema),
+        referenceImpact: z.array(exerciseReferenceImpactSchema),
+        totalReferenceCount: z.number().int().nonnegative(),
+        affectedExerciseIds: z.array(z.string().uuid()).min(2),
+        affectedFamilyExerciseIds: z.array(z.string().uuid()).min(2),
+        after: z
+            .object({
+                resolvedExerciseId: z.string().uuid(),
+                mergedExerciseSelectable: z.literal(false),
+                historicalSnapshotsPreserved: z.literal(true),
+            })
+            .strict(),
+    })
+    .strict();
+
+export const exerciseMergeResourceSchema = z
+    .object({
+        schemaVersion: z.literal(1),
+        id: z.string().uuid(),
+        status: z.enum(["applied", "reverted"]),
+        version: z.number().int().positive(),
+        canonicalExercise: exerciseMergeCandidateSchema,
+        mergedExercise: exerciseMergeCandidateSchema,
+        mergedExerciseVersionAfterApply: z.number().int().positive(),
+        revertedCanonicalExerciseVersion: z.number().int().positive().nullable(),
+        revertedMergedExerciseVersion: z.number().int().positive().nullable(),
+        redirectedAliases: z.array(z.string().min(1)),
+        externalIds: z.array(exerciseExternalIdSchema),
+        referenceImpact: z.array(exerciseReferenceImpactSchema),
+        totalReferenceCount: z.number().int().nonnegative(),
+        affectedExerciseIds: z.array(z.string().uuid()).min(2),
+        affectedFamilyExerciseIds: z.array(z.string().uuid()).min(2),
+        reason: z.string().nullable(),
+        revertReason: z.string().nullable(),
+        appliedAt: z.string().datetime(),
+        revertedAt: z.string().datetime().nullable(),
+    })
+    .strict();
+
+export const exerciseMergeHistoryResponseSchema = z
+    .object({
+        schemaVersion: z.literal(1),
+        items: z.array(exerciseMergeResourceSchema),
+        nextCursor: z.number().int().nonnegative().nullable(),
+    })
+    .strict();
+
+export const exerciseResolutionResponseSchema = z
+    .object({
+        schemaVersion: z.literal(1),
+        requestedExerciseId: z.string().uuid(),
+        resolvedExerciseId: z.string().uuid(),
+        redirected: z.boolean(),
+        exercise: exerciseCatalogItemSchema,
+    })
+    .strict();
+
 export const exerciseMutationResponseSchema = exerciseCatalogItemSchema;
 
 export type MuscleCatalogItemResponse = z.infer<typeof muscleCatalogItemSchema>;
@@ -265,6 +377,14 @@ export type ReplaceExerciseTagsRequest = z.infer<typeof replaceExerciseTagsReque
 export type ReplaceExerciseRelationshipsRequest = z.infer<typeof replaceExerciseRelationshipsRequestSchema>;
 export type ExerciseCatalogListQuery = z.infer<typeof exerciseCatalogListQuerySchema>;
 export type ExerciseSnapshotV1Response = z.infer<typeof exerciseSnapshotV1Schema>;
+export type ExerciseReferenceImpactResponse = z.infer<typeof exerciseReferenceImpactSchema>;
+export type ExerciseMergePreviewRequest = z.infer<typeof exerciseMergePreviewRequestSchema>;
+export type MergeExerciseRequest = z.infer<typeof mergeExerciseRequestSchema>;
+export type RevertExerciseMergeRequest = z.infer<typeof revertExerciseMergeRequestSchema>;
+export type ExerciseMergePreviewResponse = z.infer<typeof exerciseMergePreviewResponseSchema>;
+export type ExerciseMergeResource = z.infer<typeof exerciseMergeResourceSchema>;
+export type ExerciseMergeHistoryResponse = z.infer<typeof exerciseMergeHistoryResponseSchema>;
+export type ExerciseResolutionResponse = z.infer<typeof exerciseResolutionResponseSchema>;
 
 function validateExerciseDefinitionInput(
     value: {

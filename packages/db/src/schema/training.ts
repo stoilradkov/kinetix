@@ -260,6 +260,151 @@ export const exerciseRelationships = pgTable(
     ],
 );
 
+export const exerciseExternalIds = pgTable(
+    "exercise_external_ids",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        exerciseId: uuid("exercise_id")
+            .notNull()
+            .references(() => exercises.id),
+        provider: text("provider").notNull(),
+        externalId: text("external_id").notNull(),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("exercise_external_ids_provider_valid", sql`length(btrim(${table.provider})) BETWEEN 1 AND 120`),
+        check("exercise_external_ids_value_valid", sql`length(btrim(${table.externalId})) BETWEEN 1 AND 500`),
+        uniqueIndex("exercise_external_ids_provider_value_unique").on(table.provider, table.externalId),
+        index("exercise_external_ids_exercise_idx").on(table.exerciseId),
+    ],
+);
+
+export interface StoredExerciseReferenceImpact {
+    referenceType: string;
+    count: number;
+}
+
+export interface StoredExerciseExternalId {
+    provider: string;
+    externalId: string;
+}
+
+export const exerciseMerges = pgTable(
+    "exercise_merges",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        canonicalExerciseId: uuid("canonical_exercise_id")
+            .notNull()
+            .references(() => exercises.id),
+        mergedExerciseId: uuid("merged_exercise_id")
+            .notNull()
+            .references(() => exercises.id),
+        canonicalExerciseName: text("canonical_exercise_name").notNull(),
+        mergedExerciseName: text("merged_exercise_name").notNull(),
+        canonicalExerciseVersion: integer("canonical_exercise_version").notNull(),
+        mergedExerciseVersion: integer("merged_exercise_version").notNull(),
+        mergedExerciseVersionAfterApply: integer("merged_exercise_version_after_apply").notNull(),
+        revertedCanonicalExerciseVersion: integer("reverted_canonical_exercise_version"),
+        revertedMergedExerciseVersion: integer("reverted_merged_exercise_version"),
+        referenceImpact: jsonb("reference_impact").$type<StoredExerciseReferenceImpact[]>().notNull().default([]),
+        affectedExerciseIds: jsonb("affected_exercise_ids").$type<string[]>().notNull(),
+        affectedFamilyExerciseIds: jsonb("affected_family_exercise_ids").$type<string[]>().notNull(),
+        externalIds: jsonb("external_ids").$type<StoredExerciseExternalId[]>().notNull().default([]),
+        reason: text("reason"),
+        revertReason: text("revert_reason"),
+        version: integer("version").notNull().default(1),
+        appliedAt: timestamp("applied_at", { withTimezone: true }).notNull(),
+        revertedAt: timestamp("reverted_at", { withTimezone: true }),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("exercise_merges_not_self", sql`${table.canonicalExerciseId} <> ${table.mergedExerciseId}`),
+        check(
+            "exercise_merges_names_valid",
+            sql`length(btrim(${table.canonicalExerciseName})) > 0 AND length(btrim(${table.mergedExerciseName})) > 0`,
+        ),
+        check(
+            "exercise_merges_apply_versions_positive",
+            sql`${table.canonicalExerciseVersion} > 0
+                AND ${table.mergedExerciseVersion} > 0
+                AND ${table.mergedExerciseVersionAfterApply} > 0`,
+        ),
+        check(
+            "exercise_merges_revert_versions_positive",
+            sql`(${table.revertedCanonicalExerciseVersion} IS NULL
+                    OR ${table.revertedCanonicalExerciseVersion} > 0)
+                AND (${table.revertedMergedExerciseVersion} IS NULL
+                    OR ${table.revertedMergedExerciseVersion} > 0)`,
+        ),
+        check(
+            "exercise_merges_reason_valid",
+            sql`${table.reason} IS NULL OR length(btrim(${table.reason})) BETWEEN 1 AND 500`,
+        ),
+        check(
+            "exercise_merges_revert_reason_valid",
+            sql`${table.revertReason} IS NULL OR length(btrim(${table.revertReason})) BETWEEN 1 AND 500`,
+        ),
+        check(
+            "exercise_merges_state_valid",
+            sql`(
+                ${table.version} = 1
+                AND ${table.revertedAt} IS NULL
+                AND ${table.revertReason} IS NULL
+                AND ${table.revertedCanonicalExerciseVersion} IS NULL
+                AND ${table.revertedMergedExerciseVersion} IS NULL
+            ) OR (
+                ${table.version} = 2
+                AND ${table.revertedAt} IS NOT NULL
+                AND ${table.revertedCanonicalExerciseVersion} IS NOT NULL
+                AND ${table.revertedMergedExerciseVersion} IS NOT NULL
+            )`,
+        ),
+        uniqueIndex("exercise_merges_active_merged_unique").on(table.mergedExerciseId).where(isNull(table.revertedAt)),
+        index("exercise_merges_canonical_history_idx").on(table.canonicalExerciseId, table.appliedAt),
+        index("exercise_merges_merged_history_idx").on(table.mergedExerciseId, table.appliedAt),
+    ],
+);
+
+export const exerciseMergeAliases = pgTable(
+    "exercise_merge_aliases",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        mergeId: uuid("merge_id")
+            .notNull()
+            .references(() => exerciseMerges.id),
+        canonicalExerciseId: uuid("canonical_exercise_id")
+            .notNull()
+            .references(() => exercises.id),
+        originalExerciseId: uuid("original_exercise_id")
+            .notNull()
+            .references(() => exercises.id),
+        alias: text("alias").notNull(),
+        normalizedAlias: text("normalized_alias").notNull(),
+        isActive: boolean("is_active").notNull().default(true),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        deactivatedAt: timestamp("deactivated_at", { withTimezone: true }),
+    },
+    table => [
+        check("exercise_merge_aliases_alias_valid", sql`length(btrim(${table.alias})) > 0`),
+        check(
+            "exercise_merge_aliases_normalized_matches",
+            sql`${table.normalizedAlias} = lower(regexp_replace(btrim(${table.alias}), '\\s+', ' ', 'g'))`,
+        ),
+        check(
+            "exercise_merge_aliases_state_valid",
+            sql`(${table.isActive} AND ${table.deactivatedAt} IS NULL)
+                OR (NOT ${table.isActive} AND ${table.deactivatedAt} IS NOT NULL)`,
+        ),
+        uniqueIndex("exercise_merge_aliases_merge_value_unique").on(table.mergeId, table.normalizedAlias),
+        uniqueIndex("exercise_merge_aliases_active_value_unique")
+            .on(table.normalizedAlias)
+            .where(sql`${table.isActive}`),
+        index("exercise_merge_aliases_canonical_idx").on(table.canonicalExerciseId, table.isActive),
+        index("exercise_merge_aliases_original_idx").on(table.originalExerciseId, table.isActive),
+    ],
+);
+
 export type MuscleGroupRow = typeof muscleGroups.$inferSelect;
 export type EquipmentTypeRow = typeof equipmentTypes.$inferSelect;
 export type MovementPatternRow = typeof movementPatterns.$inferSelect;
@@ -268,6 +413,9 @@ export type ExerciseRow = typeof exercises.$inferSelect;
 export type ExerciseAliasRow = typeof exerciseAliases.$inferSelect;
 export type ExerciseMuscleRow = typeof exerciseMuscles.$inferSelect;
 export type ExerciseRelationshipRow = typeof exerciseRelationships.$inferSelect;
+export type ExerciseExternalIdRow = typeof exerciseExternalIds.$inferSelect;
+export type ExerciseMergeRow = typeof exerciseMerges.$inferSelect;
+export type ExerciseMergeAliasRow = typeof exerciseMergeAliases.$inferSelect;
 
 /** Promoted measurement columns for Training-owned tables. Call per table. */
 export const trainingMeasurementColumns = () => ({

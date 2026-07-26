@@ -72,4 +72,14 @@ describe("initial module migration", () => {
         expect(migration).toContain('CONSTRAINT "exercise_muscles_pk" PRIMARY KEY');
         expect(migration).toContain('CONSTRAINT "exercise_relationships_not_self"');
     });
+
+    it("persists reversible exercise redirects, aliases, external IDs, and version evidence", () => {
+        expect(migration).toContain('CREATE TABLE "exercise_external_ids"');
+        expect(migration).toContain('CREATE TABLE "exercise_merges"');
+        expect(migration).toContain('CREATE TABLE "exercise_merge_aliases"');
+        expect(migration).toContain('CREATE UNIQUE INDEX "exercise_merges_active_merged_unique"');
+        expect(migration).toContain('CREATE UNIQUE INDEX "exercise_merge_aliases_active_value_unique"');
+        expect(migration).toContain('"merged_exercise_version_after_apply" integer NOT NULL');
+        expect(migration).toContain('"exercise_merges_state_valid"');
+    });
 });

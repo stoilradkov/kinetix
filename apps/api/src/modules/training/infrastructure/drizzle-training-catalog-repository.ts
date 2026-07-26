@@ -4,6 +4,7 @@ import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm"
 import {
     equipmentTypes,
     exerciseAliases,
+    exerciseMergeAliases,
     exerciseMuscles,
     exerciseRelationships,
     exercises,
@@ -407,6 +408,12 @@ export class DrizzleTrainingCatalogRepository
                         and ea.is_active
                         and ea.alias ilike ${`%${escapeLike(search)}%`}
                     )
+                    or exists (
+                        select 1 from exercise_merge_aliases ema
+                        where ema.canonical_exercise_id = ${exercises.id}
+                        and ema.is_active
+                        and ema.alias ilike ${`%${escapeLike(search)}%`}
+                    )
                 )`,
             sql<boolean>`(
                 not ${exercises.isSeeded}
@@ -454,14 +461,27 @@ export class DrizzleTrainingCatalogRepository
     }
 
     async resolveAlias(normalizedAlias: string): Promise<ExerciseCatalogItem | null> {
-        const row = (
+        const direct = (
             await this.database.db
                 .select({ exerciseId: exerciseAliases.exerciseId })
                 .from(exerciseAliases)
                 .where(and(eq(exerciseAliases.normalizedAlias, normalizedAlias), eq(exerciseAliases.isActive, true)))
                 .limit(1)
         )[0];
-        return row ? this.readExercise(entityId(row.exerciseId)) : null;
+        if (direct) return this.readExercise(entityId(direct.exerciseId));
+        const redirect = (
+            await this.database.db
+                .select({ exerciseId: exerciseMergeAliases.canonicalExerciseId })
+                .from(exerciseMergeAliases)
+                .where(
+                    and(
+                        eq(exerciseMergeAliases.normalizedAlias, normalizedAlias),
+                        eq(exerciseMergeAliases.isActive, true),
+                    ),
+                )
+                .limit(1)
+        )[0];
+        return redirect ? this.readExercise(entityId(redirect.exerciseId)) : null;
     }
 
     async areInAnalyticsFamily(leftId: EntityId, rightId: EntityId): Promise<boolean> {
@@ -799,6 +819,22 @@ export class DrizzleTrainingCatalogRepository
             alias => alias.exerciseId !== currentId && alias.exerciseId !== state.forkedFromExerciseId,
         );
         if (conflict) throw new ExerciseAliasConflictError(conflict.normalizedAlias);
+        const redirectConflict = (
+            await executor
+                .select({ normalizedAlias: exerciseMergeAliases.normalizedAlias })
+                .from(exerciseMergeAliases)
+                .where(
+                    and(
+                        inArray(exerciseMergeAliases.normalizedAlias, normalizedAliases),
+                        eq(exerciseMergeAliases.isActive, true),
+                        currentId === undefined
+                            ? undefined
+                            : sql`${exerciseMergeAliases.canonicalExerciseId} <> ${currentId}`,
+                    ),
+                )
+                .limit(1)
+        )[0];
+        if (redirectConflict) throw new ExerciseAliasConflictError(redirectConflict.normalizedAlias);
     }
 
     private async validateRelationshipCycles(state: ExerciseDefinitionState, executor: Database): Promise<void> {

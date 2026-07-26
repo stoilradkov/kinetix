@@ -20,6 +20,7 @@ import { ApiHeader, ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger";
 import {
     createExerciseRequestSchema,
     exerciseMutationResponseSchema,
+    exerciseResolutionResponseSchema,
     exerciseSnapshotV1Schema,
     replaceExerciseAliasesRequestSchema,
     replaceExerciseMusclesRequestSchema,
@@ -27,6 +28,7 @@ import {
     replaceExerciseTagsRequestSchema,
     updateExerciseRequestSchema,
     type ExerciseCatalogItemResponse,
+    type ExerciseResolutionResponse,
     type ExerciseSnapshotV1Response,
 } from "@kinetix/types";
 
@@ -104,6 +106,18 @@ export class ExerciseDefinitionController {
     @ApiParam({ name: "id", format: "uuid" })
     async currentSnapshot(@Param("id") id: string): Promise<ExerciseSnapshotV1Response> {
         return exerciseSnapshotV1Schema.parse(await this.catalog.currentSnapshot(id));
+    }
+
+    @Get(":id/resolution")
+    @ApiOperation({ summary: "Resolve an exercise redirect to its current canonical definition" })
+    @ApiParam({ name: "id", format: "uuid" })
+    async resolution(@Param("id") id: string): Promise<ExerciseResolutionResponse> {
+        const resolved = await this.catalog.resolveCurrentExercise(id);
+        return exerciseResolutionResponseSchema.parse({
+            schemaVersion: 1,
+            ...resolved,
+            exercise: mapExercise(resolved.exercise),
+        });
     }
 
     @Get(":id/snapshots/:version")

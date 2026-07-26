@@ -70,6 +70,12 @@ describe("ExerciseDefinitionController", () => {
 function catalog(): TrainingExerciseCatalogPort {
     return {
         getExercise: async () => resource(),
+        resolveCurrentExercise: async () => ({
+            requestedExerciseId: exerciseId,
+            resolvedExerciseId: exerciseId,
+            redirected: false,
+            exercise: resource(),
+        }),
         listExercises: async () => ({ items: [resource()], nextCursor: null }),
         resolveAlias: async () => resource(),
         currentSnapshot: async () => snapshot(1, "Bench Press"),

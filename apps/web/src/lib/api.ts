@@ -1,5 +1,26 @@
 import { queryOptions } from "@tanstack/react-query";
 
+import {
+    apiErrorSchema,
+    createExerciseRequestSchema,
+    equipmentCatalogListResponseSchema,
+    exerciseCatalogItemSchema,
+    exerciseCatalogListResponseSchema,
+    exerciseMergeHistoryResponseSchema,
+    exerciseMergePreviewRequestSchema,
+    exerciseMergePreviewResponseSchema,
+    exerciseMergeResourceSchema,
+    mergeExerciseRequestSchema,
+    movementPatternCatalogListResponseSchema,
+    muscleCatalogListResponseSchema,
+    replaceExerciseAliasesRequestSchema,
+    replaceExerciseMusclesRequestSchema,
+    replaceExerciseRelationshipsRequestSchema,
+    revisionHistoryResponseSchema,
+    updateExerciseRequestSchema,
+    type ExerciseCatalogItemResponse,
+    type ExerciseMergeResource,
+} from "@kinetix/types";
 import { healthResponseSchema } from "@kinetix/types";
 
 const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:3000/api/v1";
@@ -15,3 +36,193 @@ export const healthQueryOptions = queryOptions({
         return healthResponseSchema.parse(await response.json());
     },
 });
+
+export function exerciseListQueryOptions(search: string, status: "active" | "archived" | "all") {
+    return queryOptions({
+        queryKey: ["training", "exercises", { search, status }],
+        queryFn: async () => {
+            const query = new URLSearchParams({ status, limit: "100" });
+            if (search.trim()) query.set("search", search.trim());
+            return exerciseCatalogListResponseSchema.parse(
+                await apiRequest(`/training/catalog/exercises?${query.toString()}`),
+            );
+        },
+    });
+}
+
+export const exerciseFormCatalogQueryOptions = queryOptions({
+    queryKey: ["training", "exercise-form-catalogs"],
+    queryFn: async () => {
+        const [equipment, movementPatterns, muscles] = await Promise.all([
+            apiRequest("/training/catalog/equipment"),
+            apiRequest("/training/catalog/movement-patterns"),
+            apiRequest("/training/catalog/muscles"),
+        ]);
+        return {
+            equipment: equipmentCatalogListResponseSchema.parse(equipment).items,
+            movementPatterns: movementPatternCatalogListResponseSchema.parse(movementPatterns).items,
+            muscles: muscleCatalogListResponseSchema.parse(muscles).items,
+        };
+    },
+});
+
+export function exerciseRevisionHistoryQueryOptions(exerciseId: string | null) {
+    return queryOptions({
+        queryKey: ["training", "exercise-history", exerciseId],
+        enabled: exerciseId !== null,
+        queryFn: async () =>
+            revisionHistoryResponseSchema.parse(
+                await apiRequest(`/history/training.exercise/${encodeURIComponent(exerciseId!)}`),
+            ),
+    });
+}
+
+export function exerciseMergeHistoryQueryOptions(exerciseId: string | null) {
+    return queryOptions({
+        queryKey: ["training", "exercise-merge-history", exerciseId],
+        enabled: exerciseId !== null,
+        queryFn: async () =>
+            exerciseMergeHistoryResponseSchema.parse(
+                await apiRequest(
+                    `/training/catalog/exercise-merges/history/${encodeURIComponent(exerciseId!)}?limit=100`,
+                ),
+            ),
+    });
+}
+
+export async function createExercise(input: unknown): Promise<ExerciseCatalogItemResponse> {
+    return exerciseCatalogItemSchema.parse(
+        await apiRequest("/training/catalog/exercises", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(createExerciseRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updateExercise(
+    exercise: ExerciseCatalogItemResponse,
+    input: unknown,
+): Promise<ExerciseCatalogItemResponse> {
+    return exerciseCatalogItemSchema.parse(
+        await apiRequest(`/training/catalog/exercises/${encodeURIComponent(exercise.id)}`, {
+            method: "PATCH",
+            headers: mutationHeaders(exercise.version, crypto.randomUUID()),
+            body: JSON.stringify(updateExerciseRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function replaceExerciseRelationships(
+    exercise: ExerciseCatalogItemResponse,
+    input: unknown,
+): Promise<ExerciseCatalogItemResponse> {
+    return exerciseCatalogItemSchema.parse(
+        await apiRequest(`/training/catalog/exercises/${encodeURIComponent(exercise.id)}/relationships`, {
+            method: "PUT",
+            headers: mutationHeaders(exercise.version, crypto.randomUUID()),
+            body: JSON.stringify(replaceExerciseRelationshipsRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function replaceExerciseAliases(
+    exercise: ExerciseCatalogItemResponse,
+    aliases: readonly string[],
+): Promise<ExerciseCatalogItemResponse> {
+    return exerciseCatalogItemSchema.parse(
+        await apiRequest(`/training/catalog/exercises/${encodeURIComponent(exercise.id)}/aliases`, {
+            method: "PUT",
+            headers: mutationHeaders(exercise.version, crypto.randomUUID()),
+            body: JSON.stringify(replaceExerciseAliasesRequestSchema.parse({ aliases })),
+        }),
+    );
+}
+
+export async function replaceExerciseMuscles(
+    exercise: ExerciseCatalogItemResponse,
+    muscles: readonly { readonly muscleGroupId: string; readonly role: "primary" | "secondary" }[],
+): Promise<ExerciseCatalogItemResponse> {
+    return exerciseCatalogItemSchema.parse(
+        await apiRequest(`/training/catalog/exercises/${encodeURIComponent(exercise.id)}/muscles`, {
+            method: "PUT",
+            headers: mutationHeaders(exercise.version, crypto.randomUUID()),
+            body: JSON.stringify(replaceExerciseMusclesRequestSchema.parse({ muscles })),
+        }),
+    );
+}
+
+export async function changeExerciseStatus(
+    exercise: ExerciseCatalogItemResponse,
+): Promise<ExerciseCatalogItemResponse> {
+    const action = exercise.status === "active" ? "archive" : "restore";
+    return exerciseCatalogItemSchema.parse(
+        await apiRequest(`/training/catalog/exercises/${encodeURIComponent(exercise.id)}/${action}`, {
+            method: "POST",
+            headers: mutationHeaders(exercise.version, crypto.randomUUID()),
+            body: "{}",
+        }),
+    );
+}
+
+export async function previewExerciseMerge(input: unknown) {
+    return exerciseMergePreviewResponseSchema.parse(
+        await apiRequest("/training/catalog/exercise-merges/preview", {
+            method: "POST",
+            headers: mutationHeaders(),
+            body: JSON.stringify(exerciseMergePreviewRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function mergeExercises(input: unknown): Promise<ExerciseMergeResource> {
+    return exerciseMergeResourceSchema.parse(
+        await apiRequest("/training/catalog/exercise-merges", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(mergeExerciseRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function revertExerciseMerge(merge: ExerciseMergeResource): Promise<ExerciseMergeResource> {
+    const [canonical, merged] = await Promise.all([
+        getExercise(merge.canonicalExercise.id),
+        getExercise(merge.mergedExercise.id),
+    ]);
+    return exerciseMergeResourceSchema.parse(
+        await apiRequest(`/training/catalog/exercise-merges/${encodeURIComponent(merge.id)}/revert`, {
+            method: "POST",
+            headers: mutationHeaders(merge.version, crypto.randomUUID()),
+            body: JSON.stringify({
+                expectedCanonicalVersion: canonical.version,
+                expectedMergedVersion: merged.version,
+            }),
+        }),
+    );
+}
+
+async function getExercise(exerciseId: string): Promise<ExerciseCatalogItemResponse> {
+    return exerciseCatalogItemSchema.parse(
+        await apiRequest(`/training/catalog/exercises/${encodeURIComponent(exerciseId)}`),
+    );
+}
+
+function mutationHeaders(version?: number, idempotencyKey?: string): Headers {
+    const headers = new Headers({ "content-type": "application/json" });
+    if (version !== undefined) headers.set("if-match", `"${version}"`);
+    if (idempotencyKey !== undefined) headers.set("idempotency-key", idempotencyKey);
+    return headers;
+}
+
+async function apiRequest(path: string, init?: RequestInit): Promise<unknown> {
+    const response = await fetch(`${apiUrl}${path}`, init);
+    const body: unknown = await response.json();
+    if (!response.ok) {
+        const parsed = apiErrorSchema.safeParse(body);
+        throw new Error(
+            parsed.success ? parsed.data.message : `Kinetix API request failed with HTTP ${response.status}`,
+        );
+    }
+    return body;
+}

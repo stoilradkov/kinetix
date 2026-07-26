@@ -6,6 +6,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
     createDatabase,
     equipmentTypes,
+    exerciseExternalIds,
+    exerciseMergeAliases,
+    exerciseMerges,
     exerciseMuscles,
     exercises,
     movementPatterns,
@@ -21,10 +24,12 @@ import {
 } from "#src/modules/training/application/index";
 import {
     ExerciseDefinition,
+    ExerciseMergePolicy,
     normalizeCatalogValue,
     type TrainingCatalogSeed,
 } from "#src/modules/training/domain/index";
 import { DrizzleTrainingCatalogRepository } from "#src/modules/training/infrastructure/drizzle-training-catalog-repository";
+import { DrizzleExerciseMergeRepository } from "#src/modules/training/infrastructure/drizzle-exercise-merge-repository";
 import { trainingCatalogSeed } from "#src/modules/training/infrastructure/seed/training-catalog";
 import { TrainingCatalogController } from "#src/modules/training/presentation/index";
 import type { UnitOfWork } from "#src/platform/application/index";
@@ -35,6 +40,7 @@ const testDatabaseUrl = process.env.CATALOG_TEST_DATABASE_URL;
 describe.runIf(testDatabaseUrl)("Training catalog PostgreSQL persistence", () => {
     const connection = createDatabase(testDatabaseUrl ?? "");
     const repository = new DrizzleTrainingCatalogRepository(connection as unknown as DatabaseService);
+    const mergeRepository = new DrizzleExerciseMergeRepository(connection as unknown as DatabaseService);
     const unitOfWork: UnitOfWork = {
         execute: work => connection.db.transaction(transaction => work(transaction)),
     };
@@ -43,6 +49,7 @@ describe.runIf(testDatabaseUrl)("Training catalog PostgreSQL persistence", () =>
             now: () => new Date("2026-07-26T12:00:00.000Z"),
         });
     const usedExerciseIds: string[] = [];
+    const usedMergeIds: string[] = [];
 
     beforeAll(async () => {
         await connection.db.select({ id: muscleGroups.id }).from(muscleGroups).limit(1);
@@ -228,8 +235,103 @@ describe.runIf(testDatabaseUrl)("Training catalog PostgreSQL persistence", () =>
         await expect(repository.readExercise(id)).resolves.toMatchObject({ status: "active", version: 3 });
     });
 
+    it("persists reversible redirects while retaining external IDs and exact definition history", async () => {
+        await useCase().execute();
+        const catalog = await repository.listExercises();
+        const canonical = catalog.find(item => item.slug === "barbell-bench-press");
+        const equipment = (await repository.listEquipment())[0];
+        const movement = (await repository.listMovementPatterns())[0];
+        const muscle = (await repository.listMuscles())[0];
+        if (!canonical || !equipment || !movement || !muscle) throw new Error("Seed catalog is incomplete");
+
+        const mergedId = entityId(randomUUID());
+        const mergeId = entityId(randomUUID());
+        usedExerciseIds.push(mergedId);
+        usedMergeIds.push(mergeId);
+        const merged = ExerciseDefinition.create(
+            {
+                id: mergedId,
+                slug: `imported-bench-${mergedId}`,
+                name: "Imported Bench Press",
+                aliases: ["Provider Bench"],
+                equipmentTypeId: equipment.id,
+                movementPatternId: movement.id,
+                classification: "compound",
+                laterality: "bilateral",
+                bodyPosition: "supine",
+                repetitionSemantics: "total",
+                loadModel: "external_only",
+                supportedMeasurements: ["repetitions", "external_load"],
+                muscles: [{ muscleGroupId: muscle.id, role: "primary" }],
+            },
+            new Date("2026-07-26T12:00:00.000Z"),
+        );
+        await connection.db.transaction(async transaction => {
+            await repository.create("training.exercise", mergedId, merged.state, 1, transaction);
+            await transaction.insert(exerciseExternalIds).values({
+                exerciseId: mergedId,
+                provider: "integration",
+                externalId: `bench-${mergedId}`,
+            });
+        });
+        const canonicalStored = await repository.findDefinition(entityId(canonical.id));
+        if (!canonicalStored) throw new Error("Canonical exercise was not found");
+        const intent = new ExerciseMergePolicy().plan(
+            {
+                id: mergeId,
+                canonical: canonicalStored.definition.state,
+                merged: merged.state,
+                canonicalExerciseVersion: canonicalStored.version,
+                mergedExerciseVersion: 1,
+                activeRedirects: [],
+                externalIds: await mergeRepository.externalIdsFor(mergedId),
+            },
+            new Date("2026-07-26T13:00:00.000Z"),
+        );
+        merged.archive(new Date("2026-07-26T13:00:00.000Z"));
+        await connection.db.transaction(async transaction => {
+            await repository.save("training.exercise", mergedId, merged.state, 1, 2, transaction);
+            await mergeRepository.apply(intent, 2, transaction);
+        });
+
+        await expect(mergeRepository.resolveCanonicalId(mergedId)).resolves.toBe(canonical.id);
+        await expect(repository.resolveAlias(normalizeCatalogValue("provider bench"))).resolves.toMatchObject({
+            id: canonical.id,
+        });
+        await expect(mergeRepository.externalIdsFor(mergedId)).resolves.toEqual([
+            { provider: "integration", externalId: `bench-${mergedId}` },
+        ]);
+
+        merged.restore(new Date("2026-07-26T14:00:00.000Z"));
+        await connection.db.transaction(async transaction => {
+            await mergeRepository.revert(
+                {
+                    id: mergeId,
+                    expectedVersion: 1,
+                    revertedCanonicalExerciseVersion: canonicalStored.version,
+                    revertedMergedExerciseVersion: 3,
+                    revertedAt: new Date("2026-07-26T14:00:00.000Z"),
+                    reason: "integration revert",
+                },
+                transaction,
+            );
+            await repository.save("training.exercise", mergedId, merged.state, 2, 3, transaction);
+        });
+        await expect(mergeRepository.resolveCanonicalId(mergedId)).resolves.toBe(mergedId);
+        await expect(repository.resolveAlias(normalizeCatalogValue("provider bench"))).resolves.toMatchObject({
+            id: mergedId,
+        });
+    });
+
     async function cleanCatalog(): Promise<void> {
-        for (const id of usedExerciseIds.splice(0)) await connection.db.delete(exercises).where(eq(exercises.id, id));
+        for (const id of usedMergeIds.splice(0)) {
+            await connection.db.delete(exerciseMergeAliases).where(eq(exerciseMergeAliases.mergeId, id));
+            await connection.db.delete(exerciseMerges).where(eq(exerciseMerges.id, id));
+        }
+        for (const id of usedExerciseIds.splice(0)) {
+            await connection.db.delete(exerciseExternalIds).where(eq(exerciseExternalIds.exerciseId, id));
+            await connection.db.delete(exercises).where(eq(exercises.id, id));
+        }
         await connection.db.delete(exercises).where(
             inArray(
                 exercises.slug,

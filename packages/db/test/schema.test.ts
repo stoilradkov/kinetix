@@ -28,5 +28,8 @@ describe("database schema boundaries", () => {
         expect(getTableName(schema.exerciseMuscles)).toBe("exercise_muscles");
         expect(getTableName(schema.exerciseTags)).toBe("exercise_tags");
         expect(getTableName(schema.exerciseRelationships)).toBe("exercise_relationships");
+        expect(getTableName(schema.exerciseExternalIds)).toBe("exercise_external_ids");
+        expect(getTableName(schema.exerciseMerges)).toBe("exercise_merges");
+        expect(getTableName(schema.exerciseMergeAliases)).toBe("exercise_merge_aliases");
     });
 });

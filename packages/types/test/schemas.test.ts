@@ -6,6 +6,8 @@ import {
     distanceSchema,
     durationSchema,
     exerciseCatalogListResponseSchema,
+    exerciseMergePreviewResponseSchema,
+    exerciseMergeResourceSchema,
     exerciseSnapshotV1Schema,
     jobResourceSchema,
     massSchema,
@@ -231,6 +233,58 @@ describe("Training catalog schemas", () => {
                 analyticsFamilyExerciseIds: [input.relationships[0].targetExerciseId],
             }).success,
         ).toBe(true);
+    });
+
+    it("validates merge impact previews and reversible history resources", () => {
+        const preview = {
+            schemaVersion: 1 as const,
+            canonicalExercise: {
+                id: "0198a4db-d8da-7000-8000-000000000001",
+                name: "Bench Press",
+                version: 2,
+            },
+            mergedExercise: {
+                id: "0198a4db-d8da-7000-8000-000000000002",
+                name: "Barbell Bench Press",
+                version: 3,
+            },
+            redirectedAliases: ["Barbell Bench Press"],
+            externalIds: [{ provider: "strong", externalId: "bench-42" }],
+            referenceImpact: [{ referenceType: "planned_exercises", count: 4 }],
+            totalReferenceCount: 4,
+            affectedExerciseIds: ["0198a4db-d8da-7000-8000-000000000001", "0198a4db-d8da-7000-8000-000000000002"],
+            affectedFamilyExerciseIds: ["0198a4db-d8da-7000-8000-000000000001", "0198a4db-d8da-7000-8000-000000000002"],
+            after: {
+                resolvedExerciseId: "0198a4db-d8da-7000-8000-000000000001",
+                mergedExerciseSelectable: false as const,
+                historicalSnapshotsPreserved: true as const,
+            },
+        };
+
+        expect(exerciseMergePreviewResponseSchema.parse(preview)).toMatchObject({ totalReferenceCount: 4 });
+        expect(
+            exerciseMergeResourceSchema.parse({
+                id: "0198a4db-d8da-7000-8000-000000000003",
+                schemaVersion: 1,
+                status: "applied",
+                version: 1,
+                canonicalExercise: preview.canonicalExercise,
+                mergedExercise: preview.mergedExercise,
+                mergedExerciseVersionAfterApply: 4,
+                revertedCanonicalExerciseVersion: null,
+                revertedMergedExerciseVersion: null,
+                redirectedAliases: preview.redirectedAliases,
+                externalIds: preview.externalIds,
+                referenceImpact: preview.referenceImpact,
+                totalReferenceCount: preview.totalReferenceCount,
+                affectedExerciseIds: preview.affectedExerciseIds,
+                affectedFamilyExerciseIds: preview.affectedFamilyExerciseIds,
+                reason: "Imported duplicate",
+                revertReason: null,
+                appliedAt: "2026-07-26T12:00:00.000Z",
+                revertedAt: null,
+            }),
+        ).toMatchObject({ status: "applied", version: 1 });
     });
 });
 

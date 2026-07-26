@@ -50,6 +50,13 @@
             "when": 1785078942600,
             "tag": "0006_volatile_fallen_one",
             "breakpoints": true
+        },
+        {
+            "idx": 7,
+            "version": "7",
+            "when": 1785079774539,
+            "tag": "0007_special_hellcat",
+            "breakpoints": true
         }
     ]
 }
