@@ -4,6 +4,7 @@ import {
     apiErrorSchema,
     distanceSchema,
     durationSchema,
+    exerciseCatalogListResponseSchema,
     jobResourceSchema,
     massSchema,
     paceSchema,
@@ -120,6 +121,50 @@ describe("job resource schemas", () => {
 
         expect(jobResourceSchema.parse(resource)).toEqual(resource);
         expect(jobResourceSchema.safeParse({ ...resource, payload: { secret: true } }).success).toBe(false);
+    });
+});
+
+describe("Training catalog schemas", () => {
+    it("requires schema versions and structured exercise metadata", () => {
+        const taxonomy = {
+            schemaVersion: 1,
+            id: "0198a4db-d8da-7000-8000-000000000001",
+            slug: "barbell",
+            name: "Barbell",
+            position: 0,
+            ownership: "seeded",
+            analyticsMappingStatus: "standard",
+        } as const;
+        expect(
+            exerciseCatalogListResponseSchema.safeParse({
+                schemaVersion: 1,
+                items: [
+                    {
+                        schemaVersion: 1,
+                        id: "0198a4db-d8da-7000-8000-000000000002",
+                        slug: "barbell-bench-press",
+                        name: "Barbell Bench Press",
+                        aliases: ["Bench Press"],
+                        status: "active",
+                        ownership: "seeded",
+                        equipment: taxonomy,
+                        movementPattern: { ...taxonomy, slug: "horizontal-push", name: "Horizontal Push" },
+                        classification: "compound",
+                        laterality: "bilateral",
+                        bodyPosition: "supine",
+                        repetitionSemantics: "total",
+                        loadModel: "external_only",
+                        supportedMeasurements: ["repetitions", "external_load"],
+                        muscles: [],
+                        tags: [],
+                        notes: null,
+                        version: 1,
+                        position: 0,
+                    },
+                ],
+            }).success,
+        ).toBe(true);
+        expect(exerciseCatalogListResponseSchema.safeParse({ items: [] }).success).toBe(false);
     });
 });
 

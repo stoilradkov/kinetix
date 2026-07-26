@@ -1,2 +1,2 @@
-/** Training adapters are exported here as capabilities are implemented. */
+/** Training infrastructure remains private to TrainingModule. */
 export {};

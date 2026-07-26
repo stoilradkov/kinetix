@@ -17,4 +17,15 @@ describe("database schema boundaries", () => {
         expect(schema).not.toHaveProperty("projects");
         expect(schema).not.toHaveProperty("projectStatus");
     });
+
+    it("exports normalized Training catalog tables", () => {
+        expect(getTableName(schema.muscleGroups)).toBe("muscle_groups");
+        expect(getTableName(schema.equipmentTypes)).toBe("equipment_types");
+        expect(getTableName(schema.movementPatterns)).toBe("movement_patterns");
+        expect(getTableName(schema.trainingTags)).toBe("training_tags");
+        expect(getTableName(schema.exercises)).toBe("exercises");
+        expect(getTableName(schema.exerciseAliases)).toBe("exercise_aliases");
+        expect(getTableName(schema.exerciseMuscles)).toBe("exercise_muscles");
+        expect(getTableName(schema.exerciseTags)).toBe("exercise_tags");
+    });
 });

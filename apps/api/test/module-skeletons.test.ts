@@ -16,7 +16,7 @@ describe("bounded module skeletons", () => {
     it.each([ProfileModule, HealthDataModule, TrainingModule])(
         "registers %s through Nest dependency injection",
         moduleType => {
-            expect(Reflect.getMetadata("providers", moduleType)).toHaveLength(1);
+            expect(Reflect.getMetadata("providers", moduleType).length).toBeGreaterThanOrEqual(1);
         },
     );
 });

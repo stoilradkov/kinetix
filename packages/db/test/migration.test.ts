@@ -50,4 +50,22 @@ describe("initial module migration", () => {
         expect(migration).toContain('CREATE UNIQUE INDEX "jobs_type_idempotency_unique"');
         expect(migration).toContain('CONSTRAINT "work_handler_receipts_pk" PRIMARY KEY');
     });
+
+    it("creates normalized Training catalog tables and uniqueness constraints", () => {
+        for (const table of [
+            "muscle_groups",
+            "equipment_types",
+            "movement_patterns",
+            "training_tags",
+            "exercises",
+            "exercise_aliases",
+            "exercise_muscles",
+            "exercise_tags",
+        ])
+            expect(migration).toContain(`CREATE TABLE "${table}"`);
+        expect(migration).toContain('CREATE UNIQUE INDEX "muscle_groups_slug_unique"');
+        expect(migration).toContain('CREATE UNIQUE INDEX "training_tags_normalized_name_unique"');
+        expect(migration).toContain('CREATE UNIQUE INDEX "exercise_aliases_normalized_unique"');
+        expect(migration).toContain('CONSTRAINT "exercise_muscles_pk" PRIMARY KEY');
+    });
 });

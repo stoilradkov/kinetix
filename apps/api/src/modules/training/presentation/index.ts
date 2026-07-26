@@ -1,2 +1,1 @@
-/** Training transports are added with user-facing capabilities. */
-export {};
+export { TrainingCatalogController } from "#src/modules/training/presentation/training-catalog.controller";
