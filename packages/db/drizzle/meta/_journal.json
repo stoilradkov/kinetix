@@ -8,6 +8,13 @@
             "when": 1783858022750,
             "tag": "0000_brave_lizard",
             "breakpoints": true
+        },
+        {
+            "idx": 1,
+            "version": "7",
+            "when": 1783868384356,
+            "tag": "0001_gray_terrax",
+            "breakpoints": true
         }
     ]
 }

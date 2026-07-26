@@ -3,13 +3,13 @@ import { globSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-const migrationPath = globSync(new URL("../drizzle/*.sql", import.meta.url).pathname)[0];
+const migrationPaths = globSync(new URL("../drizzle/*.sql", import.meta.url).pathname);
 
-if (!migrationPath) {
+if (migrationPaths.length === 0) {
     throw new Error("Expected a generated migration");
 }
 
-const migration = readFileSync(migrationPath, "utf8");
+const migration = migrationPaths.map(path => readFileSync(path, "utf8")).join("\n");
 
 describe("initial module migration", () => {
     it("contains no starter Project objects", () => {
@@ -20,5 +20,11 @@ describe("initial module migration", () => {
         expect(migration).toContain("'training'");
         expect(migration).toContain("'active'");
         expect(migration).toContain('ON CONFLICT ("slug") DO NOTHING');
+    });
+
+    it("creates immutable, schema-versioned entity revisions", () => {
+        expect(migration).toContain('CREATE TABLE "entity_revisions"');
+        expect(migration).toContain('"schema_version" integer NOT NULL');
+        expect(migration).toContain('CREATE UNIQUE INDEX "entity_revisions_entity_version_unique"');
     });
 });
