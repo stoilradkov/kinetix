@@ -17,6 +17,19 @@ export const apiEnvSchema = z.object({
                 .filter(Boolean),
         ),
     LOG_LEVEL: z.enum(["fatal", "error", "warn", "log", "debug", "verbose"]).default("log"),
+    WORKERS_ENABLED: z
+        .union([z.boolean(), z.enum(["true", "false"])])
+        .default("true")
+        .transform(value => value === true || value === "true"),
+    WORKER_ID: z.string().trim().min(1).max(180).optional(),
+    WORKER_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
+    WORKER_LEASE_DURATION_MS: z.coerce
+        .number()
+        .int()
+        .min(1_000)
+        .max(15 * 60_000)
+        .default(30_000),
+    WORKER_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(10),
 });
 
 export const cliEnvSchema = z.object({

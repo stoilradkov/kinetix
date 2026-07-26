@@ -11,6 +11,52 @@ export {
     type ApplicationErrorCode,
 } from "#src/platform/application/errors";
 export { ExpectedVersionGuard, assertExpectedVersion } from "#src/platform/application/expected-version";
+export type { Clock } from "#src/platform/domain/clock";
+export {
+    HANDLER_RECEIPTS,
+    JOB_LEASE_STORE,
+    JOB_QUEUE,
+    JOB_STATUS_READER,
+    OUTBOX_LEASE_STORE,
+    OUTBOX_WRITER,
+    SCHEDULER_LOCK,
+    EnqueueJobFromEventHandler,
+    HandlerRegistry,
+    JobHandlerRegistry,
+    NonRetryableWorkError,
+    OutboxHandlerRegistry,
+    RetryPolicy,
+    RetryableWorkError,
+    ScheduledJob,
+    isLeaseExpired,
+    leaseExpiresAt,
+    workName,
+    type AdvisorySchedulerLock,
+    type ClaimedJob,
+    type ClaimedOutboxEvent,
+    type ClaimWorkInput,
+    type EnqueueJob,
+    type HandlerReceiptStore,
+    type JobHandler,
+    type JobHandlerContext,
+    type JobLeaseStore,
+    type JobProgress,
+    type JobQueue,
+    type JobState,
+    type JobStatus,
+    type JobStatusReader,
+    type OutboxEventState,
+    type OutboxHandler,
+    type OutboxHandlerContext,
+    type OutboxLeaseStore,
+    type OutboxWriter,
+    type QueuedJob,
+    type RetryPolicyOptions,
+    type WorkError,
+    type WorkFailureInput,
+    type WorkItemKind,
+    type WorkLease,
+} from "#src/platform/application/durable-work";
 export {
     IDEMPOTENCY_REPOSITORY,
     IDEMPOTENT_COMMAND_EXECUTOR,
@@ -25,6 +71,13 @@ export {
 export type { KinetixModuleDefinition } from "#src/platform/application/module-definition";
 export { canonicalizeRequest, hashRequest } from "#src/platform/application/request-hash";
 export { UNIT_OF_WORK, type UnitOfWork } from "#src/platform/application/unit-of-work";
+export {
+    JobWorker,
+    OutboxDispatcher,
+    classifyWorkFailure,
+    type FailureClassification,
+    type WorkerOptions,
+} from "#src/platform/application/workers";
 export {
     MigratingSnapshotSerializer,
     REVISION_STORE,

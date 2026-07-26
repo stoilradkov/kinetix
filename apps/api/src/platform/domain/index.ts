@@ -1,4 +1,5 @@
 export type { Clock } from "#src/platform/domain/clock";
+export { DomainEvent, type DomainEventInput, type DomainEventValue } from "#src/platform/domain/domain-event";
 export {
     DomainError,
     DomainNotFoundError,

@@ -68,4 +68,69 @@ describe("kin", () => {
             ),
         ).toBe(5);
     });
+
+    it("polls a durable job until it succeeds", async () => {
+        const output = vi.fn();
+        const request = vi
+            .fn()
+            .mockResolvedValueOnce(Response.json(jobResource("running")))
+            .mockResolvedValueOnce(Response.json(jobResource("succeeded")));
+        const sleep = vi.fn(async () => undefined);
+        const program = createProgram({ fetch: request, output, sleep, now: () => 0 });
+
+        await program.parseAsync([
+            "node",
+            "kin",
+            "jobs",
+            "status",
+            "0198a4db-d8da-7000-8000-000000000001",
+            "--wait",
+            "--json",
+        ]);
+
+        expect(request).toHaveBeenCalledTimes(2);
+        expect(sleep).toHaveBeenCalledWith(1_000);
+        expect(output).toHaveBeenCalledWith(JSON.stringify(jobResource("succeeded")));
+    });
+
+    it("maps a terminal durable job to the JOB_FAILED exit code", async () => {
+        const program = createProgram({
+            fetch: vi.fn(async () => Response.json(jobResource("failed"))),
+            output: vi.fn(),
+        });
+
+        const error = await program
+            .parseAsync(["node", "kin", "jobs", "status", "0198a4db-d8da-7000-8000-000000000001"])
+            .catch((failure: unknown) => failure);
+
+        expect(error).toBeInstanceOf(CliApiError);
+        expect(cliExitCode(error)).toBe(6);
+    });
 });
+
+function jobResource(state: "running" | "succeeded" | "failed") {
+    return {
+        id: "0198a4db-d8da-7000-8000-000000000001",
+        type: "training.analytics.recalculate",
+        version: 1,
+        state,
+        attempts: 1,
+        maxAttempts: 5,
+        progress: state === "succeeded" ? { completed: 1, total: 1, percentage: 100 } : null,
+        error:
+            state === "failed"
+                ? {
+                      code: "INVALID_INPUT",
+                      message: "The recalculation input is no longer valid",
+                      retryable: false,
+                      failedAt: "2026-07-26T12:00:02.000Z",
+                  }
+                : null,
+        correlationId: "request-1",
+        createdAt: "2026-07-26T12:00:00.000Z",
+        startedAt: "2026-07-26T12:00:01.000Z",
+        nextAttemptAt: "2026-07-26T12:00:00.000Z",
+        completedAt: state === "running" ? null : "2026-07-26T12:00:02.000Z",
+        updatedAt: "2026-07-26T12:00:02.000Z",
+    };
+}

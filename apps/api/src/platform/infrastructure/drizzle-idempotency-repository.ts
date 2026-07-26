@@ -1,9 +1,9 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { and, eq } from "drizzle-orm";
 
 import { idempotencyRecords, type Database, type IdempotencyRecordRow } from "@kinetix/db";
 
-import type { DatabaseService } from "#src/database/database.service";
+import { DatabaseService } from "#src/database/database.service";
 import type {
     IdempotencyAcquisition,
     IdempotencyRepository,
@@ -12,7 +12,7 @@ import type {
 
 @Injectable()
 export class DrizzleIdempotencyRepository implements IdempotencyRepository {
-    constructor(private readonly database: DatabaseService) {}
+    constructor(@Inject(DatabaseService) private readonly database: DatabaseService) {}
 
     async acquire(
         input: {

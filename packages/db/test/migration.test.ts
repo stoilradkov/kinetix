@@ -37,4 +37,17 @@ describe("initial module migration", () => {
         expect(migration).toContain('CREATE UNIQUE INDEX "idempotency_records_operation_key_unique"');
         expect(migration).toContain('"idempotency_records_state_valid"');
     });
+
+    it("creates leased jobs, a transactional outbox, and idempotent handler receipts", () => {
+        expect(migration).toContain('CREATE TABLE "jobs"');
+        expect(migration).toContain('CREATE TABLE "outbox_events"');
+        expect(migration).toContain('CREATE TABLE "work_handler_receipts"');
+        expect(migration).toContain('"lease_owner" text');
+        expect(migration).toContain('"lease_expires_at" timestamp with time zone');
+        expect(migration).toContain('"heartbeat_at" timestamp with time zone');
+        expect(migration).toContain('CREATE INDEX "jobs_due_idx"');
+        expect(migration).toContain('CREATE INDEX "outbox_events_due_idx"');
+        expect(migration).toContain('CREATE UNIQUE INDEX "jobs_type_idempotency_unique"');
+        expect(migration).toContain('CONSTRAINT "work_handler_receipts_pk" PRIMARY KEY');
+    });
 });

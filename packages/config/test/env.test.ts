@@ -10,6 +10,8 @@ describe("environment parsing", () => {
 
         expect(config.PORT).toBe(3000);
         expect(config.CORS_ORIGINS).toEqual(["http://localhost:5173"]);
+        expect(config.WORKERS_ENABLED).toBe(true);
+        expect(config.WORKER_LEASE_DURATION_MS).toBe(30_000);
     });
 
     it("provides the local CLI API URL", () => {

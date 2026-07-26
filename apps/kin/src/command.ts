@@ -2,21 +2,33 @@ import chalk from "chalk";
 import { Command } from "commander";
 
 import { parseCliEnv } from "@kinetix/config";
-import { healthResponseSchema, restoreRevisionResponseSchema, revisionHistoryResponseSchema } from "@kinetix/types";
+import {
+    healthResponseSchema,
+    jobResourceSchema,
+    restoreRevisionResponseSchema,
+    revisionHistoryResponseSchema,
+    type JobResource,
+} from "@kinetix/types";
 
-import { apiErrorFrom } from "#src/api-error";
+import { apiErrorFrom, CliApiError } from "#src/api-error";
 
 interface ProgramDependencies {
     fetch: typeof globalThis.fetch;
     output: (message: string) => void;
+    sleep?: (milliseconds: number) => Promise<void>;
+    now?: () => number;
 }
 
-const defaults: ProgramDependencies = {
+const defaults: Required<ProgramDependencies> = {
     fetch: globalThis.fetch,
     output: console.log,
+    sleep: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+    now: Date.now,
 };
 
 export function createProgram(dependencies: ProgramDependencies = defaults): Command {
+    const sleep = dependencies.sleep ?? defaults.sleep;
+    const now = dependencies.now ?? defaults.now;
     const program = new Command();
 
     program
@@ -50,6 +62,51 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
             const health = healthResponseSchema.parse(await response.json());
             dependencies.output(`${chalk.green("●")} ${health.service} is ${health.status}`);
         });
+
+    const jobs = program.command("jobs").description("Inspect durable background work");
+
+    jobs.command("status")
+        .description("Get a job status, optionally waiting for a terminal result")
+        .argument("<job-id>", "Durable job UUID")
+        .option("--wait", "Poll until the job succeeds or fails")
+        .option("--timeout <seconds>", "Maximum wait time in seconds", parsePositiveNumber, 300)
+        .option("--poll-interval <milliseconds>", "Polling interval", parsePositiveInteger, 1_000)
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                jobId: string,
+                options: {
+                    wait?: boolean;
+                    timeout: number;
+                    pollInterval: number;
+                    apiUrl?: string;
+                    json?: boolean;
+                },
+            ) => {
+                const deadline = now() + options.timeout * 1_000;
+                let job: JobResource | null = null;
+                while (job === null || (options.wait === true && job.state !== "succeeded" && job.state !== "failed")) {
+                    const response = await dependencies.fetch(
+                        `${resolveApiUrl(options.apiUrl)}/jobs/${encodeURIComponent(jobId)}`,
+                    );
+                    if (!response.ok) throw await apiErrorFrom(response);
+                    job = jobResourceSchema.parse(await response.json());
+                    if (!options.wait || job.state === "succeeded" || job.state === "failed") break;
+                    if (now() >= deadline) throw new Error(`Timed out waiting for job ${jobId}`);
+                    await sleep(options.pollInterval);
+                }
+
+                if (job.state === "failed")
+                    throw new CliApiError({
+                        code: "JOB_FAILED",
+                        message: job.error?.message ?? `Job ${job.id} failed`,
+                        correlationId: job.correlationId,
+                    });
+                if (options.json) dependencies.output(JSON.stringify(job));
+                else dependencies.output(formatJob(job));
+            },
+        );
 
     const training = program.command("training").description("Manage Training data");
     const history = training.command("history").description("Inspect and restore aggregate history");
@@ -147,4 +204,17 @@ function parsePositiveInteger(value: string): number {
     const parsed = Number(value);
     if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error("Value must be a positive integer");
     return parsed;
+}
+
+function parsePositiveNumber(value: string): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) throw new Error("Value must be a positive number");
+    return parsed;
+}
+
+function formatJob(job: JobResource): string {
+    const progress = job.progress
+        ? ` ${job.progress.completed}${job.progress.total === undefined ? "" : `/${job.progress.total}`}`
+        : "";
+    return `${job.state}\t${job.id}${progress}`;
 }

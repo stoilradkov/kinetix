@@ -1,15 +1,15 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { and, desc, eq, lt } from "drizzle-orm";
 
 import { entityRevisions, type Database, type EntityRevisionRow } from "@kinetix/db";
 
-import type { DatabaseService } from "#src/database/database.service";
+import { DatabaseService } from "#src/database/database.service";
 import type { EntityRevision, RevisionPage, RevisionStore } from "#src/platform/application/index";
 import { entityId } from "#src/platform/domain/index";
 
 @Injectable()
 export class DrizzleRevisionStore implements RevisionStore {
-    constructor(private readonly database: DatabaseService) {}
+    constructor(@Inject(DatabaseService) private readonly database: DatabaseService) {}
 
     async append(revision: EntityRevision, transaction: unknown): Promise<void> {
         await this.executor(transaction).insert(entityRevisions).values({

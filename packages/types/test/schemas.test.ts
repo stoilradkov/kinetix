@@ -4,6 +4,7 @@ import {
     apiErrorSchema,
     distanceSchema,
     durationSchema,
+    jobResourceSchema,
     massSchema,
     paceSchema,
     restoreRevisionRequestSchema,
@@ -95,6 +96,30 @@ describe("API error schemas", () => {
                 fieldErrors: { name: ["Name is required"] },
             }),
         ).toMatchObject({ fieldErrors: { name: ["Name is required"] } });
+    });
+});
+
+describe("job resource schemas", () => {
+    it("accepts safe status resources and rejects queue payloads", () => {
+        const resource = {
+            id: "0198a4db-d8da-7000-8000-000000000001",
+            type: "training.analytics.recalculate",
+            version: 1,
+            state: "running",
+            attempts: 1,
+            maxAttempts: 5,
+            progress: { completed: 2, total: 4, percentage: 50 },
+            error: null,
+            correlationId: "request-1",
+            createdAt: "2026-07-26T12:00:00.000Z",
+            startedAt: "2026-07-26T12:00:01.000Z",
+            nextAttemptAt: "2026-07-26T12:00:00.000Z",
+            completedAt: null,
+            updatedAt: "2026-07-26T12:00:02.000Z",
+        };
+
+        expect(jobResourceSchema.parse(resource)).toEqual(resource);
+        expect(jobResourceSchema.safeParse({ ...resource, payload: { secret: true } }).success).toBe(false);
     });
 });
 
