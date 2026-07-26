@@ -14,12 +14,21 @@ import {
 } from "@kinetix/db";
 
 import type { DatabaseService } from "#src/database/database.service";
-import { SeedTrainingCatalog, TrainingCatalogQueries } from "#src/modules/training/application/index";
-import type { TrainingCatalogSeed } from "#src/modules/training/domain/index";
+import {
+    ExerciseAliasConflictError,
+    SeedTrainingCatalog,
+    TrainingCatalogQueries,
+} from "#src/modules/training/application/index";
+import {
+    ExerciseDefinition,
+    normalizeCatalogValue,
+    type TrainingCatalogSeed,
+} from "#src/modules/training/domain/index";
 import { DrizzleTrainingCatalogRepository } from "#src/modules/training/infrastructure/drizzle-training-catalog-repository";
 import { trainingCatalogSeed } from "#src/modules/training/infrastructure/seed/training-catalog";
 import { TrainingCatalogController } from "#src/modules/training/presentation/index";
 import type { UnitOfWork } from "#src/platform/application/index";
+import { entityId } from "#src/platform/domain/index";
 
 const testDatabaseUrl = process.env.CATALOG_TEST_DATABASE_URL;
 
@@ -33,6 +42,7 @@ describe.runIf(testDatabaseUrl)("Training catalog PostgreSQL persistence", () =>
         new SeedTrainingCatalog(unitOfWork, repository, seed, {
             now: () => new Date("2026-07-26T12:00:00.000Z"),
         });
+    const usedExerciseIds: string[] = [];
 
     beforeAll(async () => {
         await connection.db.select({ id: muscleGroups.id }).from(muscleGroups).limit(1);
@@ -138,7 +148,88 @@ describe.runIf(testDatabaseUrl)("Training catalog PostgreSQL persistence", () =>
         expect((await repository.listExercises()).some(item => item.slug === "side-plank")).toBe(false);
     });
 
+    it("persists editable aggregate trees, aliases, relationships, and lifecycle state", async () => {
+        await useCase().execute();
+        const [equipment] = await repository.listEquipment();
+        const [movement] = await repository.listMovementPatterns();
+        const [muscle] = await repository.listMuscles();
+        const [tag] = await repository.listTags();
+        const [target] = await repository.listExercises();
+        if (!equipment || !movement || !muscle || !tag || !target) throw new Error("Seed catalog is incomplete");
+
+        const id = entityId(randomUUID());
+        usedExerciseIds.push(id);
+        const definition = ExerciseDefinition.create(
+            {
+                id,
+                slug: `custom-${id}`,
+                name: "My Test Exercise",
+                aliases: ["Case Folded Alias"],
+                equipmentTypeId: equipment.id,
+                movementPatternId: movement.id,
+                classification: "compound",
+                laterality: "bilateral",
+                bodyPosition: "standing",
+                repetitionSemantics: "total",
+                loadModel: "external_only",
+                supportedMeasurements: ["repetitions", "external_load"],
+                muscles: [{ muscleGroupId: muscle.id, role: "primary" }],
+                tagIds: [tag.id],
+                relationships: [{ targetExerciseId: target.id, type: "variation" }],
+                notes: "integration",
+            },
+            new Date("2026-07-26T12:00:00.000Z"),
+        );
+
+        await connection.db.transaction(transaction =>
+            repository.create("training.exercise", id, definition.state, 1, transaction),
+        );
+        await expect(repository.readExercise(id)).resolves.toMatchObject({
+            aliases: ["Case Folded Alias"],
+            relationships: [{ targetExerciseId: target.id, type: "variation" }],
+            muscles: [{ muscle: { id: muscle.id }, role: "primary" }],
+            tags: [{ id: tag.id }],
+        });
+        await expect(repository.resolveAlias(normalizeCatalogValue(" CASE FOLDED ALIAS "))).resolves.toMatchObject({
+            id,
+        });
+
+        const conflictingId = entityId(randomUUID());
+        usedExerciseIds.push(conflictingId);
+        const conflicting = ExerciseDefinition.create(
+            {
+                ...definition.state,
+                id: conflictingId,
+                slug: `conflicting-${conflictingId}`,
+                name: "Another Exercise",
+                aliases: ["case folded alias"],
+                ownership: "user",
+                forkedFromExerciseId: null,
+            },
+            new Date("2026-07-26T12:00:00.000Z"),
+        );
+        await expect(
+            connection.db.transaction(transaction =>
+                repository.create("training.exercise", conflictingId, conflicting.state, 1, transaction),
+            ),
+        ).rejects.toBeInstanceOf(ExerciseAliasConflictError);
+
+        definition.archive(new Date("2026-07-27T12:00:00.000Z"));
+        await connection.db.transaction(transaction =>
+            repository.save("training.exercise", id, definition.state, 1, 2, transaction),
+        );
+        await expect(repository.resolveAlias(normalizeCatalogValue("case folded alias"))).resolves.toBeNull();
+        await expect(repository.readExercise(id)).resolves.toMatchObject({ status: "archived", version: 2 });
+
+        definition.restore(new Date("2026-07-28T12:00:00.000Z"));
+        await connection.db.transaction(transaction =>
+            repository.save("training.exercise", id, definition.state, 2, 3, transaction),
+        );
+        await expect(repository.readExercise(id)).resolves.toMatchObject({ status: "active", version: 3 });
+    });
+
     async function cleanCatalog(): Promise<void> {
+        for (const id of usedExerciseIds.splice(0)) await connection.db.delete(exercises).where(eq(exercises.id, id));
         await connection.db.delete(exercises).where(
             inArray(
                 exercises.slug,

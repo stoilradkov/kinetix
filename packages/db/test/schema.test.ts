@@ -27,5 +27,6 @@ describe("database schema boundaries", () => {
         expect(getTableName(schema.exerciseAliases)).toBe("exercise_aliases");
         expect(getTableName(schema.exerciseMuscles)).toBe("exercise_muscles");
         expect(getTableName(schema.exerciseTags)).toBe("exercise_tags");
+        expect(getTableName(schema.exerciseRelationships)).toBe("exercise_relationships");
     });
 });

@@ -43,6 +43,13 @@
             "when": 1785076886786,
             "tag": "0005_mushy_annihilus",
             "breakpoints": true
+        },
+        {
+            "idx": 6,
+            "version": "7",
+            "when": 1785078942600,
+            "tag": "0006_volatile_fallen_one",
+            "breakpoints": true
         }
     ]
 }

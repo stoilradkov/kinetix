@@ -130,6 +130,7 @@ export interface ExerciseCatalogItem {
     readonly aliases: readonly string[];
     readonly status: "active" | "archived";
     readonly ownership: "seeded" | "user";
+    readonly forkedFromExerciseId?: string | null;
     readonly equipment: ExtensibleCatalogItem;
     readonly movementPattern: ExtensibleCatalogItem;
     readonly classification: "compound" | "isolation";
@@ -151,9 +152,16 @@ export interface ExerciseCatalogItem {
     )[];
     readonly muscles: readonly { readonly muscle: MuscleCatalogItem; readonly role: "primary" | "secondary" }[];
     readonly tags: readonly TagCatalogItem[];
+    readonly relationships?: readonly {
+        readonly targetExerciseId: string;
+        readonly type: "variation" | "progression" | "regression" | "analytics_family";
+    }[];
     readonly notes: string | null;
     readonly version: number;
     readonly position: number;
+    readonly createdAt?: string;
+    readonly updatedAt?: string;
+    readonly archivedAt?: string | null;
 }
 
 export interface TrainingCatalogReader {

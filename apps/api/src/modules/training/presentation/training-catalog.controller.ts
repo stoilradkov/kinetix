@@ -1,8 +1,9 @@
-import { Controller, Get, Inject } from "@nestjs/common";
+import { Controller, Get, HttpException, Inject, Optional, Query } from "@nestjs/common";
 import { ApiOkResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
 
 import {
     equipmentCatalogListResponseSchema,
+    exerciseCatalogListQuerySchema,
     exerciseCatalogListResponseSchema,
     movementPatternCatalogListResponseSchema,
     muscleCatalogListResponseSchema,
@@ -20,11 +21,13 @@ import {
 
 import {
     TRAINING_CATALOG_QUERIES,
+    TRAINING_EXERCISE_CATALOG,
     type ExerciseCatalogItem,
     type ExtensibleCatalogItem,
     type MuscleCatalogItem,
     type TagCatalogItem,
     type TrainingCatalogQueries,
+    type TrainingExerciseCatalogPort,
 } from "#src/modules/training/application/index";
 
 @ApiTags("training catalog")
@@ -33,6 +36,9 @@ export class TrainingCatalogController {
     constructor(
         @Inject(TRAINING_CATALOG_QUERIES)
         private readonly queries: TrainingCatalogQueries,
+        @Optional()
+        @Inject(TRAINING_EXERCISE_CATALOG)
+        private readonly exerciseCatalog?: TrainingExerciseCatalogPort,
     ) {}
 
     @Get("muscles")
@@ -78,10 +84,16 @@ export class TrainingCatalogController {
     @Get("exercises")
     @ApiOperation({ summary: "List exercise definitions with catalog metadata" })
     @ApiOkResponse({ description: "Deterministically ordered active exercise definitions" })
-    async listExercises(): Promise<ExerciseCatalogListResponse> {
+    async listExercises(@Query() rawQuery: Record<string, unknown> = {}): Promise<ExerciseCatalogListResponse> {
+        const parsed = exerciseCatalogListQuerySchema.safeParse(rawQuery);
+        if (!parsed.success) throw contractValidationException("Exercise query validation failed", parsed.error.issues);
+        const page = this.exerciseCatalog
+            ? await this.exerciseCatalog.listExercises(parsed.data)
+            : { items: await this.queries.listExercises(), nextCursor: null };
         return exerciseCatalogListResponseSchema.parse({
             schemaVersion: 1,
-            items: (await this.queries.listExercises()).map(mapExercise),
+            items: page.items.map(mapExercise),
+            nextCursor: page.nextCursor,
         });
     }
 }
@@ -98,10 +110,11 @@ function mapTag(item: TagCatalogItem): TagCatalogItemResponse {
     return { schemaVersion: 1, ...item };
 }
 
-function mapExercise(item: ExerciseCatalogItem): ExerciseCatalogItemResponse {
+export function mapExercise(item: ExerciseCatalogItem): ExerciseCatalogItemResponse {
     return {
         schemaVersion: 1,
         ...item,
+        forkedFromExerciseId: item.forkedFromExerciseId ?? null,
         equipment: mapExtensible(item.equipment),
         movementPattern: mapExtensible(item.movementPattern),
         muscles: item.muscles.map(assignment => ({
@@ -109,7 +122,20 @@ function mapExercise(item: ExerciseCatalogItem): ExerciseCatalogItemResponse {
             role: assignment.role,
         })),
         tags: item.tags.map(mapTag),
+        relationships: [...(item.relationships ?? [])],
         aliases: [...item.aliases],
         supportedMeasurements: [...item.supportedMeasurements],
     };
+}
+
+export function contractValidationException(
+    message: string,
+    issues: readonly { path: readonly PropertyKey[]; message: string }[],
+): HttpException {
+    const fieldErrors: Record<string, string[]> = {};
+    for (const issue of issues) {
+        const path = issue.path.length > 0 ? issue.path.map(String).join(".") : "$";
+        (fieldErrors[path] ??= []).push(issue.message);
+    }
+    return new HttpException({ code: "VALIDATION_FAILED", message, fieldErrors }, 422);
 }

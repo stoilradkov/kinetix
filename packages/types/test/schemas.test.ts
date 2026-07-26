@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
     apiErrorSchema,
+    createExerciseRequestSchema,
     distanceSchema,
     durationSchema,
     exerciseCatalogListResponseSchema,
+    exerciseSnapshotV1Schema,
     jobResourceSchema,
     massSchema,
     paceSchema,
@@ -165,6 +167,70 @@ describe("Training catalog schemas", () => {
             }).success,
         ).toBe(true);
         expect(exerciseCatalogListResponseSchema.safeParse({ items: [] }).success).toBe(false);
+    });
+
+    it("validates editable exercise definitions and versioned snapshots", () => {
+        const input = {
+            slug: "bench-press",
+            name: "Bench Press",
+            aliases: ["Flat Bench"],
+            equipmentTypeId: "0198a4db-d8da-7000-8000-000000000001",
+            movementPatternId: "0198a4db-d8da-7000-8000-000000000002",
+            classification: "compound",
+            laterality: "bilateral",
+            bodyPosition: "supine",
+            repetitionSemantics: "total",
+            loadModel: "external_only",
+            supportedMeasurements: ["repetitions", "external_load"],
+            muscles: [
+                {
+                    muscleGroupId: "0198a4db-d8da-7000-8000-000000000003",
+                    role: "primary",
+                },
+            ],
+            tagIds: [],
+            relationships: [
+                {
+                    targetExerciseId: "0198a4db-d8da-7000-8000-000000000004",
+                    type: "analytics_family",
+                },
+            ],
+            notes: null,
+            position: 0,
+        } as const;
+        expect(createExerciseRequestSchema.safeParse(input).success).toBe(true);
+        expect(
+            createExerciseRequestSchema.safeParse({
+                ...input,
+                aliases: [" BENCH PRESS "],
+            }).success,
+        ).toBe(false);
+        expect(
+            createExerciseRequestSchema.safeParse({
+                ...input,
+                supportedMeasurements: ["repetitions"],
+            }).success,
+        ).toBe(false);
+
+        expect(
+            exerciseSnapshotV1Schema.safeParse({
+                schemaVersion: 1,
+                exerciseId: "0198a4db-d8da-7000-8000-000000000005",
+                exerciseVersion: 2,
+                name: input.name,
+                equipmentTypeId: input.equipmentTypeId,
+                movementPatternId: input.movementPatternId,
+                classification: input.classification,
+                laterality: input.laterality,
+                bodyPosition: input.bodyPosition,
+                repetitionSemantics: input.repetitionSemantics,
+                loadModel: input.loadModel,
+                supportedMeasurements: input.supportedMeasurements,
+                muscles: input.muscles,
+                tagIds: [],
+                analyticsFamilyExerciseIds: [input.relationships[0].targetExerciseId],
+            }).success,
+        ).toBe(true);
     });
 });
 

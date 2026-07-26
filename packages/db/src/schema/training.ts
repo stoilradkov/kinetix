@@ -1,5 +1,6 @@
-import { isNull, sql } from "drizzle-orm";
+import { isNotNull, isNull, sql } from "drizzle-orm";
 import {
+    type AnyPgColumn,
     bigint,
     boolean,
     check,
@@ -113,6 +114,7 @@ export const exercises = pgTable(
         name: text("name").notNull(),
         status: text("status").notNull().default("active"),
         isSeeded: boolean("is_seeded").notNull().default(false),
+        forkedFromExerciseId: uuid("forked_from_exercise_id").references((): AnyPgColumn => exercises.id),
         equipmentTypeId: uuid("equipment_type_id")
             .notNull()
             .references(() => equipmentTypes.id),
@@ -160,6 +162,9 @@ export const exercises = pgTable(
                 OR (${table.status} = 'archived' AND ${table.archivedAt} IS NOT NULL)`,
         ),
         uniqueIndex("exercises_slug_unique").on(table.slug),
+        uniqueIndex("exercises_forked_from_unique")
+            .on(table.forkedFromExerciseId)
+            .where(isNotNull(table.forkedFromExerciseId)),
         index("exercises_active_order_idx").on(table.status, table.position, table.slug),
         index("exercises_equipment_idx").on(table.equipmentTypeId, table.status),
         index("exercises_movement_idx").on(table.movementPatternId, table.status),
@@ -176,13 +181,20 @@ export const exerciseAliases = pgTable(
         alias: text("alias").notNull(),
         normalizedAlias: text("normalized_alias").notNull(),
         source: text("source").notNull(),
+        isActive: boolean("is_active").notNull().default(true),
         createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     },
     table => [
         check("exercise_aliases_alias_valid", sql`length(btrim(${table.alias})) > 0`),
         check("exercise_aliases_normalized_valid", sql`length(btrim(${table.normalizedAlias})) > 0`),
+        check(
+            "exercise_aliases_normalized_matches",
+            sql`${table.normalizedAlias} = lower(regexp_replace(btrim(${table.alias}), '\\s+', ' ', 'g'))`,
+        ),
         check("exercise_aliases_source_valid", sql`${table.source} IN ('seeded', 'user', 'redirect')`),
-        uniqueIndex("exercise_aliases_normalized_unique").on(table.normalizedAlias),
+        uniqueIndex("exercise_aliases_normalized_unique")
+            .on(table.normalizedAlias)
+            .where(sql`${table.isActive}`),
         index("exercise_aliases_exercise_idx").on(table.exerciseId),
     ],
 );
@@ -221,6 +233,33 @@ export const exerciseTags = pgTable(
     ],
 );
 
+export const exerciseRelationships = pgTable(
+    "exercise_relationships",
+    {
+        sourceExerciseId: uuid("source_exercise_id")
+            .notNull()
+            .references(() => exercises.id, { onDelete: "cascade" }),
+        targetExerciseId: uuid("target_exercise_id")
+            .notNull()
+            .references(() => exercises.id),
+        type: text("type").notNull(),
+        archivedAt: timestamp("archived_at", { withTimezone: true }),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        primaryKey({
+            name: "exercise_relationships_pk",
+            columns: [table.sourceExerciseId, table.targetExerciseId, table.type],
+        }),
+        check(
+            "exercise_relationships_type_valid",
+            sql`${table.type} IN ('variation', 'progression', 'regression', 'analytics_family')`,
+        ),
+        check("exercise_relationships_not_self", sql`${table.sourceExerciseId} <> ${table.targetExerciseId}`),
+        index("exercise_relationships_target_type_idx").on(table.targetExerciseId, table.type, table.archivedAt),
+    ],
+);
+
 export type MuscleGroupRow = typeof muscleGroups.$inferSelect;
 export type EquipmentTypeRow = typeof equipmentTypes.$inferSelect;
 export type MovementPatternRow = typeof movementPatterns.$inferSelect;
@@ -228,6 +267,7 @@ export type TrainingTagRow = typeof trainingTags.$inferSelect;
 export type ExerciseRow = typeof exercises.$inferSelect;
 export type ExerciseAliasRow = typeof exerciseAliases.$inferSelect;
 export type ExerciseMuscleRow = typeof exerciseMuscles.$inferSelect;
+export type ExerciseRelationshipRow = typeof exerciseRelationships.$inferSelect;
 
 /** Promoted measurement columns for Training-owned tables. Call per table. */
 export const trainingMeasurementColumns = () => ({

@@ -61,11 +61,15 @@ describe("initial module migration", () => {
             "exercise_aliases",
             "exercise_muscles",
             "exercise_tags",
+            "exercise_relationships",
         ])
             expect(migration).toContain(`CREATE TABLE "${table}"`);
         expect(migration).toContain('CREATE UNIQUE INDEX "muscle_groups_slug_unique"');
         expect(migration).toContain('CREATE UNIQUE INDEX "training_tags_normalized_name_unique"');
         expect(migration).toContain('CREATE UNIQUE INDEX "exercise_aliases_normalized_unique"');
+        expect(migration).toContain('WHERE "exercise_aliases"."is_active"');
+        expect(migration).toContain('CREATE UNIQUE INDEX "exercises_forked_from_unique"');
         expect(migration).toContain('CONSTRAINT "exercise_muscles_pk" PRIMARY KEY');
+        expect(migration).toContain('CONSTRAINT "exercise_relationships_not_self"');
     });
 });

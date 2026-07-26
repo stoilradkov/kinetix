@@ -7,4 +7,5 @@ export const trainingModuleDefinition = {
     cardinality: "one",
 } as const satisfies KinetixModuleDefinition;
 export * from "#src/modules/training/application/catalog";
+export * from "#src/modules/training/application/exercises";
 export * from "#src/modules/training/application/measurement-mapper";
