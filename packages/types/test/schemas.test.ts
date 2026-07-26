@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+    apiErrorSchema,
     distanceSchema,
     durationSchema,
     massSchema,
@@ -72,6 +73,28 @@ describe("revision schemas", () => {
     it("accepts only restore metadata because the target version is in the route", () => {
         expect(restoreRevisionRequestSchema.parse({ reason: " undo " })).toEqual({ reason: "undo" });
         expect(restoreRevisionRequestSchema.safeParse({ version: 1 }).success).toBe(false);
+    });
+});
+
+describe("API error schemas", () => {
+    it("accepts stable version and validation envelopes", () => {
+        expect(
+            apiErrorSchema.parse({
+                code: "VERSION_CONFLICT",
+                message: "Expected version 2, current version 3",
+                correlationId: "request-1",
+                currentVersion: 3,
+                etag: '"3"',
+            }),
+        ).toMatchObject({ code: "VERSION_CONFLICT", currentVersion: 3 });
+        expect(
+            apiErrorSchema.parse({
+                code: "VALIDATION_FAILED",
+                message: "Request validation failed",
+                correlationId: "request-2",
+                fieldErrors: { name: ["Name is required"] },
+            }),
+        ).toMatchObject({ fieldErrors: { name: ["Name is required"] } });
     });
 });
 

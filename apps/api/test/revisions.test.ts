@@ -95,7 +95,11 @@ describe("revision mutation orchestration", () => {
             expect.objectContaining({ version: 1, snapshot: { name: "Base" } }),
             fixture.transaction,
         );
-        expect(fixture.events.publish).toHaveBeenCalledWith(["created"], fixture.transaction);
+        expect(fixture.events.publish).toHaveBeenCalledWith(
+            ["created"],
+            fixture.transaction,
+            expect.objectContaining({ correlationId: "request-1" }),
+        );
     });
 
     it("rejects stale versions before invoking mutation", async () => {
@@ -131,7 +135,11 @@ describe("revision mutation orchestration", () => {
             expect.objectContaining({ version: 2, snapshot: { name: "New" } }),
             fixture.transaction,
         );
-        expect(fixture.events.publish).toHaveBeenCalledWith(["changed"], fixture.transaction);
+        expect(fixture.events.publish).toHaveBeenCalledWith(
+            ["changed"],
+            fixture.transaction,
+            expect.objectContaining({ correlationId: "request-1" }),
+        );
     });
 
     it("restores an old snapshot as a new current revision", async () => {

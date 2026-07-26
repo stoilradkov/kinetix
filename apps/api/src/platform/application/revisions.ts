@@ -7,6 +7,9 @@ import {
     type RevisionSource,
 } from "#src/platform/domain/index";
 
+import { commandContext, type CommandContext } from "#src/platform/application/command-context";
+import { ApplicationNotFoundError, VersionConflictError } from "#src/platform/application/errors";
+import { ExpectedVersionGuard } from "#src/platform/application/expected-version";
 import type { UnitOfWork } from "#src/platform/application/unit-of-work";
 
 export const REVISION_STORE = Symbol("REVISION_STORE");
@@ -127,7 +130,7 @@ export interface CurrentStateStore<State, Transaction = unknown> {
 }
 
 export interface TransactionalEventPublisher<Event, Transaction = unknown> {
-    publish(events: readonly Event[], transaction: Transaction): Promise<void>;
+    publish(events: readonly Event[], transaction: Transaction, context?: CommandContext): Promise<void>;
 }
 
 export interface RevisionMetadata {
@@ -138,33 +141,37 @@ export interface RevisionMetadata {
     correlationId: string;
 }
 
-export class StaleAggregateVersionError extends Error {
+export class StaleAggregateVersionError extends VersionConflictError {
     constructor(
         readonly expected: number,
         readonly actual: number,
     ) {
-        super(`Expected aggregate version ${expected}, but current version is ${actual}`);
+        super(expected, actual);
         this.name = "StaleAggregateVersionError";
     }
 }
 
-export class RevisionNotFoundError extends Error {
+export class RevisionNotFoundError extends ApplicationNotFoundError {
     constructor(
         readonly entityType: string,
         readonly entityId: EntityId,
         readonly version: number,
     ) {
-        super(`Revision ${version} was not found for ${entityType} ${entityId}`);
+        super(`Revision ${version} was not found for ${entityType} ${entityId}`, {
+            entityType,
+            entityId,
+            version,
+        });
         this.name = "RevisionNotFoundError";
     }
 }
 
-export class RevisionAggregateNotFoundError extends Error {
+export class RevisionAggregateNotFoundError extends ApplicationNotFoundError {
     constructor(
         readonly entityType: string,
         readonly entityId: EntityId,
     ) {
-        super(`${entityType} ${entityId} was not found`);
+        super(`${entityType} ${entityId} was not found`, { entityType, entityId });
         this.name = "RevisionAggregateNotFoundError";
     }
 }
@@ -177,6 +184,7 @@ export class RevisionMutationService<State, Event = never, Transaction = unknown
         private readonly serializer: SnapshotSerializer<State>,
         private readonly events: TransactionalEventPublisher<Event, Transaction>,
         private readonly clock: Clock = { now: () => new Date() },
+        private readonly expectedVersions = new ExpectedVersionGuard(),
     ) {}
 
     async create(input: {
@@ -185,14 +193,18 @@ export class RevisionMutationService<State, Event = never, Transaction = unknown
         state: State;
         metadata: RevisionMetadata;
         events?: readonly Event[];
+        transaction?: Transaction;
     }): Promise<{ state: State; version: number }> {
         const version = AggregateVersion.initial().value;
         const revision = this.createRevision(input.entityType, input.entityId, version, input.state, input.metadata);
-        await this.unitOfWork.execute(async transaction => {
+        const context = revisionCommandContext(input.metadata);
+        const create = async (transaction: Transaction) => {
             await this.states.create(input.entityType, input.entityId, input.state, version, transaction);
             await this.revisions.append(revision, transaction);
-            await this.events.publish(input.events ?? [], transaction);
-        });
+            await this.events.publish(input.events ?? [], transaction, context);
+        };
+        if (input.transaction === undefined) await this.unitOfWork.execute(create, context);
+        else await create(input.transaction);
         return { state: input.state, version };
     }
 
@@ -204,8 +216,11 @@ export class RevisionMutationService<State, Event = never, Transaction = unknown
             state: State,
         ) => Promise<{ state: State; events?: readonly Event[] }> | { state: State; events?: readonly Event[] };
         metadata: RevisionMetadata;
+        transaction?: Transaction;
     }): Promise<{ state: State; version: number }> {
-        return this.unitOfWork.execute(transaction => this.mutateInTransaction(input, transaction));
+        const context = revisionCommandContext(input.metadata);
+        if (input.transaction !== undefined) return this.mutateInTransaction(input, input.transaction, context);
+        return this.unitOfWork.execute(transaction => this.mutateInTransaction(input, transaction, context), context);
     }
 
     async restore(input: {
@@ -215,9 +230,12 @@ export class RevisionMutationService<State, Event = never, Transaction = unknown
         restoreVersion: number;
         metadata: Omit<RevisionMetadata, "source">;
         events?: readonly Event[];
+        transaction?: Transaction;
     }): Promise<{ state: State; version: number }> {
         const restoreVersion = AggregateVersion.from(input.restoreVersion).value;
-        return this.unitOfWork.execute(transaction =>
+        const metadata = { ...input.metadata, source: "restore" as const };
+        const context = revisionCommandContext(metadata);
+        const restore = (transaction: Transaction) =>
             this.mutateInTransaction(
                 {
                     entityType: input.entityType,
@@ -240,11 +258,13 @@ export class RevisionMutationService<State, Event = never, Transaction = unknown
                             events: input.events,
                         };
                     },
-                    metadata: { ...input.metadata, source: "restore" },
+                    metadata,
                 },
                 transaction,
-            ),
-        );
+                context,
+            );
+        if (input.transaction !== undefined) return restore(input.transaction);
+        return this.unitOfWork.execute(restore, context);
     }
 
     private async mutateInTransaction(
@@ -258,19 +278,25 @@ export class RevisionMutationService<State, Event = never, Transaction = unknown
             metadata: RevisionMetadata;
         },
         transaction: Transaction,
+        context: CommandContext,
     ): Promise<{ state: State; version: number }> {
         const stored = await this.states.loadForUpdate(input.entityType, input.entityId, transaction);
         if (!stored) throw new RevisionAggregateNotFoundError(input.entityType, input.entityId);
         const current = AggregateVersion.from(stored.version);
-        const expected = AggregateVersion.from(input.expectedVersion);
-        if (!current.equals(expected)) throw new StaleAggregateVersionError(expected.value, current.value);
+        try {
+            this.expectedVersions.verify(input.expectedVersion, current.value);
+        } catch (error) {
+            if (error instanceof VersionConflictError)
+                throw new StaleAggregateVersionError(error.expectedVersion, error.currentVersion);
+            throw error;
+        }
 
         const changed = await input.change(stored.state);
         const next = current.next().value;
         const revision = this.createRevision(input.entityType, input.entityId, next, changed.state, input.metadata);
         await this.states.save(input.entityType, input.entityId, changed.state, current.value, next, transaction);
         await this.revisions.append(revision, transaction);
-        await this.events.publish(changed.events ?? [], transaction);
+        await this.events.publish(changed.events ?? [], transaction, context);
         return { state: changed.state, version: next };
     }
 
@@ -295,6 +321,14 @@ export class RevisionMutationService<State, Event = never, Transaction = unknown
             createdAt: this.clock.now(),
         };
     }
+}
+
+function revisionCommandContext(metadata: RevisionMetadata): CommandContext {
+    return commandContext({
+        correlationId: metadata.correlationId,
+        actorId: metadata.actorId,
+        source: metadata.source,
+    });
 }
 
 function requiredMetadata(value: string, name: string): string {
@@ -358,12 +392,13 @@ export interface RevisionResourceHandler<Resource = unknown> {
         restoreVersion: number;
         expectedVersion: number;
         metadata: Omit<RevisionMetadata, "source">;
+        transaction?: unknown;
     }): Promise<{ version: number; resource: Resource }>;
 }
 
-export class UnsupportedRevisionEntityTypeError extends Error {
+export class UnsupportedRevisionEntityTypeError extends ApplicationNotFoundError {
     constructor(readonly entityType: string) {
-        super(`Revision history is not available for entity type ${entityType}`);
+        super(`Revision history is not available for entity type ${entityType}`, { entityType });
         this.name = "UnsupportedRevisionEntityTypeError";
     }
 }
@@ -392,6 +427,7 @@ export class RevisionResourceRegistry {
             restoreVersion: number;
             expectedVersion: number;
             metadata: Omit<RevisionMetadata, "source">;
+            transaction?: unknown;
         },
     ): Promise<{ version: number; resource: unknown }> {
         return this.get(entityType).restore(input);

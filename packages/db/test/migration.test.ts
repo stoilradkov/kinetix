@@ -29,4 +29,12 @@ describe("initial module migration", () => {
         expect(migration).toContain('"entity_revisions_version_positive"');
         expect(migration).toContain('"version" DESC');
     });
+
+    it("creates expiring operation-scoped idempotency records", () => {
+        expect(migration).toContain('CREATE TABLE "idempotency_records"');
+        expect(migration).toContain('"request_hash" text NOT NULL');
+        expect(migration).toContain('"response_snapshot" jsonb');
+        expect(migration).toContain('CREATE UNIQUE INDEX "idempotency_records_operation_key_unique"');
+        expect(migration).toContain('"idempotency_records_state_valid"');
+    });
 });

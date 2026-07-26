@@ -22,6 +22,13 @@
             "when": 1785067376022,
             "tag": "0002_living_warhawk",
             "breakpoints": true
+        },
+        {
+            "idx": 3,
+            "version": "7",
+            "when": 1785068912665,
+            "tag": "0003_curvy_squirrel_girl",
+            "breakpoints": true
         }
     ]
 }

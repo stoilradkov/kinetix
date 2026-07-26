@@ -1,0 +1,506 @@
+{
+    "id": "d8d994c7-aebe-48cc-a827-bae6147f31c9",
+    "prevId": "ec7e7692-36ae-4b54-8933-0e5e7ee4990d",
+    "version": "7",
+    "dialect": "postgresql",
+    "tables": {
+        "public.entity_revisions": {
+            "name": "entity_revisions",
+            "schema": "",
+            "columns": {
+                "id": {
+                    "name": "id",
+                    "type": "uuid",
+                    "primaryKey": true,
+                    "notNull": true,
+                    "default": "gen_random_uuid()"
+                },
+                "entity_type": {
+                    "name": "entity_type",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "entity_id": {
+                    "name": "entity_id",
+                    "type": "uuid",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "version": {
+                    "name": "version",
+                    "type": "integer",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "schema_version": {
+                    "name": "schema_version",
+                    "type": "integer",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "snapshot": {
+                    "name": "snapshot",
+                    "type": "jsonb",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "source": {
+                    "name": "source",
+                    "type": "revision_source",
+                    "typeSchema": "public",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "actor_id": {
+                    "name": "actor_id",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": false
+                },
+                "reason": {
+                    "name": "reason",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": false
+                },
+                "summary": {
+                    "name": "summary",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "correlation_id": {
+                    "name": "correlation_id",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "created_at": {
+                    "name": "created_at",
+                    "type": "timestamp with time zone",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": "now()"
+                }
+            },
+            "indexes": {
+                "entity_revisions_entity_version_unique": {
+                    "name": "entity_revisions_entity_version_unique",
+                    "columns": [
+                        {
+                            "expression": "entity_type",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        },
+                        {
+                            "expression": "entity_id",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        },
+                        {
+                            "expression": "version",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": true,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                },
+                "entity_revisions_history_idx": {
+                    "name": "entity_revisions_history_idx",
+                    "columns": [
+                        {
+                            "expression": "entity_type",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        },
+                        {
+                            "expression": "entity_id",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        },
+                        {
+                            "expression": "version",
+                            "isExpression": false,
+                            "asc": false,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": false,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                },
+                "entity_revisions_correlation_idx": {
+                    "name": "entity_revisions_correlation_idx",
+                    "columns": [
+                        {
+                            "expression": "correlation_id",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": false,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                }
+            },
+            "foreignKeys": {},
+            "compositePrimaryKeys": {},
+            "uniqueConstraints": {},
+            "policies": {},
+            "checkConstraints": {
+                "entity_revisions_entity_type_nonempty": {
+                    "name": "entity_revisions_entity_type_nonempty",
+                    "value": "length(btrim(\"entity_revisions\".\"entity_type\")) > 0"
+                },
+                "entity_revisions_version_positive": {
+                    "name": "entity_revisions_version_positive",
+                    "value": "\"entity_revisions\".\"version\" > 0"
+                },
+                "entity_revisions_schema_version_positive": {
+                    "name": "entity_revisions_schema_version_positive",
+                    "value": "\"entity_revisions\".\"schema_version\" > 0"
+                },
+                "entity_revisions_reason_valid": {
+                    "name": "entity_revisions_reason_valid",
+                    "value": "\"entity_revisions\".\"reason\" IS NULL OR (length(btrim(\"entity_revisions\".\"reason\")) BETWEEN 1 AND 500)"
+                },
+                "entity_revisions_summary_nonempty": {
+                    "name": "entity_revisions_summary_nonempty",
+                    "value": "length(btrim(\"entity_revisions\".\"summary\")) > 0"
+                },
+                "entity_revisions_correlation_nonempty": {
+                    "name": "entity_revisions_correlation_nonempty",
+                    "value": "length(btrim(\"entity_revisions\".\"correlation_id\")) > 0"
+                }
+            },
+            "isRLSEnabled": false
+        },
+        "public.idempotency_records": {
+            "name": "idempotency_records",
+            "schema": "",
+            "columns": {
+                "id": {
+                    "name": "id",
+                    "type": "uuid",
+                    "primaryKey": true,
+                    "notNull": true,
+                    "default": "gen_random_uuid()"
+                },
+                "operation": {
+                    "name": "operation",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "idempotency_key": {
+                    "name": "idempotency_key",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "request_hash": {
+                    "name": "request_hash",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "status": {
+                    "name": "status",
+                    "type": "idempotency_status",
+                    "typeSchema": "public",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": "'in_progress'"
+                },
+                "response_status": {
+                    "name": "response_status",
+                    "type": "integer",
+                    "primaryKey": false,
+                    "notNull": false
+                },
+                "response_snapshot": {
+                    "name": "response_snapshot",
+                    "type": "jsonb",
+                    "primaryKey": false,
+                    "notNull": false
+                },
+                "response_hash": {
+                    "name": "response_hash",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": false
+                },
+                "correlation_id": {
+                    "name": "correlation_id",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "expires_at": {
+                    "name": "expires_at",
+                    "type": "timestamp with time zone",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "completed_at": {
+                    "name": "completed_at",
+                    "type": "timestamp with time zone",
+                    "primaryKey": false,
+                    "notNull": false
+                },
+                "created_at": {
+                    "name": "created_at",
+                    "type": "timestamp with time zone",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": "now()"
+                },
+                "updated_at": {
+                    "name": "updated_at",
+                    "type": "timestamp with time zone",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": "now()"
+                }
+            },
+            "indexes": {
+                "idempotency_records_operation_key_unique": {
+                    "name": "idempotency_records_operation_key_unique",
+                    "columns": [
+                        {
+                            "expression": "operation",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        },
+                        {
+                            "expression": "idempotency_key",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": true,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                },
+                "idempotency_records_expiry_idx": {
+                    "name": "idempotency_records_expiry_idx",
+                    "columns": [
+                        {
+                            "expression": "expires_at",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": false,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                },
+                "idempotency_records_correlation_idx": {
+                    "name": "idempotency_records_correlation_idx",
+                    "columns": [
+                        {
+                            "expression": "correlation_id",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": false,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                }
+            },
+            "foreignKeys": {},
+            "compositePrimaryKeys": {},
+            "uniqueConstraints": {},
+            "policies": {},
+            "checkConstraints": {
+                "idempotency_records_operation_valid": {
+                    "name": "idempotency_records_operation_valid",
+                    "value": "length(btrim(\"idempotency_records\".\"operation\")) BETWEEN 1 AND 120"
+                },
+                "idempotency_records_key_valid": {
+                    "name": "idempotency_records_key_valid",
+                    "value": "length(btrim(\"idempotency_records\".\"idempotency_key\")) BETWEEN 1 AND 255"
+                },
+                "idempotency_records_request_hash_valid": {
+                    "name": "idempotency_records_request_hash_valid",
+                    "value": "\"idempotency_records\".\"request_hash\" ~ '^[0-9a-f]{64}$'"
+                },
+                "idempotency_records_response_hash_valid": {
+                    "name": "idempotency_records_response_hash_valid",
+                    "value": "\"idempotency_records\".\"response_hash\" IS NULL OR \"idempotency_records\".\"response_hash\" ~ '^[0-9a-f]{64}$'"
+                },
+                "idempotency_records_correlation_valid": {
+                    "name": "idempotency_records_correlation_valid",
+                    "value": "length(btrim(\"idempotency_records\".\"correlation_id\")) BETWEEN 1 AND 128"
+                },
+                "idempotency_records_response_status_valid": {
+                    "name": "idempotency_records_response_status_valid",
+                    "value": "\"idempotency_records\".\"response_status\" IS NULL OR \"idempotency_records\".\"response_status\" BETWEEN 100 AND 599"
+                },
+                "idempotency_records_state_valid": {
+                    "name": "idempotency_records_state_valid",
+                    "value": "(\n                \"idempotency_records\".\"status\" = 'in_progress'\n                AND \"idempotency_records\".\"response_status\" IS NULL\n                AND \"idempotency_records\".\"response_snapshot\" IS NULL\n                AND \"idempotency_records\".\"response_hash\" IS NULL\n                AND \"idempotency_records\".\"completed_at\" IS NULL\n            ) OR (\n                \"idempotency_records\".\"status\" = 'completed'\n                AND \"idempotency_records\".\"response_status\" IS NOT NULL\n                AND \"idempotency_records\".\"response_snapshot\" IS NOT NULL\n                AND \"idempotency_records\".\"response_hash\" IS NOT NULL\n                AND \"idempotency_records\".\"completed_at\" IS NOT NULL\n            )"
+                }
+            },
+            "isRLSEnabled": false
+        },
+        "public.module_instances": {
+            "name": "module_instances",
+            "schema": "",
+            "columns": {
+                "id": {
+                    "name": "id",
+                    "type": "uuid",
+                    "primaryKey": true,
+                    "notNull": true,
+                    "default": "gen_random_uuid()"
+                },
+                "module_type": {
+                    "name": "module_type",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "name": {
+                    "name": "name",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "slug": {
+                    "name": "slug",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "status": {
+                    "name": "status",
+                    "type": "module_instance_status",
+                    "typeSchema": "public",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": "'active'"
+                },
+                "settings": {
+                    "name": "settings",
+                    "type": "jsonb",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": "'{}'::jsonb"
+                },
+                "version": {
+                    "name": "version",
+                    "type": "integer",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": 1
+                },
+                "created_at": {
+                    "name": "created_at",
+                    "type": "timestamp with time zone",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": "now()"
+                },
+                "updated_at": {
+                    "name": "updated_at",
+                    "type": "timestamp with time zone",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": "now()"
+                }
+            },
+            "indexes": {
+                "module_instances_slug_unique": {
+                    "name": "module_instances_slug_unique",
+                    "columns": [
+                        {
+                            "expression": "slug",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": true,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                },
+                "module_instances_type_status_idx": {
+                    "name": "module_instances_type_status_idx",
+                    "columns": [
+                        {
+                            "expression": "module_type",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        },
+                        {
+                            "expression": "status",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": false,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                }
+            },
+            "foreignKeys": {},
+            "compositePrimaryKeys": {},
+            "uniqueConstraints": {},
+            "policies": {},
+            "checkConstraints": {},
+            "isRLSEnabled": false
+        }
+    },
+    "enums": {
+        "public.idempotency_status": {
+            "name": "idempotency_status",
+            "schema": "public",
+            "values": ["in_progress", "completed"]
+        },
+        "public.module_instance_status": {
+            "name": "module_instance_status",
+            "schema": "public",
+            "values": ["active", "disabled", "archived"]
+        },
+        "public.revision_source": {
+            "name": "revision_source",
+            "schema": "public",
+            "values": ["user", "agent", "import", "sync", "system", "restore"]
+        }
+    },
+    "schemas": {},
+    "sequences": {},
+    "roles": {},
+    "policies": {},
+    "views": {},
+    "_meta": {
+        "columns": {},
+        "schemas": {},
+        "tables": {}
+    }
+}

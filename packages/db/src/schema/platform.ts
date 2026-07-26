@@ -3,6 +3,7 @@ import { check, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueI
 
 export const moduleInstanceStatus = pgEnum("module_instance_status", ["active", "disabled", "archived"]);
 export const revisionSource = pgEnum("revision_source", ["user", "agent", "import", "sync", "system", "restore"]);
+export const idempotencyStatus = pgEnum("idempotency_status", ["in_progress", "completed"]);
 
 export const moduleInstances = pgTable(
     "module_instances",
@@ -60,3 +61,58 @@ export const entityRevisions = pgTable(
 
 export type EntityRevisionRow = typeof entityRevisions.$inferSelect;
 export type NewEntityRevisionRow = typeof entityRevisions.$inferInsert;
+
+export const idempotencyRecords = pgTable(
+    "idempotency_records",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        operation: text("operation").notNull(),
+        key: text("idempotency_key").notNull(),
+        requestHash: text("request_hash").notNull(),
+        status: idempotencyStatus("status").notNull().default("in_progress"),
+        responseStatus: integer("response_status"),
+        responseSnapshot: jsonb("response_snapshot"),
+        responseHash: text("response_hash"),
+        correlationId: text("correlation_id").notNull(),
+        expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+        completedAt: timestamp("completed_at", { withTimezone: true }),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("idempotency_records_operation_valid", sql`length(btrim(${table.operation})) BETWEEN 1 AND 120`),
+        check("idempotency_records_key_valid", sql`length(btrim(${table.key})) BETWEEN 1 AND 255`),
+        check("idempotency_records_request_hash_valid", sql`${table.requestHash} ~ '^[0-9a-f]{64}$'`),
+        check(
+            "idempotency_records_response_hash_valid",
+            sql`${table.responseHash} IS NULL OR ${table.responseHash} ~ '^[0-9a-f]{64}$'`,
+        ),
+        check("idempotency_records_correlation_valid", sql`length(btrim(${table.correlationId})) BETWEEN 1 AND 128`),
+        check(
+            "idempotency_records_response_status_valid",
+            sql`${table.responseStatus} IS NULL OR ${table.responseStatus} BETWEEN 100 AND 599`,
+        ),
+        check(
+            "idempotency_records_state_valid",
+            sql`(
+                ${table.status} = 'in_progress'
+                AND ${table.responseStatus} IS NULL
+                AND ${table.responseSnapshot} IS NULL
+                AND ${table.responseHash} IS NULL
+                AND ${table.completedAt} IS NULL
+            ) OR (
+                ${table.status} = 'completed'
+                AND ${table.responseStatus} IS NOT NULL
+                AND ${table.responseSnapshot} IS NOT NULL
+                AND ${table.responseHash} IS NOT NULL
+                AND ${table.completedAt} IS NOT NULL
+            )`,
+        ),
+        uniqueIndex("idempotency_records_operation_key_unique").on(table.operation, table.key),
+        index("idempotency_records_expiry_idx").on(table.expiresAt),
+        index("idempotency_records_correlation_idx").on(table.correlationId),
+    ],
+);
+
+export type IdempotencyRecordRow = typeof idempotencyRecords.$inferSelect;
+export type NewIdempotencyRecordRow = typeof idempotencyRecords.$inferInsert;

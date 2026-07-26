@@ -69,6 +69,56 @@ describe("revision presentation", () => {
             expect.objectContaining({ code: "VERSION_CONFLICT", currentVersion: 3, etag: '"3"' }),
         );
     });
+
+    it("returns the approved 422 validation contract", async () => {
+        const { controller } = createController();
+
+        const error = await controller
+            .restore("program", id, "1", '"3"', "request-2", { reason: "" }, { setHeader: vi.fn() })
+            .catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(HttpException);
+        expect((error as HttpException).getStatus()).toBe(422);
+        expect((error as HttpException).getResponse()).toEqual(
+            expect.objectContaining({
+                code: "VALIDATION_FAILED",
+                fieldErrors: { reason: expect.any(Array) },
+            }),
+        );
+    });
+
+    it("passes retryable restores through the idempotent transaction", async () => {
+        const execute = vi.fn(
+            async (
+                input: { context: { correlationId: string } },
+                command: (transaction: unknown) => Promise<{ status: number; body: unknown }>,
+            ) => ({
+                ...(await command({ id: "idempotency-transaction" })),
+                replayed: true,
+                context: input.context,
+            }),
+        );
+        const { registry, handler } = createController();
+        const controller = new RevisionController(registry, { execute } as never);
+        const response = { setHeader: vi.fn() };
+
+        await expect(
+            controller.restore("program", id, "1", '"3"', "request-2", {}, response, "restore-key-1"),
+        ).resolves.toMatchObject({ version: 4, etag: '"4"' });
+
+        expect(execute).toHaveBeenCalledWith(
+            expect.objectContaining({
+                operation: "revision.restore",
+                key: "restore-key-1",
+                context: expect.objectContaining({ correlationId: "request-2" }),
+            }),
+            expect.any(Function),
+        );
+        expect(handler.restore).toHaveBeenCalledWith(
+            expect.objectContaining({ transaction: { id: "idempotency-transaction" } }),
+        );
+        expect(response.setHeader).toHaveBeenCalledWith("Idempotency-Replayed", "true");
+    });
 });
 
 function createController() {
@@ -96,5 +146,5 @@ function createController() {
         restore: vi.fn(async () => ({ version: 4, resource: { name: "Original" } })),
     } satisfies RevisionResourceHandler;
     registry.register(handler);
-    return { controller: new RevisionController(registry), handler };
+    return { controller: new RevisionController(registry), handler, registry };
 }

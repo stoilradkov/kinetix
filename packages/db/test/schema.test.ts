@@ -7,6 +7,7 @@ describe("database schema boundaries", () => {
     it("exports the platform module instance registry", () => {
         expect(getTableName(schema.moduleInstances)).toBe("module_instances");
         expect(getTableName(schema.entityRevisions)).toBe("entity_revisions");
+        expect(getTableName(schema.idempotencyRecords)).toBe("idempotency_records");
     });
 
     it("does not expose the starter projects schema", () => {
