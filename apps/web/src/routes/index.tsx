@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { Activity, Database, TerminalSquare } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { healthQueryOptions } from "@/lib/api";
 
 export const Route = createFileRoute("/")({
@@ -14,10 +15,10 @@ function HomePage(): React.JSX.Element {
     return (
         <main className="mx-auto max-w-6xl px-6 py-12">
             <div className="max-w-3xl">
-                <div className="text-muted-foreground mb-5 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium">
-                    <span className="size-1.5 rounded-full bg-emerald-500" />
+                <Badge variant="success" className="mb-5">
+                    <span className="bg-success size-1.5 rounded-full" />
                     Production-shaped from day one
-                </div>
+                </Badge>
                 <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">Ship motion, not setup.</h1>
                 <p className="text-muted-foreground mt-5 max-w-2xl text-lg leading-8">
                     kinetix connects a typed NestJS API, PostgreSQL, React, and a real CLI in one fast pnpm workspace.
