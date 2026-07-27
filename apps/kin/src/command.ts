@@ -4,6 +4,9 @@ import { Command } from "commander";
 import { parseCliEnv } from "@kinetix/config";
 import {
     healthResponseSchema,
+    coreProfileResponseSchema,
+    createProfileRequestSchema,
+    updateProfileRequestSchema,
     createExerciseRequestSchema,
     exerciseCatalogItemSchema,
     exerciseCatalogListResponseSchema,
@@ -119,6 +122,8 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
             },
         );
 
+    registerProfileCommands(program, dependencies);
+
     const training = program.command("training").description("Manage Training data");
     registerExerciseCommands(training, dependencies);
     const history = training.command("history").description("Inspect and restore aggregate history");
@@ -203,6 +208,69 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
         );
 
     return program;
+}
+
+function registerProfileCommands(program: Command, dependencies: ProgramDependencies): void {
+    const profile = program.command("profile").description("Manage the core profile");
+
+    profile
+        .command("show")
+        .description("Show the active core profile")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { apiUrl?: string; json?: boolean }) => {
+            const result = coreProfileResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/profile`),
+            );
+            outputProfile(dependencies.output, result, options.json);
+        });
+
+    profile
+        .command("create")
+        .description("Create the single active core profile from inline JSON")
+        .requiredOption("--input <json>", "CreateProfileRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
+            const input = createProfileRequestSchema.parse(parseJsonInput(options.input));
+            const result = coreProfileResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/profile`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                ),
+            );
+            outputProfile(dependencies.output, result, options.json);
+        });
+
+    profile
+        .command("update")
+        .description("Update the active core profile from inline JSON")
+        .requiredOption("--version <version>", "Expected profile version", parsePositiveInteger)
+        .requiredOption("--input <json>", "UpdateProfileRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: {
+                version: number;
+                input: string;
+                idempotencyKey?: string;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const input = updateProfileRequestSchema.parse(parseJsonInput(options.input));
+                const result = coreProfileResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/profile`,
+                        mutationRequest("PATCH", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputProfile(dependencies.output, result, options.json);
+            },
+        );
 }
 
 function registerExerciseCommands(training: Command, dependencies: ProgramDependencies): void {
@@ -623,6 +691,15 @@ function outputExercise(
 ): void {
     if (json) output(JSON.stringify(exercise));
     else output(`${exercise.id}\t${exercise.version}\t${exercise.status}\t${exercise.name}`);
+}
+
+function outputProfile(
+    output: (message: string) => void,
+    profile: ReturnType<typeof coreProfileResponseSchema.parse>,
+    json?: boolean,
+): void {
+    if (json) output(JSON.stringify(profile));
+    else output(`${profile.id}\t${profile.version}\t${profile.status}\t${profile.timeZone}`);
 }
 
 function outputMerge(
