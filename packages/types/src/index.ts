@@ -5,6 +5,7 @@ export * from "#src/jobs";
 export * from "#src/revisions";
 export * from "#src/profile";
 export * from "#src/training-catalog";
+export * from "#src/training-profile";
 
 export const healthResponseSchema = z.object({
     status: z.enum(["ok", "error"]),

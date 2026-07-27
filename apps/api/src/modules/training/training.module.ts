@@ -21,16 +21,27 @@ import {
     SeedTrainingCatalog,
     TrainingExerciseCatalog,
     TrainingCatalogQueries,
+    TRAINING_PROFILE_COMMANDS,
+    TRAINING_PROFILE_MUTATION_SERVICE,
+    TRAINING_PROFILE_REPOSITORY,
+    TRAINING_PROFILE_REVISION_HANDLER,
+    TrainingProfileCommands,
+    TrainingProfileRevisionHandler,
     exerciseDefinitionSerializer,
+    trainingProfileSerializer,
     trainingModuleDefinition,
+    type TrainingProfileRepository,
     type ExerciseRepository,
     type ExerciseMergeRepository,
     type ExerciseReferenceUpdater,
     type TrainingCatalogReader,
     type TrainingCatalogSeedRepository,
 } from "#src/modules/training/application/index";
-import type { ExerciseDefinitionState } from "#src/modules/training/domain/index";
+import type { ExerciseDefinitionState, TrainingProfileState } from "#src/modules/training/domain/index";
+import { PROFILE_READER, ProfileModule, type ProfileReader } from "#src/modules/profile/index";
 import { DrizzleTrainingCatalogRepository } from "#src/modules/training/infrastructure/drizzle-training-catalog-repository";
+import { DrizzleTrainingProfileRepository } from "#src/modules/training/infrastructure/drizzle-training-profile-repository";
+import { TrainingProfileRevisionRegistrar } from "#src/modules/training/infrastructure/training-profile-revision-registrar";
 import {
     DrizzleExerciseMergeRepository,
     DrizzleExerciseReferenceUpdater,
@@ -42,6 +53,7 @@ import {
     ExerciseDefinitionController,
     ExerciseMergeController,
     TrainingCatalogController,
+    TrainingProfileController,
 } from "#src/modules/training/presentation/index";
 import {
     OUTBOX_WRITER,
@@ -57,11 +69,55 @@ import type { DomainEvent } from "#src/platform/domain/index";
 export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
 
 @Module({
-    controllers: [TrainingCatalogController, ExerciseDefinitionController, ExerciseMergeController],
+    imports: [ProfileModule],
+    controllers: [
+        TrainingCatalogController,
+        ExerciseDefinitionController,
+        ExerciseMergeController,
+        TrainingProfileController,
+    ],
     providers: [
         DrizzleTrainingCatalogRepository,
         DrizzleExerciseMergeRepository,
         DrizzleExerciseReferenceUpdater,
+        DrizzleTrainingProfileRepository,
+        { provide: TRAINING_PROFILE_REPOSITORY, useExisting: DrizzleTrainingProfileRepository },
+        {
+            provide: TRAINING_PROFILE_MUTATION_SERVICE,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: TrainingProfileRepository,
+                revisions: RevisionStore,
+                events: OutboxWriter,
+            ) => new RevisionMutationService(unitOfWork, repository, revisions, trainingProfileSerializer, events),
+            inject: [UNIT_OF_WORK, TRAINING_PROFILE_REPOSITORY, REVISION_STORE, OUTBOX_WRITER],
+        },
+        {
+            provide: TRAINING_PROFILE_COMMANDS,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: TrainingProfileRepository,
+                mutations: RevisionMutationService<TrainingProfileState, DomainEvent>,
+                profileReader: ProfileReader,
+            ) =>
+                new TrainingProfileCommands({
+                    unitOfWork,
+                    repository,
+                    mutations,
+                    profileReader,
+                    generateId: randomUUID,
+                }),
+            inject: [UNIT_OF_WORK, TRAINING_PROFILE_REPOSITORY, TRAINING_PROFILE_MUTATION_SERVICE, PROFILE_READER],
+        },
+        {
+            provide: TRAINING_PROFILE_REVISION_HANDLER,
+            useFactory: (
+                mutations: RevisionMutationService<TrainingProfileState, DomainEvent>,
+                revisions: RevisionStore,
+            ) => new TrainingProfileRevisionHandler(mutations, revisions, { now: () => new Date() }, randomUUID),
+            inject: [TRAINING_PROFILE_MUTATION_SERVICE, REVISION_STORE],
+        },
+        TrainingProfileRevisionRegistrar,
         {
             provide: TRAINING_MODULE_DEFINITION,
             useValue: trainingModuleDefinition,
