@@ -5,16 +5,30 @@ import { createFileRoute } from "@tanstack/react-router";
 import { LoaderCircle, Pencil, Plus } from "lucide-react";
 
 import { CoreProfileForm } from "@/components/profile/core-profile-form";
+import { TrainingProfileForm } from "@/components/profile/training-profile-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { createProfile, profileQueryOptions, updateProfile } from "@/lib/api";
+import {
+    createProfile,
+    createTrainingProfile,
+    profileQueryOptions,
+    trainingProfileQueryOptions,
+    updateProfile,
+    updateTrainingProfile,
+} from "@/lib/api";
 import {
     profileCreateInput,
     profileFormDefaults,
     profileUpdateInput,
     type ProfileFormValues,
 } from "@/lib/profile-form";
+import {
+    trainingProfileCreateInput,
+    trainingProfileFormDefaults,
+    trainingProfileUpdateInput,
+    type TrainingProfileFormValues,
+} from "@/lib/training-profile-form";
 
 export const Route = createFileRoute("/settings")({
     component: SettingsPage,
@@ -122,6 +136,8 @@ function SettingsPage(): React.JSX.Element {
                 )}
             </div>
 
+            {profile ? <TrainingProfileSection /> : null}
+
             <Dialog
                 onOpenChange={open => {
                     setCreateOpen(open);
@@ -174,6 +190,141 @@ function SettingsPage(): React.JSX.Element {
             </Dialog>
         </main>
     );
+}
+
+function TrainingProfileSection(): React.JSX.Element {
+    const queryClient = useQueryClient();
+    const query = useQuery(trainingProfileQueryOptions);
+    const [editOpen, setEditOpen] = useState(false);
+    const [createOpen, setCreateOpen] = useState(false);
+    const profile = query.data ?? null;
+
+    const refresh = async () => {
+        await queryClient.invalidateQueries({ queryKey: ["training-profile"] });
+    };
+    const createMutation = useMutation({
+        mutationFn: (values: TrainingProfileFormValues) => createTrainingProfile(trainingProfileCreateInput(values)),
+        onSuccess: async () => {
+            setCreateOpen(false);
+            await refresh();
+        },
+    });
+    const saveMutation = useMutation({
+        mutationFn: (values: TrainingProfileFormValues) =>
+            updateTrainingProfile(profile!, trainingProfileUpdateInput(values)),
+        onSuccess: async () => {
+            setEditOpen(false);
+            await refresh();
+        },
+    });
+
+    return (
+        <div className="mt-6">
+            {query.isPending ? (
+                <div className="bg-card text-muted-foreground flex min-h-32 items-center justify-center gap-2 rounded-xl border text-sm">
+                    <LoaderCircle className="size-4 animate-spin" />
+                    Loading training profile…
+                </div>
+            ) : query.isError ? (
+                <div className="bg-destructive/10 text-destructive border-destructive/30 rounded-xl border p-4 text-sm">
+                    {query.error.message}
+                </div>
+            ) : profile ? (
+                <div className="bg-card rounded-xl border p-6">
+                    <div className="flex items-center justify-between gap-3">
+                        <h2 className="text-muted-foreground font-mono text-xs font-semibold tracking-wide uppercase">
+                            Training profile
+                        </h2>
+                        <div className="flex items-center gap-3">
+                            <span className="text-muted-foreground font-mono text-xs tabular-nums">
+                                v{profile.version}
+                            </span>
+                            <Button onClick={() => setEditOpen(true)} size="sm" variant="outline">
+                                <Pencil />
+                                Edit
+                            </Button>
+                        </div>
+                    </div>
+                    <dl className="mt-4 grid grid-cols-2 gap-x-5 gap-y-4 text-sm sm:grid-cols-3">
+                        <Field label="Experience" value={capitalize(profile.experience)} />
+                        <Field label="1RM rep cutoff" value={`${profile.oneRepMaxRepCutoff} reps`} mono />
+                        <Field label="Hard-set RPE" value={`≥ ${profile.hardSetRpeThreshold}`} mono />
+                        <Field label="Hard-set RIR" value={`≤ ${profile.hardSetRirThreshold}`} mono />
+                        <Field label="Calculator" value={`v${profile.calculatorVersion}`} mono />
+                        <Field label="Rules" value={`v${profile.ruleVersion}`} mono />
+                    </dl>
+                </div>
+            ) : (
+                <div className="bg-card grid min-h-32 place-items-center rounded-xl border p-6 text-center">
+                    <div>
+                        <p className="font-medium">No training profile yet</p>
+                        <p className="text-muted-foreground mt-1 text-sm">
+                            Set your experience and analytics defaults.
+                        </p>
+                        <Button className="mt-4" onClick={() => setCreateOpen(true)}>
+                            <Plus />
+                            Create training profile
+                        </Button>
+                    </div>
+                </div>
+            )}
+
+            <Dialog
+                onOpenChange={open => {
+                    setCreateOpen(open);
+                    if (!open) createMutation.reset();
+                }}
+                open={createOpen}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Create training profile</DialogTitle>
+                        <DialogDescription>Set your experience and analytics defaults.</DialogDescription>
+                    </DialogHeader>
+                    <TrainingProfileForm
+                        defaultValues={trainingProfileFormDefaults(null)}
+                        isSubmitting={createMutation.isPending}
+                        onSubmit={async values => {
+                            await createMutation.mutateAsync(values);
+                        }}
+                        submitError={createMutation.error}
+                        submitLabel="Create training profile"
+                    />
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                onOpenChange={open => {
+                    setEditOpen(open);
+                    if (!open) saveMutation.reset();
+                }}
+                open={editOpen}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Edit training profile</DialogTitle>
+                        <DialogDescription>Experience and analytics defaults.</DialogDescription>
+                    </DialogHeader>
+                    {profile ? (
+                        <TrainingProfileForm
+                            defaultValues={trainingProfileFormDefaults(profile)}
+                            isSubmitting={saveMutation.isPending}
+                            key={profile.version}
+                            onSubmit={async values => {
+                                await saveMutation.mutateAsync(values);
+                            }}
+                            submitError={saveMutation.error}
+                            submitLabel="Save training profile"
+                        />
+                    ) : null}
+                </DialogContent>
+            </Dialog>
+        </div>
+    );
+}
+
+function capitalize(value: string): string {
+    return value.length > 0 ? value[0]!.toUpperCase() + value.slice(1) : value;
 }
 
 function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }): React.JSX.Element {

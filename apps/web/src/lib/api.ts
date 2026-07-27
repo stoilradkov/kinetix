@@ -6,6 +6,10 @@ import {
     createProfileRequestSchema,
     updateProfileRequestSchema,
     type CoreProfileResponse,
+    createTrainingProfileRequestSchema,
+    trainingProfileResponseSchema,
+    updateTrainingProfileRequestSchema,
+    type TrainingProfileResponse,
     createExerciseRequestSchema,
     equipmentCatalogListResponseSchema,
     exerciseCatalogItemSchema,
@@ -73,6 +77,45 @@ export async function updateProfile(profile: CoreProfileResponse, input: unknown
             method: "PATCH",
             headers: mutationHeaders(profile.version, crypto.randomUUID()),
             body: JSON.stringify(updateProfileRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export const trainingProfileQueryOptions = queryOptions({
+    queryKey: ["training-profile"],
+    queryFn: async (): Promise<TrainingProfileResponse | null> => {
+        const response = await fetch(`${apiUrl}/training/profile`);
+        if (response.status === 404) return null;
+        const body: unknown = await response.json();
+        if (!response.ok) {
+            const parsed = apiErrorSchema.safeParse(body);
+            throw new Error(
+                parsed.success ? parsed.data.message : `Kinetix API request failed with HTTP ${response.status}`,
+            );
+        }
+        return trainingProfileResponseSchema.parse(body);
+    },
+});
+
+export async function createTrainingProfile(input: unknown): Promise<TrainingProfileResponse> {
+    return trainingProfileResponseSchema.parse(
+        await apiRequest("/training/profile", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(createTrainingProfileRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updateTrainingProfile(
+    profile: TrainingProfileResponse,
+    input: unknown,
+): Promise<TrainingProfileResponse> {
+    return trainingProfileResponseSchema.parse(
+        await apiRequest("/training/profile", {
+            method: "PATCH",
+            headers: mutationHeaders(profile.version, crypto.randomUUID()),
+            body: JSON.stringify(updateTrainingProfileRequestSchema.parse(input)),
         }),
     );
 }
