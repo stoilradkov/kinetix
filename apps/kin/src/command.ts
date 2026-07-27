@@ -7,6 +7,9 @@ import {
     coreProfileResponseSchema,
     createProfileRequestSchema,
     updateProfileRequestSchema,
+    createTrainingProfileRequestSchema,
+    trainingProfileResponseSchema,
+    updateTrainingProfileRequestSchema,
     createExerciseRequestSchema,
     exerciseCatalogItemSchema,
     exerciseCatalogListResponseSchema,
@@ -126,6 +129,7 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
 
     const training = program.command("training").description("Manage Training data");
     registerExerciseCommands(training, dependencies);
+    registerTrainingProfileCommands(training, dependencies);
     const history = training.command("history").description("Inspect and restore aggregate history");
 
     history
@@ -208,6 +212,69 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
         );
 
     return program;
+}
+
+function registerTrainingProfileCommands(training: Command, dependencies: ProgramDependencies): void {
+    const profile = training.command("profile").description("Manage the training profile");
+
+    profile
+        .command("show")
+        .description("Show the active training profile")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { apiUrl?: string; json?: boolean }) => {
+            const result = trainingProfileResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/profile`),
+            );
+            outputTrainingProfile(dependencies.output, result, options.json);
+        });
+
+    profile
+        .command("create")
+        .description("Create the training profile for the active core profile")
+        .requiredOption("--input <json>", "CreateTrainingProfileRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
+            const input = createTrainingProfileRequestSchema.parse(parseJsonInput(options.input));
+            const result = trainingProfileResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/profile`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                ),
+            );
+            outputTrainingProfile(dependencies.output, result, options.json);
+        });
+
+    profile
+        .command("update")
+        .description("Update the active training profile from inline JSON")
+        .requiredOption("--version <version>", "Expected training profile version", parsePositiveInteger)
+        .requiredOption("--input <json>", "UpdateTrainingProfileRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: {
+                version: number;
+                input: string;
+                idempotencyKey?: string;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const input = updateTrainingProfileRequestSchema.parse(parseJsonInput(options.input));
+                const result = trainingProfileResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/profile`,
+                        mutationRequest("PATCH", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputTrainingProfile(dependencies.output, result, options.json);
+            },
+        );
 }
 
 function registerProfileCommands(program: Command, dependencies: ProgramDependencies): void {
@@ -700,6 +767,15 @@ function outputProfile(
 ): void {
     if (json) output(JSON.stringify(profile));
     else output(`${profile.id}\t${profile.version}\t${profile.status}\t${profile.timeZone}`);
+}
+
+function outputTrainingProfile(
+    output: (message: string) => void,
+    profile: ReturnType<typeof trainingProfileResponseSchema.parse>,
+    json?: boolean,
+): void {
+    if (json) output(JSON.stringify(profile));
+    else output(`${profile.id}\t${profile.version}\t${profile.status}\t${profile.experience}`);
 }
 
 function outputMerge(
