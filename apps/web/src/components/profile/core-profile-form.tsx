@@ -78,7 +78,7 @@ export function CoreProfileForm({
                     <UnitField control={form.control} name="length" label="Length" options={lengthOptions} />
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-3">
+                <div className="grid gap-4 sm:grid-cols-2">
                     <FormField
                         control={form.control}
                         name="birthDate"
@@ -88,7 +88,12 @@ export function CoreProfileForm({
                                 <FormControl>
                                     <DateField
                                         onBlur={field.onBlur}
-                                        onValueChange={field.onChange}
+                                        onValueChange={next => {
+                                            field.onChange(next);
+                                            // Validate live once the date is complete (or cleared),
+                                            // without flagging partial input mid-typing.
+                                            if (next === "" || next.length === 10) void form.trigger("birthDate");
+                                        }}
                                         value={field.value}
                                     />
                                 </FormControl>
@@ -121,26 +126,27 @@ export function CoreProfileForm({
                             </FormItem>
                         )}
                     />
-                    <FormField
-                        control={form.control}
-                        name="heightMeters"
-                        render={({ field }) => (
-                            <FormItem>
-                                <FormLabel>Height</FormLabel>
-                                <FormControl>
-                                    <HeightField
-                                        defaultUnit={form.getValues("length") === "in" ? "ft_in" : "cm"}
-                                        onBlur={field.onBlur}
-                                        onValueChange={field.onChange}
-                                        value={field.value}
-                                    />
-                                </FormControl>
-                                <FormDescription>Optional.</FormDescription>
-                                <FormMessage />
-                            </FormItem>
-                        )}
-                    />
                 </div>
+
+                <FormField
+                    control={form.control}
+                    name="heightMeters"
+                    render={({ field }) => (
+                        <FormItem>
+                            <FormLabel>Height</FormLabel>
+                            <FormControl>
+                                <HeightField
+                                    defaultUnit={form.getValues("length") === "in" ? "ft_in" : "cm"}
+                                    onBlur={field.onBlur}
+                                    onValueChange={field.onChange}
+                                    value={field.value}
+                                />
+                            </FormControl>
+                            <FormDescription>Optional.</FormDescription>
+                            <FormMessage />
+                        </FormItem>
+                    )}
+                />
 
                 {submitError ? (
                     <div

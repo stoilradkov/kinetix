@@ -104,7 +104,7 @@ export const HeightField = React.forwardRef<HTMLInputElement, HeightFieldProps>(
             <div className={cn("flex gap-2", className)}>
                 {unit === "ft_in" ? (
                     <>
-                        <div className="relative flex-1">
+                        <div className="relative min-w-0 flex-1">
                             <Input
                                 ref={ref}
                                 autoComplete="off"
@@ -118,7 +118,7 @@ export const HeightField = React.forwardRef<HTMLInputElement, HeightFieldProps>(
                             />
                             <Suffix>ft</Suffix>
                         </div>
-                        <div className="relative flex-1">
+                        <div className="relative min-w-0 flex-1">
                             <Input
                                 autoComplete="off"
                                 className="pr-8"
@@ -132,7 +132,7 @@ export const HeightField = React.forwardRef<HTMLInputElement, HeightFieldProps>(
                         </div>
                     </>
                 ) : (
-                    <div className="relative flex-1">
+                    <div className="relative min-w-0 flex-1">
                         <Input
                             ref={ref}
                             autoComplete="off"
