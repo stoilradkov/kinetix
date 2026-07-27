@@ -2,16 +2,24 @@ import { useState } from "react";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { Archive, ArrowRight, History, Merge, Pencil, Plus, RotateCcw, Search, Unlink } from "lucide-react";
+import {
+    Archive,
+    ArrowRight,
+    ChevronLeft,
+    ChevronRight,
+    History,
+    Link2,
+    Merge,
+    Pencil,
+    Plus,
+    RotateCcw,
+    Search,
+    Unlink,
+} from "lucide-react";
 
-import type {
-    ExerciseCatalogItemResponse,
-    ExerciseMergePreviewResponse,
-    ExerciseMergeResource,
-    ExtensibleCatalogItemResponse,
-    MuscleCatalogItemResponse,
-} from "@kinetix/types";
+import type { ExerciseCatalogItemResponse, ExerciseMergePreviewResponse, ExerciseMergeResource } from "@kinetix/types";
 
+import { ExerciseForm, ExerciseFormLoadState } from "@/components/training/exercise-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,6 +33,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -42,6 +51,13 @@ import {
     revertExerciseMerge,
     updateExercise,
 } from "@/lib/api";
+import {
+    commaValues,
+    exerciseCreateInput,
+    exerciseMetadataInput,
+    type ExerciseFormCatalogs,
+    type ExerciseFormValues,
+} from "@/lib/exercise-form";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/training/exercises")({
@@ -50,22 +66,7 @@ export const Route = createFileRoute("/training/exercises")({
 
 type CatalogStatus = "active" | "archived" | "all";
 
-interface ExerciseDraft {
-    slug: string;
-    name: string;
-    aliases: string;
-    equipmentTypeId: string;
-    movementPatternId: string;
-    classification: "compound" | "isolation";
-    laterality: "bilateral" | "unilateral";
-    bodyPosition: string;
-    repetitionSemantics: "total" | "per_side" | "alternating";
-    loadModel: "external_only" | "full_bodyweight_plus_added_minus_assistance" | "manual_effective_load" | "none";
-    supportedMeasurements: string;
-    primaryMuscleId: string;
-    notes: string;
-    position: string;
-}
+const PAGE_SIZE = 8;
 
 function ExerciseCatalogPage(): React.JSX.Element {
     const queryClient = useQueryClient();
@@ -73,14 +74,24 @@ function ExerciseCatalogPage(): React.JSX.Element {
     const [status, setStatus] = useState<CatalogStatus>("active");
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [createOpen, setCreateOpen] = useState(false);
+    const [detailOpen, setDetailOpen] = useState(false);
+    const [page, setPage] = useState(1);
     const list = useQuery(exerciseListQueryOptions(search, status));
     const allExercises = useQuery(exerciseListQueryOptions("", "all"));
     const formCatalogs = useQuery(exerciseFormCatalogQueryOptions);
     const exercises = list.data?.items ?? [];
-    const visibleSelectedId = exercises.some(exercise => exercise.id === selectedId)
-        ? selectedId
-        : (exercises[0]?.id ?? null);
-    const selected = allExercises.data?.items.find(exercise => exercise.id === visibleSelectedId) ?? null;
+    const selected = allExercises.data?.items.find(exercise => exercise.id === selectedId) ?? null;
+
+    const total = exercises.length;
+    const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const safePage = Math.min(page, pageCount);
+    const start = (safePage - 1) * PAGE_SIZE;
+    const pageItems = exercises.slice(start, start + PAGE_SIZE);
+
+    const resetTo = (next: () => void) => {
+        next();
+        setPage(1);
+    };
 
     const refresh = async () => {
         await queryClient.invalidateQueries({ queryKey: ["training"] });
@@ -94,11 +105,17 @@ function ExerciseCatalogPage(): React.JSX.Element {
         },
     });
     const saveMutation = useMutation({
-        mutationFn: async ({ exercise, draft }: { exercise: ExerciseCatalogItemResponse; draft: ExerciseDraft }) => {
-            let current = await updateExercise(exercise, metadataInput(draft));
-            current = await replaceExerciseAliases(current, commaValues(draft.aliases));
+        mutationFn: async ({
+            exercise,
+            values,
+        }: {
+            exercise: ExerciseCatalogItemResponse;
+            values: ExerciseFormValues;
+        }) => {
+            let current = await updateExercise(exercise, exerciseMetadataInput(values));
+            current = await replaceExerciseAliases(current, commaValues(values.aliases));
             current = await replaceExerciseMuscles(current, [
-                { muscleGroupId: draft.primaryMuscleId, role: "primary" },
+                { muscleGroupId: values.primaryMuscleId, role: "primary" },
             ]);
             return current;
         },
@@ -128,13 +145,11 @@ function ExerciseCatalogPage(): React.JSX.Element {
         mutationFn: revertExerciseMerge,
         onSuccess: refresh,
     });
-    const error = [
-        createMutation.error,
-        saveMutation.error,
-        statusMutation.error,
-        relationshipMutation.error,
-        revertMutation.error,
-    ].find(candidate => candidate instanceof Error);
+    // Create and save errors surface inside their own dialogs (via submitError); only the
+    // inline drawer actions have nowhere else to report, so they bubble up to this banner.
+    const error = [statusMutation.error, relationshipMutation.error, revertMutation.error].find(
+        candidate => candidate instanceof Error,
+    );
 
     return (
         <main className="mx-auto max-w-7xl px-6 py-10">
@@ -158,12 +173,12 @@ function ExerciseCatalogPage(): React.JSX.Element {
                     <Search className="text-muted-foreground pointer-events-none absolute top-2.5 left-3 size-4" />
                     <Input
                         className="pl-9"
-                        onChange={event => setSearch(event.target.value)}
+                        onChange={event => resetTo(() => setSearch(event.target.value))}
                         placeholder="Search names and aliases"
                         value={search}
                     />
                 </div>
-                <Select onValueChange={value => setStatus(value as CatalogStatus)} value={status}>
+                <Select onValueChange={value => resetTo(() => setStatus(value as CatalogStatus))} value={status}>
                     <SelectTrigger className="w-full sm:w-40">
                         <SelectValue />
                     </SelectTrigger>
@@ -181,8 +196,8 @@ function ExerciseCatalogPage(): React.JSX.Element {
                 </div>
             ) : null}
 
-            <div className="mt-6 grid min-h-[36rem] overflow-hidden rounded-xl border lg:grid-cols-[minmax(0,1.05fr)_minmax(24rem,0.95fr)]">
-                <section className="overflow-x-auto border-b lg:border-r lg:border-b-0">
+            <div className="bg-card mt-6 overflow-hidden rounded-xl border">
+                <div className="overflow-x-auto">
                     <Table>
                         <TableHeader>
                             <TableRow>
@@ -192,14 +207,17 @@ function ExerciseCatalogPage(): React.JSX.Element {
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {exercises.map(exercise => (
+                            {pageItems.map(exercise => (
                                 <TableRow
                                     className={cn(
                                         "cursor-pointer",
                                         selected?.id === exercise.id ? "bg-muted" : undefined,
                                     )}
                                     key={exercise.id}
-                                    onClick={() => setSelectedId(exercise.id)}
+                                    onClick={() => {
+                                        setSelectedId(exercise.id);
+                                        setDetailOpen(true);
+                                    }}
                                 >
                                     <TableCell>
                                         <div className="flex items-center gap-2">
@@ -218,7 +236,7 @@ function ExerciseCatalogPage(): React.JSX.Element {
                                     </TableCell>
                                 </TableRow>
                             ))}
-                            {!list.isPending && exercises.length === 0 ? (
+                            {!list.isPending && total === 0 ? (
                                 <TableRow>
                                     <TableCell className="text-muted-foreground h-32 text-center" colSpan={3}>
                                         No exercises match this view.
@@ -227,38 +245,80 @@ function ExerciseCatalogPage(): React.JSX.Element {
                             ) : null}
                         </TableBody>
                     </Table>
-                </section>
-
-                <section className="bg-card p-6">
-                    {selected && formCatalogs.data && allExercises.data ? (
-                        <ExerciseDetail
-                            allExercises={allExercises.data.items}
-                            catalogs={formCatalogs.data}
-                            exercise={selected}
-                            onRelationships={relationships =>
-                                relationshipMutation.mutate({ exercise: selected, relationships })
-                            }
-                            onRevert={merge => revertMutation.mutate(merge)}
-                            onSave={draft => saveMutation.mutate({ exercise: selected, draft })}
-                            onStatus={() => statusMutation.mutate(selected)}
-                            refresh={refresh}
-                        />
-                    ) : (
-                        <div className="grid h-full place-items-center text-center">
-                            <div>
-                                <p className="font-medium">Select an exercise</p>
-                                <p className="text-muted-foreground mt-1 text-sm">
-                                    Its metadata, revisions, relationships, and merge history appear here.
-                                </p>
-                            </div>
-                        </div>
-                    )}
-                </section>
+                </div>
+                <div className="flex items-center justify-between gap-3 border-t px-4 py-3">
+                    <span className="text-muted-foreground font-mono text-xs tabular-nums">
+                        {total === 0 ? "No results" : `${start + 1}–${Math.min(start + PAGE_SIZE, total)} of ${total}`}
+                    </span>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            disabled={safePage <= 1}
+                            onClick={() => setPage(current => Math.max(1, current - 1))}
+                            size="sm"
+                            variant="outline"
+                        >
+                            <ChevronLeft />
+                            Prev
+                        </Button>
+                        <span className="text-muted-foreground font-mono text-xs tabular-nums">
+                            {safePage} / {pageCount}
+                        </span>
+                        <Button
+                            disabled={safePage >= pageCount}
+                            onClick={() => setPage(current => Math.min(pageCount, current + 1))}
+                            size="sm"
+                            variant="outline"
+                        >
+                            Next
+                            <ChevronRight />
+                        </Button>
+                    </div>
+                </div>
             </div>
 
-            <Dialog onOpenChange={setCreateOpen} open={createOpen}>
-                <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
-                    <DialogHeader>
+            <Sheet onOpenChange={setDetailOpen} open={detailOpen}>
+                <SheetContent className="w-full gap-0 p-0 sm:max-w-xl">
+                    <SheetHeader className="sr-only">
+                        <SheetTitle>{selected?.name ?? "Exercise"}</SheetTitle>
+                        <SheetDescription>Exercise definition detail.</SheetDescription>
+                    </SheetHeader>
+                    <div className="min-h-0 flex-1 overflow-y-auto p-6">
+                        {selected && formCatalogs.data && allExercises.data ? (
+                            <ExerciseDetail
+                                allExercises={allExercises.data.items}
+                                catalogs={formCatalogs.data}
+                                exercise={selected}
+                                onRelationships={relationships =>
+                                    relationshipMutation.mutate({ exercise: selected, relationships })
+                                }
+                                onRevert={merge => revertMutation.mutate(merge)}
+                                isSaving={saveMutation.isPending}
+                                onSave={async values => {
+                                    await saveMutation.mutateAsync({ exercise: selected, values });
+                                }}
+                                onStatus={() => statusMutation.mutate(selected)}
+                                clearSaveError={() => saveMutation.reset()}
+                                refresh={refresh}
+                                saveError={saveMutation.error}
+                            />
+                        ) : (
+                            <div className="text-muted-foreground grid min-h-40 place-items-center text-sm">
+                                Loading…
+                            </div>
+                        )}
+                    </div>
+                </SheetContent>
+            </Sheet>
+
+            <Dialog
+                onOpenChange={open => {
+                    setCreateOpen(open);
+                    if (!open) createMutation.reset();
+                }}
+                open={createOpen}
+            >
+                <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+                    <DialogHeader className="border-b p-6">
                         <DialogTitle>Create exercise</DialogTitle>
                         <DialogDescription>
                             Create a user-owned definition with explicit analytics metadata.
@@ -267,10 +327,16 @@ function ExerciseCatalogPage(): React.JSX.Element {
                     {formCatalogs.data ? (
                         <ExerciseForm
                             catalogs={formCatalogs.data}
-                            onSubmit={draft => createMutation.mutate(createInput(draft))}
+                            isSubmitting={createMutation.isPending}
+                            onSubmit={async values => {
+                                await createMutation.mutateAsync(exerciseCreateInput(values));
+                            }}
+                            submitError={createMutation.error}
                             submitLabel="Create exercise"
                         />
-                    ) : null}
+                    ) : (
+                        <ExerciseFormLoadState error={formCatalogs.error} onRetry={() => void formCatalogs.refetch()} />
+                    )}
                 </DialogContent>
             </Dialog>
         </main>
@@ -286,34 +352,46 @@ function ExerciseDetail({
     onRelationships,
     onRevert,
     refresh,
+    isSaving,
+    saveError,
+    clearSaveError,
 }: {
     exercise: ExerciseCatalogItemResponse;
     allExercises: readonly ExerciseCatalogItemResponse[];
     catalogs: ExerciseFormCatalogs;
-    onSave: (draft: ExerciseDraft) => void;
+    isSaving: boolean;
+    onSave: (values: ExerciseFormValues) => Promise<void>;
     onStatus: () => void;
     onRelationships: (relationships: ExerciseCatalogItemResponse["relationships"]) => void;
     onRevert: (merge: ExerciseMergeResource) => void;
     refresh: () => Promise<void>;
+    saveError: Error | null;
+    clearSaveError: () => void;
 }): React.JSX.Element {
     const [editOpen, setEditOpen] = useState(false);
     const [mergeOpen, setMergeOpen] = useState(false);
+    const [relationshipsOpen, setRelationshipsOpen] = useState(false);
     const revisions = useQuery(exerciseRevisionHistoryQueryOptions(exercise.id));
     const merges = useQuery(exerciseMergeHistoryQueryOptions(exercise.id));
+    const names = new Map(allExercises.map(candidate => [candidate.id, candidate.name]));
 
     return (
         <div>
-            <div className="flex items-start justify-between gap-4">
-                <div>
+            {/* Header + actions cluster — all editing lives here, kept apart from the read-only sections below. */}
+            <div className="flex flex-wrap items-start justify-between gap-4 pr-10">
+                <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="text-2xl font-semibold">{exercise.name}</h2>
+                        <h2 className="truncate text-2xl font-semibold">{exercise.name}</h2>
+                        <Badge variant={exercise.status === "active" ? "success" : "secondary"}>
+                            {exercise.status}
+                        </Badge>
                         <Badge variant={exercise.ownership === "seeded" ? "info" : "outline"}>
                             {exercise.ownership}
                         </Badge>
                     </div>
                     <p className="text-muted-foreground mt-1 font-mono text-xs">{exercise.slug}</p>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                     <Button onClick={() => setEditOpen(true)} size="sm" variant="outline">
                         <Pencil />
                         Edit
@@ -324,21 +402,26 @@ function ExerciseDetail({
                             Merge
                         </Button>
                     ) : null}
+                    <Button onClick={onStatus} size="sm" variant="outline">
+                        {exercise.status === "active" ? <Archive /> : <RotateCcw />}
+                        {exercise.status === "active" ? "Archive" : "Restore"}
+                    </Button>
                 </div>
             </div>
 
-            <dl className="mt-6 grid grid-cols-2 gap-x-5 gap-y-4 text-sm">
-                <Metadata label="Equipment" value={exercise.equipment.name} />
-                <Metadata label="Movement" value={exercise.movementPattern.name} />
-                <Metadata label="Classification" value={exercise.classification} />
-                <Metadata label="Laterality" value={exercise.laterality} />
-                <Metadata label="Repetition semantics" value={exercise.repetitionSemantics.replace("_", " ")} />
-                <Metadata label="Body position" value={exercise.bodyPosition} />
-            </dl>
+            <Section title="Overview">
+                <dl className="grid grid-cols-2 gap-x-5 gap-y-4 text-sm">
+                    <Metadata label="Equipment" value={exercise.equipment.name} />
+                    <Metadata label="Movement" value={exercise.movementPattern.name} />
+                    <Metadata label="Classification" value={exercise.classification} />
+                    <Metadata label="Laterality" value={exercise.laterality} />
+                    <Metadata label="Repetition semantics" value={exercise.repetitionSemantics.replace("_", " ")} />
+                    <Metadata label="Body position" value={exercise.bodyPosition} />
+                </dl>
+            </Section>
 
-            <div className="mt-6">
-                <h3 className="text-sm font-semibold">Muscles and measurements</h3>
-                <div className="mt-2 flex flex-wrap gap-2">
+            <Section title="Muscles & measurements">
+                <div className="flex flex-wrap gap-2">
                     {exercise.muscles.map(assignment => (
                         <Badge
                             key={assignment.muscle.id}
@@ -353,80 +436,111 @@ function ExerciseDetail({
                         </Badge>
                     ))}
                 </div>
-            </div>
+            </Section>
 
-            <RelationshipEditor
-                allExercises={allExercises}
-                exercise={exercise}
-                key={`${exercise.id}:${exercise.version}`}
-                onSave={onRelationships}
-            />
+            <Section
+                title="Relationships"
+                aside={
+                    <Button onClick={() => setRelationshipsOpen(true)} size="sm" variant="ghost">
+                        <Link2 />
+                        Edit
+                    </Button>
+                }
+            >
+                {exercise.relationships.length === 0 ? (
+                    <p className="text-muted-foreground text-sm">No related definitions.</p>
+                ) : (
+                    <ul className="divide-y text-sm">
+                        {exercise.relationships.map(relationship => (
+                            <li
+                                className="flex items-center justify-between gap-3 py-2 first:pt-0 last:pb-0"
+                                key={`${relationship.type}:${relationship.targetExerciseId}`}
+                            >
+                                <span className="truncate">
+                                    {names.get(relationship.targetExerciseId) ?? relationship.targetExerciseId}
+                                </span>
+                                <Badge variant="outline">{relationship.type.replaceAll("_", " ")}</Badge>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </Section>
 
-            <section className="mt-7 border-t pt-6">
-                <div className="flex items-center justify-between">
-                    <h3 className="flex items-center gap-2 text-sm font-semibold">
-                        <History className="size-4" />
-                        Definition history
-                    </h3>
-                    <span className="text-muted-foreground font-mono text-xs tabular-nums">v{exercise.version}</span>
-                </div>
-                <div className="mt-3 space-y-2">
-                    {revisions.data?.items.slice(0, 4).map(revision => (
-                        <div className="bg-muted rounded-lg p-3 text-xs" key={revision.version}>
-                            <div className="flex justify-between gap-3">
-                                <span>{revision.summary}</span>
-                                <span className="font-mono tabular-nums">v{revision.version}</span>
-                            </div>
-                            <p className="text-muted-foreground mt-1">{formatDate(revision.createdAt)}</p>
-                        </div>
-                    ))}
-                </div>
-            </section>
-
-            <section className="mt-7 border-t pt-6">
-                <h3 className="flex items-center gap-2 text-sm font-semibold">
-                    <Merge className="size-4" />
-                    Merge history
-                </h3>
-                <div className="mt-3 space-y-2">
-                    {merges.data?.items.map(merge => (
-                        <div className="rounded-lg border p-3 text-xs" key={merge.id}>
-                            <div className="flex items-start justify-between gap-3">
-                                <div>
-                                    <p>
-                                        {merge.mergedExercise.name} <ArrowRight className="mx-1 inline size-3" />{" "}
-                                        {merge.canonicalExercise.name}
-                                    </p>
-                                    <p className="text-muted-foreground mt-1">{formatDate(merge.appliedAt)}</p>
+            <Section
+                title="Definition history"
+                aside={
+                    <span className="text-muted-foreground flex items-center gap-1.5 font-mono text-xs tabular-nums">
+                        <History className="size-3.5" />v{exercise.version}
+                    </span>
+                }
+            >
+                {revisions.data && revisions.data.items.length > 0 ? (
+                    <ul className="divide-y text-sm">
+                        {revisions.data.items.slice(0, 4).map(revision => (
+                            <li className="py-2.5 first:pt-0 last:pb-0" key={revision.version}>
+                                <div className="flex items-baseline justify-between gap-3">
+                                    <span className="font-medium">{revision.summary}</span>
+                                    <span className="text-muted-foreground font-mono text-xs tabular-nums">
+                                        v{revision.version}
+                                    </span>
                                 </div>
-                                <Badge variant={merge.status === "applied" ? "warning" : "secondary"}>
-                                    {merge.status}
-                                </Badge>
-                            </div>
-                            {merge.status === "applied" ? (
-                                <Button className="mt-3" onClick={() => onRevert(merge)} size="sm" variant="outline">
-                                    <Unlink />
-                                    Revert merge
-                                </Button>
-                            ) : null}
-                        </div>
-                    ))}
-                    {merges.data?.items.length === 0 ? (
-                        <p className="text-muted-foreground text-xs">No merge decisions affect this definition.</p>
-                    ) : null}
-                </div>
-            </section>
+                                <p className="text-muted-foreground mt-0.5 text-xs">{formatDate(revision.createdAt)}</p>
+                            </li>
+                        ))}
+                    </ul>
+                ) : (
+                    <p className="text-muted-foreground text-sm">No revisions recorded.</p>
+                )}
+            </Section>
 
-            <div className="mt-7 border-t pt-6">
-                <Button onClick={onStatus} size="sm" variant="outline">
-                    {exercise.status === "active" ? <Archive /> : <RotateCcw />}
-                    {exercise.status === "active" ? "Archive" : "Restore"}
-                </Button>
-            </div>
+            <Section title="Merge history">
+                {merges.data && merges.data.items.length > 0 ? (
+                    <ul className="divide-y text-sm">
+                        {merges.data.items.map(merge => (
+                            <li className="py-3 first:pt-0 last:pb-0" key={merge.id}>
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <p className="flex items-center gap-1.5">
+                                            <span className="truncate">{merge.mergedExercise.name}</span>
+                                            <ArrowRight className="text-muted-foreground size-3 shrink-0" />
+                                            <span className="truncate">{merge.canonicalExercise.name}</span>
+                                        </p>
+                                        <p className="text-muted-foreground mt-0.5 text-xs">
+                                            {formatDate(merge.appliedAt)}
+                                        </p>
+                                    </div>
+                                    <Badge variant={merge.status === "applied" ? "warning" : "secondary"}>
+                                        {merge.status}
+                                    </Badge>
+                                </div>
+                                {merge.status === "applied" ? (
+                                    <Button
+                                        className="mt-2"
+                                        onClick={() => onRevert(merge)}
+                                        size="sm"
+                                        variant="outline"
+                                    >
+                                        <Unlink />
+                                        Revert merge
+                                    </Button>
+                                ) : null}
+                            </li>
+                        ))}
+                    </ul>
+                ) : (
+                    <p className="text-muted-foreground text-sm">No merge decisions affect this definition.</p>
+                )}
+            </Section>
 
-            <Dialog onOpenChange={setEditOpen} open={editOpen}>
-                <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
-                    <DialogHeader>
+            <Dialog
+                onOpenChange={open => {
+                    setEditOpen(open);
+                    if (!open) clearSaveError();
+                }}
+                open={editOpen}
+            >
+                <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+                    <DialogHeader className="border-b p-6">
                         <DialogTitle>Version {exercise.name}</DialogTitle>
                         <DialogDescription>
                             {exercise.ownership === "seeded"
@@ -437,14 +551,28 @@ function ExerciseDetail({
                     <ExerciseForm
                         catalogs={catalogs}
                         exercise={exercise}
-                        onSubmit={draft => {
-                            onSave(draft);
+                        isSubmitting={isSaving}
+                        onSubmit={async values => {
+                            await onSave(values);
                             setEditOpen(false);
                         }}
+                        submitError={saveError}
                         submitLabel="Save new version"
                     />
                 </DialogContent>
             </Dialog>
+
+            <RelationshipsDialog
+                allExercises={allExercises}
+                exercise={exercise}
+                key={`${exercise.id}:${exercise.version}`}
+                onOpenChange={setRelationshipsOpen}
+                onSave={relationships => {
+                    onRelationships(relationships);
+                    setRelationshipsOpen(false);
+                }}
+                open={relationshipsOpen}
+            />
 
             <MergeDialog
                 allExercises={allExercises}
@@ -460,13 +588,17 @@ function ExerciseDetail({
     );
 }
 
-function RelationshipEditor({
+function RelationshipsDialog({
     exercise,
     allExercises,
+    open,
+    onOpenChange,
     onSave,
 }: {
     exercise: ExerciseCatalogItemResponse;
     allExercises: readonly ExerciseCatalogItemResponse[];
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
     onSave: (relationships: ExerciseCatalogItemResponse["relationships"]) => void;
 }): React.JSX.Element {
     const [relationships, setRelationships] = useState([...exercise.relationships]);
@@ -485,62 +617,85 @@ function RelationshipEditor({
     };
 
     return (
-        <section className="mt-7 border-t pt-6">
-            <h3 className="text-sm font-semibold">Relationships</h3>
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                <Select onValueChange={setTargetId} value={targetId}>
-                    <SelectTrigger className="w-full">
-                        <SelectValue placeholder="Target exercise" />
-                    </SelectTrigger>
-                    <SelectContent>
-                        {candidates.map(candidate => (
-                            <SelectItem key={candidate.id} value={candidate.id}>
-                                {candidate.name}
-                            </SelectItem>
+        <Dialog onOpenChange={onOpenChange} open={open}>
+            <DialogContent className="sm:max-w-2xl">
+                <DialogHeader>
+                    <DialogTitle>Edit relationships</DialogTitle>
+                    <DialogDescription>
+                        Link this definition to variations, progressions, or an analytics family.
+                    </DialogDescription>
+                </DialogHeader>
+
+                <div className="flex flex-col gap-2 sm:flex-row">
+                    <Select onValueChange={setTargetId} value={targetId}>
+                        <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Target exercise" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {candidates.map(candidate => (
+                                <SelectItem key={candidate.id} value={candidate.id}>
+                                    {candidate.name}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                    <Select onValueChange={value => setType(value as typeof type)} value={type}>
+                        <SelectTrigger className="w-full sm:w-44">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="variation">Variation</SelectItem>
+                            <SelectItem value="progression">Progression</SelectItem>
+                            <SelectItem value="regression">Regression</SelectItem>
+                            <SelectItem value="analytics_family">Analytics family</SelectItem>
+                        </SelectContent>
+                    </Select>
+                    <Button onClick={add} type="button" variant="outline">
+                        Add
+                    </Button>
+                </div>
+
+                {relationships.length === 0 ? (
+                    <p className="text-muted-foreground text-sm">No related definitions yet.</p>
+                ) : (
+                    <ul className="divide-y rounded-lg border">
+                        {relationships.map((relationship, index) => (
+                            <li
+                                className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+                                key={`${relationship.type}:${relationship.targetExerciseId}`}
+                            >
+                                <span className="truncate">
+                                    {names.get(relationship.targetExerciseId) ?? relationship.targetExerciseId} ·{" "}
+                                    <span className="text-muted-foreground">
+                                        {relationship.type.replaceAll("_", " ")}
+                                    </span>
+                                </span>
+                                <Button
+                                    aria-label="Remove relationship"
+                                    onClick={() =>
+                                        setRelationships(current => current.filter((_, item) => item !== index))
+                                    }
+                                    size="icon"
+                                    type="button"
+                                    variant="ghost"
+                                >
+                                    <Unlink />
+                                </Button>
+                            </li>
                         ))}
-                    </SelectContent>
-                </Select>
-                <Select onValueChange={value => setType(value as typeof type)} value={type}>
-                    <SelectTrigger className="w-full sm:w-44">
-                        <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                        <SelectItem value="variation">Variation</SelectItem>
-                        <SelectItem value="progression">Progression</SelectItem>
-                        <SelectItem value="regression">Regression</SelectItem>
-                        <SelectItem value="analytics_family">Analytics family</SelectItem>
-                    </SelectContent>
-                </Select>
-                <Button onClick={add} size="sm" type="button" variant="outline">
-                    Add
-                </Button>
-            </div>
-            <div className="mt-3 space-y-2">
-                {relationships.map((relationship, index) => (
-                    <div
-                        className="bg-muted flex items-center justify-between rounded-lg p-2 text-xs"
-                        key={`${relationship.type}:${relationship.targetExerciseId}`}
-                    >
-                        <span>
-                            {names.get(relationship.targetExerciseId) ?? relationship.targetExerciseId} ·{" "}
-                            {relationship.type.replaceAll("_", " ")}
-                        </span>
-                        <Button
-                            aria-label="Remove relationship"
-                            onClick={() => setRelationships(current => current.filter((_, item) => item !== index))}
-                            size="icon"
-                            type="button"
-                            variant="ghost"
-                        >
-                            <Unlink />
-                        </Button>
-                    </div>
-                ))}
-            </div>
-            <Button className="mt-3" onClick={() => onSave(relationships)} size="sm" variant="outline">
-                Save relationships
-            </Button>
-        </section>
+                    </ul>
+                )}
+
+                <DialogFooter>
+                    <Button onClick={() => onOpenChange(false)} type="button" variant="outline">
+                        Cancel
+                    </Button>
+                    <Button onClick={() => onSave(relationships)} type="button">
+                        Save relationships
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
     );
 }
 
@@ -686,220 +841,25 @@ function MergeDialog({
     );
 }
 
-function ExerciseForm({
-    catalogs,
-    exercise,
-    submitLabel,
-    onSubmit,
-}: {
-    catalogs: ExerciseFormCatalogs;
-    exercise?: ExerciseCatalogItemResponse;
-    submitLabel: string;
-    onSubmit: (draft: ExerciseDraft) => void;
-}): React.JSX.Element {
-    const [draft, setDraft] = useState(() => draftFrom(exercise, catalogs));
-    const field = <Key extends keyof ExerciseDraft>(key: Key, value: ExerciseDraft[Key]) =>
-        setDraft(current => ({ ...current, [key]: value }));
-
-    return (
-        <form
-            className="grid gap-5"
-            onSubmit={event => {
-                event.preventDefault();
-                onSubmit(draft);
-            }}
-        >
-            <div className="grid gap-4 sm:grid-cols-2">
-                <FormField label="Name">
-                    <Input onChange={event => field("name", event.target.value)} required value={draft.name} />
-                </FormField>
-                <FormField label="Slug">
-                    <Input onChange={event => field("slug", event.target.value)} required value={draft.slug} />
-                </FormField>
-            </div>
-            <FormField label="Aliases" hint="Comma-separated">
-                <Input onChange={event => field("aliases", event.target.value)} value={draft.aliases} />
-            </FormField>
-            <div className="grid gap-4 sm:grid-cols-2">
-                <SelectField
-                    items={catalogs.equipment}
-                    label="Equipment"
-                    onValueChange={value => field("equipmentTypeId", value)}
-                    value={draft.equipmentTypeId}
-                />
-                <SelectField
-                    items={catalogs.movementPatterns}
-                    label="Movement pattern"
-                    onValueChange={value => field("movementPatternId", value)}
-                    value={draft.movementPatternId}
-                />
-            </div>
-            <div className="grid gap-4 sm:grid-cols-3">
-                <EnumField
-                    items={[
-                        ["compound", "Compound"],
-                        ["isolation", "Isolation"],
-                    ]}
-                    label="Classification"
-                    onValueChange={value => field("classification", value as ExerciseDraft["classification"])}
-                    value={draft.classification}
-                />
-                <EnumField
-                    items={[
-                        ["bilateral", "Bilateral"],
-                        ["unilateral", "Unilateral"],
-                    ]}
-                    label="Laterality"
-                    onValueChange={value => field("laterality", value as ExerciseDraft["laterality"])}
-                    value={draft.laterality}
-                />
-                <FormField label="Body position">
-                    <Input
-                        onChange={event => field("bodyPosition", event.target.value)}
-                        required
-                        value={draft.bodyPosition}
-                    />
-                </FormField>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-                <EnumField
-                    items={[
-                        ["total", "Total"],
-                        ["per_side", "Per side"],
-                        ["alternating", "Alternating"],
-                    ]}
-                    label="Repetition semantics"
-                    onValueChange={value => field("repetitionSemantics", value as ExerciseDraft["repetitionSemantics"])}
-                    value={draft.repetitionSemantics}
-                />
-                <EnumField
-                    items={[
-                        ["external_only", "External load"],
-                        ["full_bodyweight_plus_added_minus_assistance", "Bodyweight ± load"],
-                        ["manual_effective_load", "Manual effective load"],
-                        ["none", "No load"],
-                    ]}
-                    label="Load model"
-                    onValueChange={value => field("loadModel", value as ExerciseDraft["loadModel"])}
-                    value={draft.loadModel}
-                />
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-                <SelectField
-                    items={catalogs.muscles}
-                    label="Primary muscle"
-                    onValueChange={value => field("primaryMuscleId", value)}
-                    value={draft.primaryMuscleId}
-                />
-                <FormField label="Measurements" hint="Comma-separated contract values">
-                    <Input
-                        onChange={event => field("supportedMeasurements", event.target.value)}
-                        required
-                        value={draft.supportedMeasurements}
-                    />
-                </FormField>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-[1fr_8rem]">
-                <FormField label="Notes">
-                    <Textarea onChange={event => field("notes", event.target.value)} value={draft.notes} />
-                </FormField>
-                <FormField label="Position">
-                    <Input
-                        min="0"
-                        onChange={event => field("position", event.target.value)}
-                        type="number"
-                        value={draft.position}
-                    />
-                </FormField>
-            </div>
-            <DialogFooter>
-                <Button type="submit">{submitLabel}</Button>
-            </DialogFooter>
-        </form>
-    );
-}
-
-type ExerciseFormCatalogs = {
-    equipment: readonly ExtensibleCatalogItemResponse[];
-    movementPatterns: readonly ExtensibleCatalogItemResponse[];
-    muscles: readonly MuscleCatalogItemResponse[];
-};
-
-function FormField({
-    label,
-    hint,
+function Section({
+    title,
+    aside,
     children,
 }: {
-    label: string;
-    hint?: string;
+    title: string;
+    aside?: React.ReactNode;
     children: React.ReactNode;
 }): React.JSX.Element {
     return (
-        <div className="space-y-2">
-            <div className="flex items-baseline justify-between gap-2">
-                <Label>{label}</Label>
-                {hint ? <span className="text-muted-foreground text-xs">{hint}</span> : null}
+        <section className="mt-6 border-t pt-5">
+            <div className="flex min-h-8 items-center justify-between gap-3">
+                <h3 className="text-muted-foreground font-mono text-xs font-semibold tracking-wide uppercase">
+                    {title}
+                </h3>
+                {aside}
             </div>
-            {children}
-        </div>
-    );
-}
-
-function SelectField({
-    label,
-    items,
-    value,
-    onValueChange,
-}: {
-    label: string;
-    items: readonly { id: string; name: string }[];
-    value: string;
-    onValueChange: (value: string) => void;
-}): React.JSX.Element {
-    return (
-        <FormField label={label}>
-            <Select onValueChange={onValueChange} value={value}>
-                <SelectTrigger className="w-full">
-                    <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                    {items.map(item => (
-                        <SelectItem key={item.id} value={item.id}>
-                            {item.name}
-                        </SelectItem>
-                    ))}
-                </SelectContent>
-            </Select>
-        </FormField>
-    );
-}
-
-function EnumField({
-    label,
-    items,
-    value,
-    onValueChange,
-}: {
-    label: string;
-    items: readonly (readonly [string, string])[];
-    value: string;
-    onValueChange: (value: string) => void;
-}): React.JSX.Element {
-    return (
-        <FormField label={label}>
-            <Select onValueChange={onValueChange} value={value}>
-                <SelectTrigger className="w-full">
-                    <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                    {items.map(([itemValue, label]) => (
-                        <SelectItem key={itemValue} value={itemValue}>
-                            {label}
-                        </SelectItem>
-                    ))}
-                </SelectContent>
-            </Select>
-        </FormField>
+            <div className="mt-3">{children}</div>
+        </section>
     );
 }
 
@@ -914,7 +874,7 @@ function Metadata({ label, value }: { label: string; value: string }): React.JSX
 
 function ImpactCard({ label, lines }: { label: string; lines: readonly string[] }): React.JSX.Element {
     return (
-        <div className="bg-muted rounded-lg p-4">
+        <div className="rounded-lg border p-4">
             <p className="text-muted-foreground text-xs font-medium tracking-wide uppercase">{label}</p>
             {lines.map((line, index) => (
                 <p className={index === 0 ? "mt-2 font-medium" : "text-muted-foreground mt-1 text-xs"} key={line}>
@@ -923,62 +883,6 @@ function ImpactCard({ label, lines }: { label: string; lines: readonly string[] 
             ))}
         </div>
     );
-}
-
-function draftFrom(exercise: ExerciseCatalogItemResponse | undefined, catalogs: ExerciseFormCatalogs): ExerciseDraft {
-    return {
-        slug: exercise?.slug ?? "",
-        name: exercise?.name ?? "",
-        aliases: exercise?.aliases.join(", ") ?? "",
-        equipmentTypeId: exercise?.equipment.id ?? catalogs.equipment[0]?.id ?? "",
-        movementPatternId: exercise?.movementPattern.id ?? catalogs.movementPatterns[0]?.id ?? "",
-        classification: exercise?.classification ?? "compound",
-        laterality: exercise?.laterality ?? "bilateral",
-        bodyPosition: exercise?.bodyPosition ?? "standing",
-        repetitionSemantics: exercise?.repetitionSemantics ?? "total",
-        loadModel: exercise?.loadModel ?? "external_only",
-        supportedMeasurements: exercise?.supportedMeasurements.join(", ") ?? "repetitions, external_load",
-        primaryMuscleId:
-            exercise?.muscles.find(assignment => assignment.role === "primary")?.muscle.id ??
-            catalogs.muscles[0]?.id ??
-            "",
-        notes: exercise?.notes ?? "",
-        position: String(exercise?.position ?? 0),
-    };
-}
-
-function metadataInput(draft: ExerciseDraft) {
-    return {
-        slug: draft.slug.trim(),
-        name: draft.name.trim(),
-        equipmentTypeId: draft.equipmentTypeId,
-        movementPatternId: draft.movementPatternId,
-        classification: draft.classification,
-        laterality: draft.laterality,
-        bodyPosition: draft.bodyPosition.trim(),
-        repetitionSemantics: draft.repetitionSemantics,
-        loadModel: draft.loadModel,
-        supportedMeasurements: commaValues(draft.supportedMeasurements),
-        notes: draft.notes.trim() || null,
-        position: Number(draft.position),
-    };
-}
-
-function createInput(draft: ExerciseDraft) {
-    return {
-        ...metadataInput(draft),
-        aliases: commaValues(draft.aliases),
-        muscles: [{ muscleGroupId: draft.primaryMuscleId, role: "primary" }],
-        tagIds: [],
-        relationships: [],
-    };
-}
-
-function commaValues(value: string): string[] {
-    return value
-        .split(",")
-        .map(item => item.trim())
-        .filter(Boolean);
 }
 
 function formatDate(value: string): string {

@@ -45,6 +45,32 @@ introduce a new visual style — extend this one.
     add them, define those tokens in `src/styles.css` in the same palette rather
     than accepting shadcn defaults.
 
+### Building screens & interactions
+
+- **Compose shadcn components — never hand-roll UI.** Dialogs, drawers (`Sheet`),
+  dropdowns, tables, tabs, etc. come from `src/components/ui/`. If one is missing,
+  add it with the CLI (above); do not build a bespoke equivalent.
+- **Separate viewing from editing.** Detail / read views are read-only. Put every
+  mutating action (create, edit, merge, archive, delete) in a `Dialog` / `Sheet`
+  or a distinct actions cluster — never interleave edit controls (inputs, selects)
+  inside an informational view.
+- **Open a record's detail on demand** — in a `Sheet` (drawer) or `Dialog`
+  triggered from its row / card, not an always-visible side panel.
+- **Scrollable `Dialog` / `Sheet`: pin the header and footer; scroll only the
+  body.** Make the content a bounded flex column (`flex flex-col`, `max-h-[85vh]`
+  or `h-full`, `overflow-hidden`, `p-0`); pad a fixed `DialogHeader` /
+  `SheetHeader`, an inner `flex-1 overflow-y-auto` body, and a fixed
+  `DialogFooter`. Do **not** put `overflow-y-auto` on the panel itself — that makes
+  the background scroll and flicker and hides the close button / footer.
+- **Report a mutation's error where the action happens** — inside its dialog, next
+  to the submit button — not on a global page banner. Reset the error when the
+  dialog closes.
+- **Paginate long lists** (page indicator + prev / next); never render an
+  unbounded table.
+- **Make clickable things feel clickable** — pointer cursor (the `Button` and
+  `SelectTrigger` primitives already set `cursor-pointer`; add it to custom
+  clickable rows) plus a hover state.
+
 ### Data & typography
 
 - Numbers (sets, reps, loads, durations, %) use `font-mono` + `tabular-nums`.
@@ -52,14 +78,15 @@ introduce a new visual style — extend this one.
 
 ### Dark mode
 
-- It is token-driven and already wired (`.dark` class + OS-preference fallback).
+- Light is the default; dark is opt-in via the `.dark` class on `<html>` (the
+  app does not auto-follow the OS). Both palettes are token-driven.
 - **Never** add `dark:` colour overrides. Use the right token and both themes
   work. A component that's correct in light must be correct in dark.
 
 ### Adding a token
 
 Edit `src/styles.css` in three places: `@theme inline` (creates the utility),
-`:root` (light), and both dark blocks (`.dark` + the `@media` fallback).
+`:root` (the light value), and `.dark` (the dark value).
 
 ## Before you finish
 

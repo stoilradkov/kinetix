@@ -140,50 +140,9 @@
     --warning-muted: oklch(0.33 0.06 72);
 }
 
-/* Follow the operating-system preference until an explicit `.light`/`.dark`
- * class opts in to a fixed theme. */
-@media (prefers-color-scheme: dark) {
-    :root:not(.light) {
-        color-scheme: dark;
-
-        --background: oklch(0.16 0 0);
-        --foreground: oklch(0.98 0 0);
-        --card: oklch(0.205 0 0);
-        --card-foreground: oklch(0.98 0 0);
-        --popover: oklch(0.205 0 0);
-        --popover-foreground: oklch(0.98 0 0);
-
-        --primary: oklch(0.8 0.19 150);
-        --primary-foreground: oklch(0.17 0.04 155);
-
-        --secondary: oklch(0.25 0 0);
-        --secondary-foreground: oklch(0.98 0 0);
-        --muted: oklch(0.25 0 0);
-        --muted-foreground: oklch(0.68 0 0);
-        --accent: oklch(0.25 0 0);
-        --accent-foreground: oklch(0.98 0 0);
-
-        --destructive: oklch(0.68 0.19 25);
-        --destructive-foreground: oklch(0.99 0 0);
-
-        --border: oklch(0.29 0 0);
-        --input: oklch(0.34 0 0);
-        --ring: oklch(0.8 0.19 150);
-
-        --success: oklch(0.8 0.19 150);
-        --success-foreground: oklch(0.17 0.04 155);
-        --success-muted: oklch(0.3 0.07 152);
-        --milestone: oklch(0.84 0.16 90);
-        --milestone-foreground: oklch(0.2 0.05 90);
-        --milestone-muted: oklch(0.33 0.07 90);
-        --info: oklch(0.72 0.13 248);
-        --info-foreground: oklch(0.15 0 0);
-        --info-muted: oklch(0.3 0.06 248);
-        --warning: oklch(0.82 0.14 78);
-        --warning-foreground: oklch(0.2 0.04 78);
-        --warning-muted: oklch(0.33 0.06 72);
-    }
-}
+/* Light is the default identity. Dark is opt-in: add the `.dark` class to
+ * <html> (e.g. from a future theme toggle) — the app does not auto-follow the
+ * operating-system preference. */
 
 @layer base {
     * {

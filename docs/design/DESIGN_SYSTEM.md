@@ -91,16 +91,35 @@ theme-aware.
 
 ## Dark mode
 
-Driven entirely by tokens. Dark values are defined in two places in
-`styles.css`:
+Driven entirely by tokens. **Light is the default identity;** the app does not
+auto-follow the OS preference. Dark is opt-in via the `.dark` class on `<html>`
+(e.g. from a future theme toggle), defined once in `styles.css`:
 
-- `.dark { … }` — for an explicit theme class (e.g. a future toggle).
-- `@media (prefers-color-scheme: dark) { :root:not(.light) { … } }` — so dark
-  follows the OS today, until an explicit `.light` / `.dark` class opts in.
+- `.dark { … }` — the dark token values.
 
 **Rule:** never write theme-specific colours in a component. Use a token and
 both themes are handled. If a component looks right in light but wrong in dark,
 the fix is almost always "use the correct token," not a `dark:` override.
+
+## Interaction patterns
+
+Conventions every screen follows (the enforceable list lives in
+[`apps/web/AGENTS.md`](../../apps/web/AGENTS.md)):
+
+- **Compose shadcn components; never hand-roll UI.** Add missing ones with the CLI.
+- **View and edit are separate.** Read views are read-only; edits live in a
+  `Dialog` / `Sheet` or a dedicated actions cluster — no edit controls interleaved
+  with information.
+- **A record's detail opens on demand** in a drawer (`Sheet`) or modal triggered
+  from its row / card, not an always-visible side panel.
+- **Scrollable dialogs / drawers pin their header and footer;** only the body
+  scrolls. The panel is a bounded flex column — never `overflow-y-auto` on the
+  panel itself (that causes the background to scroll/flicker and hides the close
+  button and footer).
+- **Errors surface at the point of action** — inside the dialog, next to the
+  submit button — not on a global page banner.
+- **Long lists are paginated** (page indicator + prev / next).
+- **Clickable elements use a pointer cursor and a hover state.**
 
 ## Extending the system
 
@@ -129,8 +148,7 @@ Add it in **three** spots in `styles.css` so utilities and both themes resolve:
 1. `@theme inline` — map `--color-x: var(--x)` (this creates the `bg-x`/`text-x`
    utilities).
 2. `:root` — the light value.
-3. `.dark` **and** the `@media (prefers-color-scheme: dark)` block — the dark
-   value (keep the two dark blocks in sync).
+3. `.dark` — the dark value.
 
 ## Do / Don't
 
