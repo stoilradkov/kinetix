@@ -1,2 +1,1 @@
-/** Profile transports are added with user-facing capabilities. */
-export {};
+export { CoreProfileController } from "#src/modules/profile/presentation/core-profile.controller";
