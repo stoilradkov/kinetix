@@ -120,6 +120,10 @@ Conventions every screen follows (the enforceable list lives in
   submit button — not on a global page banner.
 - **Long lists are paginated** (page indicator + prev / next).
 - **Clickable elements use a pointer cursor and a hover state.**
+- **Specialised inputs use dedicated field components, never a raw text field:**
+  `TimeZoneField` (searchable dropdown), `DateField` (masked `YYYY-MM-DD`), and
+  `DecimalField` (masked measurement with unit suffix, validated on blur). Add
+  new masked/typed fields to `components/ui/` rather than re-masking inline.
 
 ## Extending the system
 

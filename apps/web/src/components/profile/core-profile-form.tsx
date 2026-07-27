@@ -3,10 +3,12 @@ import { LoaderCircle } from "lucide-react";
 import { useForm } from "react-hook-form";
 
 import { Button } from "@/components/ui/button";
+import { DateField } from "@/components/ui/date-field";
+import { DecimalField } from "@/components/ui/decimal-field";
 import { DialogFooter } from "@/components/ui/dialog";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { TimeZoneField } from "@/components/ui/time-zone-field";
 import { profileFormSchema, SEX_UNSPECIFIED, type ProfileFormValues } from "@/lib/profile-form";
 
 const massOptions: { value: ProfileFormValues["mass"]; label: string }[] = [
@@ -58,7 +60,11 @@ export function CoreProfileForm({
                         <FormItem>
                             <FormLabel>Time zone</FormLabel>
                             <FormControl>
-                                <Input autoComplete="off" placeholder="Europe/Sofia" {...field} />
+                                <TimeZoneField
+                                    onBlur={field.onBlur}
+                                    onValueChange={field.onChange}
+                                    value={field.value}
+                                />
                             </FormControl>
                             <FormDescription>IANA time zone used to interpret your entries.</FormDescription>
                             <FormMessage />
@@ -80,7 +86,11 @@ export function CoreProfileForm({
                             <FormItem>
                                 <FormLabel>Birth date</FormLabel>
                                 <FormControl>
-                                    <Input placeholder="YYYY-MM-DD" {...field} />
+                                    <DateField
+                                        onBlur={field.onBlur}
+                                        onValueChange={field.onChange}
+                                        value={field.value}
+                                    />
                                 </FormControl>
                                 <FormDescription>Optional.</FormDescription>
                                 <FormMessage />
@@ -116,9 +126,15 @@ export function CoreProfileForm({
                         name="heightMeters"
                         render={({ field }) => (
                             <FormItem>
-                                <FormLabel>Height (m)</FormLabel>
+                                <FormLabel>Height</FormLabel>
                                 <FormControl>
-                                    <Input inputMode="decimal" placeholder="1.780" {...field} />
+                                    <DecimalField
+                                        onBlur={field.onBlur}
+                                        onValueChange={field.onChange}
+                                        placeholder="1.780"
+                                        suffix="m"
+                                        value={field.value}
+                                    />
                                 </FormControl>
                                 <FormDescription>Optional, in metres.</FormDescription>
                                 <FormMessage />

@@ -71,6 +71,21 @@ introduce a new visual style — extend this one.
   `SelectTrigger` primitives already set `cursor-pointer`; add it to custom
   clickable rows) plus a hover state.
 
+### Specialised inputs — never a raw text field
+
+Use the dedicated field components in `src/components/ui/` instead of a plain
+`Input` for these input types, and add new masked/typed fields there rather than
+re-masking inline:
+
+- **Time zone** → `TimeZoneField` (searchable dropdown over the IANA list).
+- **Calendar dates** (`YYYY-MM-DD`) → `DateField` (digit mask, auto hyphens).
+- **Decimal measurements** (height, load, distance, pace, …) → `DecimalField`
+  (digit/decimal mask, optional unit `suffix`, validated on blur — never
+  mid-keystroke, so typing is not interrupted).
+
+These take `value` + `onValueChange` (+ `onBlur`) and compose with `FormField` /
+`FormControl` like any other control.
+
 ### Data & typography
 
 - Numbers (sets, reps, loads, durations, %) use `font-mono` + `tabular-nums`.
