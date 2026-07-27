@@ -10,3 +10,4 @@ export * from "#src/modules/training/application/catalog";
 export * from "#src/modules/training/application/exercises";
 export * from "#src/modules/training/application/exercise-merges";
 export * from "#src/modules/training/application/measurement-mapper";
+export * from "#src/modules/training/application/training-profile";
