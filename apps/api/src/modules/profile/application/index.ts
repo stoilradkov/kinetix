@@ -6,3 +6,6 @@ export const profileModuleDefinition = {
     displayName: "Profile",
     cardinality: "one",
 } as const satisfies KinetixModuleDefinition;
+
+export * from "#src/modules/profile/application/core-profile";
+export * from "#src/modules/profile/application/profile-reader";
