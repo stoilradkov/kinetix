@@ -79,9 +79,11 @@ re-masking inline:
 
 - **Time zone** → `TimeZoneField` (searchable dropdown over the IANA list).
 - **Calendar dates** (`YYYY-MM-DD`) → `DateField` (digit mask, auto hyphens).
-- **Decimal measurements** (height, load, distance, pace, …) → `DecimalField`
+- **Decimal measurements** (load, distance, pace, …) → `DecimalField`
   (digit/decimal mask, optional unit `suffix`, validated on blur — never
   mid-keystroke, so typing is not interrupted).
+- **Height** → `HeightField` (cm / m / ft-in unit selector; emits canonical
+  metres). Model other multi-unit measurements the same way.
 
 These take `value` + `onValueChange` (+ `onBlur`) and compose with `FormField` /
 `FormControl` like any other control.

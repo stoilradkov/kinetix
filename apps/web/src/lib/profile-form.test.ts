@@ -5,6 +5,7 @@ import type { CoreProfileResponse } from "@kinetix/types";
 import {
     profileCreateInput,
     profileFormDefaults,
+    profileFormSchema,
     profileUpdateInput,
     type ProfileFormValues,
 } from "@/lib/profile-form";
@@ -85,5 +86,20 @@ describe("profile form mappers", () => {
                 heightMeters: "1.9",
             },
         );
+    });
+});
+
+describe("profile form birth-date validation", () => {
+    const base = { timeZone: "UTC", mass: "kg", distance: "km", length: "cm", sex: "unspecified", heightMeters: "" };
+
+    it("accepts a blank or real past date", () => {
+        expect(profileFormSchema.safeParse({ ...base, birthDate: "" }).success).toBe(true);
+        expect(profileFormSchema.safeParse({ ...base, birthDate: "1990-05-14" }).success).toBe(true);
+    });
+
+    it("rejects impossible or future dates", () => {
+        expect(profileFormSchema.safeParse({ ...base, birthDate: "9999-99-99" }).success).toBe(false);
+        expect(profileFormSchema.safeParse({ ...base, birthDate: "2020-02-30" }).success).toBe(false);
+        expect(profileFormSchema.safeParse({ ...base, birthDate: "2999-01-01" }).success).toBe(false);
     });
 });

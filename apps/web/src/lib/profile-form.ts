@@ -11,6 +11,15 @@ import { z } from "zod";
 
 export const SEX_UNSPECIFIED = "unspecified";
 
+function isRealPastDate(value: string): boolean {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const date = new Date(`${value}T00:00:00.000Z`);
+    if (Number.isNaN(date.getTime())) return false;
+    // Round-trip rejects impossible dates like 9999-99-99 or 2020-02-30.
+    if (date.toISOString().slice(0, 10) !== value) return false;
+    return date.getTime() <= Date.now();
+}
+
 export const profileFormSchema = z.object({
     timeZone: z.string().trim().min(1, "Time zone is required"),
     mass: massUnitSchema,
@@ -19,7 +28,7 @@ export const profileFormSchema = z.object({
     birthDate: z
         .string()
         .trim()
-        .regex(/^(\d{4}-\d{2}-\d{2})?$/, "Use the YYYY-MM-DD format"),
+        .refine(value => value === "" || isRealPastDate(value), "Enter a real date that is not in the future"),
     sex: z.union([z.literal(SEX_UNSPECIFIED), profileSexSchema]),
     heightMeters: z
         .string()

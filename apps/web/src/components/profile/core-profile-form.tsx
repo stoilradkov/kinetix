@@ -4,8 +4,8 @@ import { useForm } from "react-hook-form";
 
 import { Button } from "@/components/ui/button";
 import { DateField } from "@/components/ui/date-field";
-import { DecimalField } from "@/components/ui/decimal-field";
 import { DialogFooter } from "@/components/ui/dialog";
+import { HeightField } from "@/components/ui/height-field";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TimeZoneField } from "@/components/ui/time-zone-field";
@@ -128,15 +128,14 @@ export function CoreProfileForm({
                             <FormItem>
                                 <FormLabel>Height</FormLabel>
                                 <FormControl>
-                                    <DecimalField
+                                    <HeightField
+                                        defaultUnit={form.getValues("length") === "in" ? "ft_in" : "cm"}
                                         onBlur={field.onBlur}
                                         onValueChange={field.onChange}
-                                        placeholder="1.780"
-                                        suffix="m"
                                         value={field.value}
                                     />
                                 </FormControl>
-                                <FormDescription>Optional, in metres.</FormDescription>
+                                <FormDescription>Optional.</FormDescription>
                                 <FormMessage />
                             </FormItem>
                         )}

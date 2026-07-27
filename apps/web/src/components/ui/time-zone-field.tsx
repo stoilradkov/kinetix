@@ -43,7 +43,7 @@ export const TimeZoneField = React.forwardRef<HTMLButtonElement, TimeZoneFieldPr
         const zones = React.useMemo(() => timeZones(), []);
 
         return (
-            <Popover open={open} onOpenChange={setOpen}>
+            <Popover modal open={open} onOpenChange={setOpen}>
                 <PopoverTrigger asChild>
                     <Button
                         ref={ref}
