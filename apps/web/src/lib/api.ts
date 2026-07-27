@@ -2,6 +2,10 @@ import { queryOptions } from "@tanstack/react-query";
 
 import {
     apiErrorSchema,
+    coreProfileResponseSchema,
+    createProfileRequestSchema,
+    updateProfileRequestSchema,
+    type CoreProfileResponse,
     createExerciseRequestSchema,
     equipmentCatalogListResponseSchema,
     exerciseCatalogItemSchema,
@@ -36,6 +40,42 @@ export const healthQueryOptions = queryOptions({
         return healthResponseSchema.parse(await response.json());
     },
 });
+
+export const profileQueryOptions = queryOptions({
+    queryKey: ["profile"],
+    queryFn: async (): Promise<CoreProfileResponse | null> => {
+        const response = await fetch(`${apiUrl}/profile`);
+        if (response.status === 404) return null;
+        const body: unknown = await response.json();
+        if (!response.ok) {
+            const parsed = apiErrorSchema.safeParse(body);
+            throw new Error(
+                parsed.success ? parsed.data.message : `Kinetix API request failed with HTTP ${response.status}`,
+            );
+        }
+        return coreProfileResponseSchema.parse(body);
+    },
+});
+
+export async function createProfile(input: unknown): Promise<CoreProfileResponse> {
+    return coreProfileResponseSchema.parse(
+        await apiRequest("/profile", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(createProfileRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updateProfile(profile: CoreProfileResponse, input: unknown): Promise<CoreProfileResponse> {
+    return coreProfileResponseSchema.parse(
+        await apiRequest("/profile", {
+            method: "PATCH",
+            headers: mutationHeaders(profile.version, crypto.randomUUID()),
+            body: JSON.stringify(updateProfileRequestSchema.parse(input)),
+        }),
+    );
+}
 
 export function exerciseListQueryOptions(search: string, status: "active" | "archived" | "all") {
     return queryOptions({

@@ -48,6 +48,13 @@ function RootComponent(): React.JSX.Element {
                             >
                                 Stacks
                             </Link>
+                            <Link
+                                activeProps={{ className: "bg-muted text-foreground" }}
+                                className="text-muted-foreground hover:text-foreground rounded-md px-3 py-2 transition-colors"
+                                to="/settings"
+                            >
+                                Profile
+                            </Link>
                         </nav>
                     </div>
                 </header>
