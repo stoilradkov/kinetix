@@ -1,2 +1,2 @@
-/** Profile adapters are exported here as capabilities are implemented. */
+/** Profile infrastructure remains private to ProfileModule. */
 export {};
