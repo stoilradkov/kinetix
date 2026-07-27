@@ -456,3 +456,50 @@ export const trainingMeasurementChecks = (table: ReturnType<typeof trainingMeasu
     check("pain_rating_range", sql`${table.painRating} is null or ${table.painRating} between 0 and 10`),
     check("percentage_range", sql`${table.percentage} is null or ${table.percentage} between 0 and 100`),
 ];
+
+/** The single active training profile: experience + versioned analytics defaults (design 9). */
+export const trainingProfiles = pgTable(
+    "training_profiles",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        status: text("status").notNull().default("active"),
+        experience: text("experience").notNull().default("beginner"),
+        oneRepMaxRepCutoff: smallint("one_rep_max_rep_cutoff").notNull().default(12),
+        hardSetRpeThreshold: numeric("hard_set_rpe_threshold", { precision: 3, scale: 1 }).notNull().default("7"),
+        hardSetRirThreshold: smallint("hard_set_rir_threshold").notNull().default(3),
+        calculatorVersion: integer("calculator_version").notNull().default(1),
+        ruleVersion: integer("rule_version").notNull().default(1),
+        version: integer("version").notNull().default(1),
+        archivedAt: timestamp("archived_at", { withTimezone: true }),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("training_profiles_status_valid", sql`${table.status} IN ('active', 'archived')`),
+        check(
+            "training_profiles_experience_valid",
+            sql`${table.experience} IN ('beginner', 'intermediate', 'advanced')`,
+        ),
+        check("training_profiles_rep_cutoff_range", sql`${table.oneRepMaxRepCutoff} BETWEEN 1 AND 20`),
+        check(
+            "training_profiles_rpe_range_step",
+            sql`${table.hardSetRpeThreshold} BETWEEN 0 AND 10 AND mod(${table.hardSetRpeThreshold}, 0.5) = 0`,
+        ),
+        check("training_profiles_rir_range", sql`${table.hardSetRirThreshold} BETWEEN 0 AND 10`),
+        check("training_profiles_calculator_version_positive", sql`${table.calculatorVersion} > 0`),
+        check("training_profiles_rule_version_positive", sql`${table.ruleVersion} > 0`),
+        check("training_profiles_version_positive", sql`${table.version} > 0`),
+        check(
+            "training_profiles_archive_state_valid",
+            sql`(${table.status} = 'active' AND ${table.archivedAt} IS NULL)
+                OR (${table.status} = 'archived' AND ${table.archivedAt} IS NOT NULL)`,
+        ),
+        uniqueIndex("training_profiles_single_active_unique")
+            .on(table.status)
+            .where(sql`${table.status} = 'active'`),
+        index("training_profiles_profile_idx").on(table.profileId),
+    ],
+);
+
+export type TrainingProfileRow = typeof trainingProfiles.$inferSelect;
