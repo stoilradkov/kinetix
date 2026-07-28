@@ -6,6 +6,7 @@ import { Archive, ChevronLeft, ChevronRight, Pencil, Plus } from "lucide-react";
 
 import type { HealthRecordTypeValue, ManualHealthRecordResponse } from "@kinetix/types";
 
+import { BodyWeightChart } from "@/components/health/body-weight-chart";
 import { HealthRecordForm } from "@/components/health/health-record-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,8 +29,33 @@ export const Route = createFileRoute("/health/records")({
 
 type TypeFilter = HealthRecordTypeValue | "all";
 type StateFilter = "active" | "all";
+type RangeFilter = "30" | "90" | "365" | "all";
 
 const PAGE_SIZE = 8;
+
+const rangeLabels: Record<RangeFilter, string> = {
+    "30": "30 days",
+    "90": "90 days",
+    "365": "1 year",
+    all: "All time",
+};
+
+/**
+ * Active records of one type within the range window, for charting. The window is
+ * anchored to the most recent reading (not the wall clock) so a sparse manual log
+ * still shows its latest stretch of data.
+ */
+function windowedSeries(
+    records: readonly ManualHealthRecordResponse[],
+    type: HealthRecordTypeValue,
+    range: RangeFilter,
+): ManualHealthRecordResponse[] {
+    const ofType = records.filter(record => record.type === type && record.archivedAt === null);
+    if (range === "all" || ofType.length === 0) return ofType;
+    const latest = Math.max(...ofType.map(record => new Date(record.effectiveAt).getTime()));
+    const cutoff = latest - Number(range) * 24 * 60 * 60 * 1000;
+    return ofType.filter(record => new Date(record.effectiveAt).getTime() >= cutoff);
+}
 
 const typeLabels: Record<HealthRecordTypeValue, string> = {
     body_weight: "Body weight",
@@ -46,11 +72,13 @@ function HealthRecordsPage(): React.JSX.Element {
     const [createOpen, setCreateOpen] = useState(false);
     const [detailOpen, setDetailOpen] = useState(false);
     const [page, setPage] = useState(1);
+    const [range, setRange] = useState<RangeFilter>("90");
 
     const list = useQuery(healthRecordsQueryOptions(type, state === "all"));
     const all = useQuery(healthRecordsQueryOptions("all", true));
     const records = [...(list.data?.items ?? [])].sort((a, b) => b.effectiveAt.localeCompare(a.effectiveAt));
     const selected = all.data?.items.find(record => record.id === selectedId) ?? null;
+    const weightSeries = windowedSeries(all.data?.items ?? [], "body_weight", range);
 
     const total = records.length;
     const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -130,6 +158,32 @@ function HealthRecordsPage(): React.JSX.Element {
                     </SelectContent>
                 </Select>
             </div>
+
+            {type === "body_weight" ? (
+                <section className="bg-card mt-6 rounded-xl border p-5">
+                    <div className="flex items-center justify-between gap-3">
+                        <div>
+                            <h2 className="text-sm font-semibold">Body-weight trend</h2>
+                            <p className="text-muted-foreground text-xs">Green marks each weigh-in over the window.</p>
+                        </div>
+                        <Select onValueChange={value => setRange(value as RangeFilter)} value={range}>
+                            <SelectTrigger className="w-36" size="sm">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {(Object.keys(rangeLabels) as RangeFilter[]).map(value => (
+                                    <SelectItem key={value} value={value}>
+                                        {rangeLabels[value]}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </div>
+                    <div className="mt-4">
+                        <BodyWeightChart records={weightSeries} />
+                    </div>
+                </section>
+            ) : null}
 
             <div className="bg-card mt-6 overflow-hidden rounded-xl border">
                 <div className="overflow-x-auto">

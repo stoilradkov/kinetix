@@ -44,6 +44,10 @@
     --color-warning-foreground: var(--warning-foreground);
     --color-warning-muted: var(--warning-muted);
 
+    /* Data-viz series. One green slot today (everyday data); add slots — validated
+       per the dataviz method — as multi-series charts land. */
+    --color-chart-1: var(--chart-1);
+
     --radius-sm: calc(var(--radius) - 4px);
     --radius-md: calc(var(--radius) - 2px);
     --radius-lg: var(--radius);
@@ -96,6 +100,9 @@
     --warning: oklch(0.72 0.14 72);
     --warning-foreground: oklch(0.24 0.04 72);
     --warning-muted: oklch(0.95 0.06 82);
+
+    /* Chart series 1 — green, deeper than primary so a thin line stays legible on white. */
+    --chart-1: oklch(0.62 0.17 150);
 }
 
 /* ---- Dark ---- */
@@ -138,6 +145,9 @@
     --warning: oklch(0.82 0.14 78);
     --warning-foreground: oklch(0.2 0.04 78);
     --warning-muted: oklch(0.33 0.06 72);
+
+    /* Chart series 1 — brighter green for legibility on the dark surface. */
+    --chart-1: oklch(0.8 0.19 150);
 }
 
 /* Light is the default identity. Dark is opt-in: add the `.dark` class to
