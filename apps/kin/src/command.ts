@@ -10,6 +10,10 @@ import {
     createTrainingProfileRequestSchema,
     trainingProfileResponseSchema,
     updateTrainingProfileRequestSchema,
+    createTrainingGoalRequestSchema,
+    trainingGoalListResponseSchema,
+    trainingGoalResponseSchema,
+    updateTrainingGoalRequestSchema,
     createExerciseRequestSchema,
     exerciseCatalogItemSchema,
     exerciseCatalogListResponseSchema,
@@ -130,6 +134,7 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
     const training = program.command("training").description("Manage Training data");
     registerExerciseCommands(training, dependencies);
     registerTrainingProfileCommands(training, dependencies);
+    registerTrainingGoalCommands(training, dependencies);
     const history = training.command("history").description("Inspect and restore aggregate history");
 
     history
@@ -212,6 +217,92 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
         );
 
     return program;
+}
+
+function registerTrainingGoalCommands(training: Command, dependencies: ProgramDependencies): void {
+    const goals = training.command("goals").description("Manage training goals");
+
+    goals
+        .command("list")
+        .description("List training goals, optionally filtered by status")
+        .option("--status <status>", "Filter by active, achieved, or abandoned")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { status?: string; apiUrl?: string; json?: boolean }) => {
+            const query = options.status ? `?status=${encodeURIComponent(options.status)}` : "";
+            const result = trainingGoalListResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/goals${query}`),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const goal of result.items) outputGoal(dependencies.output, goal, false);
+        });
+
+    goals
+        .command("show")
+        .description("Show one training goal")
+        .argument("<goal-id>", "Goal UUID")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (goalId: string, options: { apiUrl?: string; json?: boolean }) => {
+            const result = trainingGoalResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/goals/${encodeURIComponent(goalId)}`,
+                ),
+            );
+            outputGoal(dependencies.output, result, options.json);
+        });
+
+    goals
+        .command("create")
+        .description("Create a training goal from inline JSON")
+        .requiredOption("--input <json>", "CreateTrainingGoalRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
+            const input = createTrainingGoalRequestSchema.parse(parseJsonInput(options.input));
+            const result = trainingGoalResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/goals`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                ),
+            );
+            outputGoal(dependencies.output, result, options.json);
+        });
+
+    goals
+        .command("update")
+        .description("Update a training goal from inline JSON")
+        .argument("<goal-id>", "Goal UUID")
+        .requiredOption("--version <version>", "Expected goal version", parsePositiveInteger)
+        .requiredOption("--input <json>", "UpdateTrainingGoalRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                goalId: string,
+                options: {
+                    version: number;
+                    input: string;
+                    idempotencyKey?: string;
+                    apiUrl?: string;
+                    json?: boolean;
+                },
+            ) => {
+                const input = updateTrainingGoalRequestSchema.parse(parseJsonInput(options.input));
+                const result = trainingGoalResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/goals/${encodeURIComponent(goalId)}`,
+                        mutationRequest("PATCH", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputGoal(dependencies.output, result, options.json);
+            },
+        );
 }
 
 function registerTrainingProfileCommands(training: Command, dependencies: ProgramDependencies): void {
@@ -776,6 +867,15 @@ function outputTrainingProfile(
 ): void {
     if (json) output(JSON.stringify(profile));
     else output(`${profile.id}\t${profile.version}\t${profile.status}\t${profile.experience}`);
+}
+
+function outputGoal(
+    output: (message: string) => void,
+    goal: ReturnType<typeof trainingGoalResponseSchema.parse>,
+    json?: boolean,
+): void {
+    if (json) output(JSON.stringify(goal));
+    else output(`${goal.id}\t${goal.version}\t${goal.status}\t${goal.type}\t${goal.priority}`);
 }
 
 function outputMerge(
