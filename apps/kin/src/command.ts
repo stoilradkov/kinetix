@@ -14,6 +14,10 @@ import {
     trainingGoalListResponseSchema,
     trainingGoalResponseSchema,
     updateTrainingGoalRequestSchema,
+    createTrainingInjuryRequestSchema,
+    trainingInjuryListResponseSchema,
+    trainingInjuryResponseSchema,
+    updateTrainingInjuryRequestSchema,
     createExerciseRequestSchema,
     exerciseCatalogItemSchema,
     exerciseCatalogListResponseSchema,
@@ -135,6 +139,7 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
     registerExerciseCommands(training, dependencies);
     registerTrainingProfileCommands(training, dependencies);
     registerTrainingGoalCommands(training, dependencies);
+    registerTrainingInjuryCommands(training, dependencies);
     const history = training.command("history").description("Inspect and restore aggregate history");
 
     history
@@ -217,6 +222,92 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
         );
 
     return program;
+}
+
+function registerTrainingInjuryCommands(training: Command, dependencies: ProgramDependencies): void {
+    const injuries = training.command("injuries").description("Manage training injuries");
+
+    injuries
+        .command("list")
+        .description("List training injuries, optionally filtered by status")
+        .option("--status <status>", "Filter by active, recovering, or resolved")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { status?: string; apiUrl?: string; json?: boolean }) => {
+            const query = options.status ? `?status=${encodeURIComponent(options.status)}` : "";
+            const result = trainingInjuryListResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/injuries${query}`),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const injury of result.items) outputInjury(dependencies.output, injury, false);
+        });
+
+    injuries
+        .command("show")
+        .description("Show one training injury")
+        .argument("<injury-id>", "Injury UUID")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (injuryId: string, options: { apiUrl?: string; json?: boolean }) => {
+            const result = trainingInjuryResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/injuries/${encodeURIComponent(injuryId)}`,
+                ),
+            );
+            outputInjury(dependencies.output, result, options.json);
+        });
+
+    injuries
+        .command("create")
+        .description("Create a training injury from inline JSON")
+        .requiredOption("--input <json>", "CreateTrainingInjuryRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
+            const input = createTrainingInjuryRequestSchema.parse(parseJsonInput(options.input));
+            const result = trainingInjuryResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/injuries`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                ),
+            );
+            outputInjury(dependencies.output, result, options.json);
+        });
+
+    injuries
+        .command("update")
+        .description("Update a training injury from inline JSON")
+        .argument("<injury-id>", "Injury UUID")
+        .requiredOption("--version <version>", "Expected injury version", parsePositiveInteger)
+        .requiredOption("--input <json>", "UpdateTrainingInjuryRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                injuryId: string,
+                options: {
+                    version: number;
+                    input: string;
+                    idempotencyKey?: string;
+                    apiUrl?: string;
+                    json?: boolean;
+                },
+            ) => {
+                const input = updateTrainingInjuryRequestSchema.parse(parseJsonInput(options.input));
+                const result = trainingInjuryResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/injuries/${encodeURIComponent(injuryId)}`,
+                        mutationRequest("PATCH", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputInjury(dependencies.output, result, options.json);
+            },
+        );
 }
 
 function registerTrainingGoalCommands(training: Command, dependencies: ProgramDependencies): void {
@@ -876,6 +967,15 @@ function outputGoal(
 ): void {
     if (json) output(JSON.stringify(goal));
     else output(`${goal.id}\t${goal.version}\t${goal.status}\t${goal.type}\t${goal.priority}`);
+}
+
+function outputInjury(
+    output: (message: string) => void,
+    injury: ReturnType<typeof trainingInjuryResponseSchema.parse>,
+    json?: boolean,
+): void {
+    if (json) output(JSON.stringify(injury));
+    else output(`${injury.id}\t${injury.version}\t${injury.status}\t${injury.severity}\t${injury.name}`);
 }
 
 function outputMerge(
