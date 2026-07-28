@@ -33,12 +33,21 @@ import {
     TRAINING_GOAL_REVISION_HANDLER,
     TrainingGoalCommands,
     TrainingGoalRevisionHandler,
+    TRAINING_INJURY_COMMANDS,
+    TRAINING_INJURY_MUTATION_SERVICE,
+    TRAINING_INJURY_REPOSITORY,
+    TRAINING_INJURY_REVISION_HANDLER,
+    TrainingInjuryCommands,
+    TrainingInjuryRevisionHandler,
     exerciseDefinitionSerializer,
     trainingProfileSerializer,
     trainingGoalSerializer,
+    trainingInjurySerializer,
     trainingModuleDefinition,
     type TrainingProfileRepository,
     type TrainingGoalRepository,
+    type TrainingInjuryRepository,
+    type InjuryCatalogReader,
     type ExerciseRepository,
     type ExerciseMergeRepository,
     type ExerciseReferenceUpdater,
@@ -48,6 +57,7 @@ import {
 import type {
     ExerciseDefinitionState,
     TrainingGoalState,
+    TrainingInjuryState,
     TrainingProfileState,
 } from "#src/modules/training/domain/index";
 import { PROFILE_READER, ProfileModule, type ProfileReader } from "#src/modules/profile/index";
@@ -56,6 +66,8 @@ import { DrizzleTrainingProfileRepository } from "#src/modules/training/infrastr
 import { TrainingProfileRevisionRegistrar } from "#src/modules/training/infrastructure/training-profile-revision-registrar";
 import { DrizzleTrainingGoalRepository } from "#src/modules/training/infrastructure/drizzle-training-goal-repository";
 import { TrainingGoalRevisionRegistrar } from "#src/modules/training/infrastructure/training-goal-revision-registrar";
+import { DrizzleTrainingInjuryRepository } from "#src/modules/training/infrastructure/drizzle-training-injury-repository";
+import { TrainingInjuryRevisionRegistrar } from "#src/modules/training/infrastructure/training-injury-revision-registrar";
 import {
     DrizzleExerciseMergeRepository,
     DrizzleExerciseReferenceUpdater,
@@ -69,6 +81,7 @@ import {
     TrainingCatalogController,
     TrainingProfileController,
     TrainingGoalController,
+    TrainingInjuryController,
 } from "#src/modules/training/presentation/index";
 import {
     OUTBOX_WRITER,
@@ -91,6 +104,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         ExerciseMergeController,
         TrainingProfileController,
         TrainingGoalController,
+        TrainingInjuryController,
     ],
     providers: [
         DrizzleTrainingCatalogRepository,
@@ -172,6 +186,52 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
             inject: [TRAINING_GOAL_MUTATION_SERVICE, REVISION_STORE],
         },
         TrainingGoalRevisionRegistrar,
+        DrizzleTrainingInjuryRepository,
+        { provide: TRAINING_INJURY_REPOSITORY, useExisting: DrizzleTrainingInjuryRepository },
+        {
+            provide: TRAINING_INJURY_MUTATION_SERVICE,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: TrainingInjuryRepository,
+                revisions: RevisionStore,
+                events: OutboxWriter,
+            ) => new RevisionMutationService(unitOfWork, repository, revisions, trainingInjurySerializer, events),
+            inject: [UNIT_OF_WORK, TRAINING_INJURY_REPOSITORY, REVISION_STORE, OUTBOX_WRITER],
+        },
+        {
+            provide: TRAINING_INJURY_COMMANDS,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: TrainingInjuryRepository,
+                mutations: RevisionMutationService<TrainingInjuryState, DomainEvent>,
+                profileReader: ProfileReader,
+                catalog: InjuryCatalogReader,
+            ) =>
+                new TrainingInjuryCommands({
+                    unitOfWork,
+                    repository,
+                    mutations,
+                    profileReader,
+                    catalog,
+                    generateId: randomUUID,
+                }),
+            inject: [
+                UNIT_OF_WORK,
+                TRAINING_INJURY_REPOSITORY,
+                TRAINING_INJURY_MUTATION_SERVICE,
+                PROFILE_READER,
+                TRAINING_CATALOG_READER,
+            ],
+        },
+        {
+            provide: TRAINING_INJURY_REVISION_HANDLER,
+            useFactory: (
+                mutations: RevisionMutationService<TrainingInjuryState, DomainEvent>,
+                revisions: RevisionStore,
+            ) => new TrainingInjuryRevisionHandler(mutations, revisions, { now: () => new Date() }, randomUUID),
+            inject: [TRAINING_INJURY_MUTATION_SERVICE, REVISION_STORE],
+        },
+        TrainingInjuryRevisionRegistrar,
         {
             provide: TRAINING_MODULE_DEFINITION,
             useValue: trainingModuleDefinition,

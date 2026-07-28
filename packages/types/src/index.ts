@@ -6,6 +6,7 @@ export * from "#src/revisions";
 export * from "#src/profile";
 export * from "#src/training-catalog";
 export * from "#src/training-goal";
+export * from "#src/training-injury";
 export * from "#src/training-profile";
 
 export const healthResponseSchema = z.object({
