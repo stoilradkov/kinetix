@@ -159,7 +159,7 @@ function HealthRecordsPage(): React.JSX.Element {
                 </Select>
             </div>
 
-            {type === "body_weight" ? (
+            {type === "body_weight" || type === "all" ? (
                 <section className="bg-card mt-6 rounded-xl border p-5">
                     <div className="flex items-center justify-between gap-3">
                         <div>
