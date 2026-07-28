@@ -71,6 +71,13 @@
             "when": 1785161853591,
             "tag": "0009_complete_leader",
             "breakpoints": true
+        },
+        {
+            "idx": 10,
+            "version": "7",
+            "when": 1785232912020,
+            "tag": "0010_furry_polaris",
+            "breakpoints": true
         }
     ]
 }

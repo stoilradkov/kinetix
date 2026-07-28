@@ -4,6 +4,7 @@ import {
     bigint,
     boolean,
     check,
+    date,
     index,
     integer,
     jsonb,
@@ -503,3 +504,45 @@ export const trainingProfiles = pgTable(
 );
 
 export type TrainingProfileRow = typeof trainingProfiles.$inferSelect;
+
+/** Training goals: many per profile, with an optional measurable target (design 9). */
+export const trainingGoals = pgTable(
+    "training_goals",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        type: text("type").notNull(),
+        targetValue: numeric("target_value", { precision: 12, scale: 3 }),
+        targetUnit: text("target_unit"),
+        startDate: date("start_date").notNull(),
+        targetDate: date("target_date"),
+        priority: integer("priority").notNull().default(1),
+        status: text("status").notNull().default("active"),
+        notes: text("notes"),
+        programId: uuid("program_id"),
+        version: integer("version").notNull().default(1),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check(
+            "training_goals_type_valid",
+            sql`${table.type} IN ('strength', 'endurance', 'body_composition', 'skill', 'other')`,
+        ),
+        check("training_goals_status_valid", sql`${table.status} IN ('active', 'achieved', 'abandoned')`),
+        check(
+            "training_goals_target_value_nonnegative",
+            sql`${table.targetValue} IS NULL OR ${table.targetValue} >= 0`,
+        ),
+        check("training_goals_target_pair", sql`(${table.targetValue} IS NULL) = (${table.targetUnit} IS NULL)`),
+        check(
+            "training_goals_target_after_start",
+            sql`${table.targetDate} IS NULL OR ${table.targetDate} >= ${table.startDate}`,
+        ),
+        check("training_goals_priority_range", sql`${table.priority} BETWEEN 1 AND 1000`),
+        check("training_goals_version_positive", sql`${table.version} > 0`),
+        index("training_goals_profile_idx").on(table.profileId, table.status, table.priority),
+    ],
+);
+
+export type TrainingGoalRow = typeof trainingGoals.$inferSelect;
