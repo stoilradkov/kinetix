@@ -45,7 +45,7 @@ export function HealthRecordForm({
 
     return (
         <Form {...form}>
-            <form className="grid gap-5 px-6 pb-6" noValidate onSubmit={form.handleSubmit(onSubmit)}>
+            <form className="grid gap-5 p-6" noValidate onSubmit={form.handleSubmit(onSubmit)}>
                 {lockedType ? null : (
                     <FormField
                         control={form.control}

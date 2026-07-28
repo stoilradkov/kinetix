@@ -78,7 +78,7 @@ export const DateField = React.forwardRef<HTMLInputElement, DateFieldProps>(
                             captionLayout="dropdown"
                             startMonth={new Date(1900, 0)}
                             endMonth={today}
-                            defaultMonth={selected ?? new Date(2000, 0)}
+                            defaultMonth={selected ?? today}
                             disabled={{ after: today }}
                             selected={selected}
                             onSelect={date => {

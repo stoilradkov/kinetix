@@ -37,12 +37,22 @@ function maskTime(raw: string): string {
 export const DateTimeField = React.forwardRef<HTMLInputElement, DateTimeFieldProps>(
     ({ value, onValueChange, onBlur, className }, ref) => {
         const { date, time } = split(value);
+        const containerRef = React.useRef<HTMLDivElement>(null);
+
+        // Only count focus leaving the whole field (date + time) as a blur, so
+        // tabbing from the date to the time part does not validate before both
+        // have been entered.
+        const handleBlur = (event: React.FocusEvent<HTMLElement>) => {
+            if (containerRef.current?.contains(event.relatedTarget)) return;
+            onBlur?.();
+        };
+
         return (
-            <div className={cn("flex gap-2", className)}>
+            <div ref={containerRef} className={cn("flex gap-2", className)}>
                 <DateField
                     ref={ref}
                     className="flex-1"
-                    onBlur={onBlur}
+                    onBlur={handleBlur}
                     onValueChange={next => onValueChange(join(next, time))}
                     value={date}
                 />
@@ -51,7 +61,7 @@ export const DateTimeField = React.forwardRef<HTMLInputElement, DateTimeFieldPro
                     autoComplete="off"
                     className="w-24 font-mono tabular-nums"
                     inputMode="numeric"
-                    onBlur={onBlur}
+                    onBlur={handleBlur}
                     onChange={event => onValueChange(join(date, maskTime(event.target.value)))}
                     placeholder="HH:MM"
                     value={time}
