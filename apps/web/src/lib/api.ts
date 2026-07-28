@@ -20,6 +20,12 @@ import {
     trainingInjuryResponseSchema,
     updateTrainingInjuryRequestSchema,
     type TrainingInjuryResponse,
+    createManualHealthRecordRequestSchema,
+    manualHealthRecordListResponseSchema,
+    manualHealthRecordResponseSchema,
+    updateManualHealthRecordRequestSchema,
+    type HealthRecordTypeValue,
+    type ManualHealthRecordResponse,
     createExerciseRequestSchema,
     equipmentCatalogListResponseSchema,
     exerciseCatalogItemSchema,
@@ -176,6 +182,52 @@ export async function updateInjury(injury: TrainingInjuryResponse, input: unknow
             method: "PATCH",
             headers: mutationHeaders(injury.version, crypto.randomUUID()),
             body: JSON.stringify(updateTrainingInjuryRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export function healthRecordsQueryOptions(type: HealthRecordTypeValue | "all", includeArchived: boolean) {
+    return queryOptions({
+        queryKey: ["health-records", { type, includeArchived }],
+        queryFn: async () => {
+            const query = new URLSearchParams();
+            if (type !== "all") query.set("type", type);
+            if (includeArchived) query.set("includeArchived", "true");
+            const suffix = query.size > 0 ? `?${query.toString()}` : "";
+            return manualHealthRecordListResponseSchema.parse(await apiRequest(`/health/records${suffix}`));
+        },
+    });
+}
+
+export async function createHealthRecord(input: unknown): Promise<ManualHealthRecordResponse> {
+    return manualHealthRecordResponseSchema.parse(
+        await apiRequest("/health/records", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(createManualHealthRecordRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updateHealthRecord(
+    record: ManualHealthRecordResponse,
+    input: unknown,
+): Promise<ManualHealthRecordResponse> {
+    return manualHealthRecordResponseSchema.parse(
+        await apiRequest(`/health/records/${encodeURIComponent(record.id)}`, {
+            method: "PATCH",
+            headers: mutationHeaders(record.version, crypto.randomUUID()),
+            body: JSON.stringify(updateManualHealthRecordRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function archiveHealthRecord(record: ManualHealthRecordResponse): Promise<ManualHealthRecordResponse> {
+    return manualHealthRecordResponseSchema.parse(
+        await apiRequest(`/health/records/${encodeURIComponent(record.id)}/archive`, {
+            method: "POST",
+            headers: mutationHeaders(record.version, crypto.randomUUID()),
+            body: "{}",
         }),
     );
 }
