@@ -4,19 +4,26 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { LoaderCircle, Pencil, Plus } from "lucide-react";
 
+import type { GoalStatusValue, TrainingGoalResponse } from "@kinetix/types";
+
 import { CoreProfileForm } from "@/components/profile/core-profile-form";
+import { GoalForm } from "@/components/profile/goal-form";
 import { TrainingProfileForm } from "@/components/profile/training-profile-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
+    createGoal,
     createProfile,
     createTrainingProfile,
+    goalsQueryOptions,
     profileQueryOptions,
     trainingProfileQueryOptions,
+    updateGoal,
     updateProfile,
     updateTrainingProfile,
 } from "@/lib/api";
+import { goalCreateInput, goalFormDefaults, goalUpdateInput, type GoalFormValues } from "@/lib/goal-form";
 import {
     profileCreateInput,
     profileFormDefaults,
@@ -137,6 +144,7 @@ function SettingsPage(): React.JSX.Element {
             </div>
 
             {profile ? <TrainingProfileSection /> : null}
+            {profile ? <TrainingGoalsSection /> : null}
 
             <Dialog
                 onOpenChange={open => {
@@ -315,6 +323,159 @@ function TrainingProfileSection(): React.JSX.Element {
                             }}
                             submitError={saveMutation.error}
                             submitLabel="Save training profile"
+                        />
+                    ) : null}
+                </DialogContent>
+            </Dialog>
+        </div>
+    );
+}
+
+const goalTypeLabels: Record<string, string> = {
+    strength: "Strength",
+    endurance: "Endurance",
+    body_composition: "Body composition",
+    skill: "Skill",
+    other: "Other",
+};
+
+const goalStatusVariants: Record<GoalStatusValue, "info" | "success" | "secondary"> = {
+    active: "info",
+    achieved: "success",
+    abandoned: "secondary",
+};
+
+function TrainingGoalsSection(): React.JSX.Element {
+    const queryClient = useQueryClient();
+    const query = useQuery(goalsQueryOptions);
+    const [createOpen, setCreateOpen] = useState(false);
+    const [editGoal, setEditGoal] = useState<TrainingGoalResponse | null>(null);
+    const goals = query.data?.items ?? [];
+
+    const refresh = async () => {
+        await queryClient.invalidateQueries({ queryKey: ["training-goals"] });
+    };
+    const createMutation = useMutation({
+        mutationFn: (values: GoalFormValues) => createGoal(goalCreateInput(values)),
+        onSuccess: async () => {
+            setCreateOpen(false);
+            await refresh();
+        },
+    });
+    const saveMutation = useMutation({
+        mutationFn: (values: GoalFormValues) => updateGoal(editGoal!, goalUpdateInput(values)),
+        onSuccess: async () => {
+            setEditGoal(null);
+            await refresh();
+        },
+    });
+
+    return (
+        <div className="mt-6">
+            <div className="bg-card rounded-xl border p-6">
+                <div className="flex items-center justify-between gap-3">
+                    <h2 className="text-muted-foreground font-mono text-xs font-semibold tracking-wide uppercase">
+                        Training goals
+                    </h2>
+                    <Button onClick={() => setCreateOpen(true)} size="sm">
+                        <Plus />
+                        Add goal
+                    </Button>
+                </div>
+
+                {query.isPending ? (
+                    <div className="text-muted-foreground mt-4 flex items-center gap-2 text-sm">
+                        <LoaderCircle className="size-4 animate-spin" />
+                        Loading goals…
+                    </div>
+                ) : query.isError ? (
+                    <div className="bg-destructive/10 text-destructive border-destructive/30 mt-4 rounded-lg border p-3 text-sm">
+                        {query.error.message}
+                    </div>
+                ) : goals.length === 0 ? (
+                    <p className="text-muted-foreground mt-4 text-sm">No goals yet. Add one to steer your training.</p>
+                ) : (
+                    <ul className="mt-4 divide-y">
+                        {goals.map(goal => (
+                            <li key={goal.id}>
+                                <button
+                                    className="hover:bg-muted/50 flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg px-2 py-3 text-left transition-colors"
+                                    onClick={() => setEditGoal(goal)}
+                                    type="button"
+                                >
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-medium">
+                                                {goalTypeLabels[goal.type] ?? goal.type}
+                                            </span>
+                                            <Badge variant={goalStatusVariants[goal.status]}>{goal.status}</Badge>
+                                        </div>
+                                        <p className="text-muted-foreground mt-1 truncate text-sm">
+                                            {goal.targetValue
+                                                ? `Target ${goal.targetValue} ${goal.targetUnit ?? ""}`.trim()
+                                                : "No numeric target"}
+                                            {goal.targetDate ? ` · by ${goal.targetDate}` : ""}
+                                        </p>
+                                    </div>
+                                    <span className="text-muted-foreground font-mono text-xs tabular-nums">
+                                        P{goal.priority}
+                                    </span>
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+
+            <Dialog
+                onOpenChange={open => {
+                    setCreateOpen(open);
+                    if (!open) createMutation.reset();
+                }}
+                open={createOpen}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Add goal</DialogTitle>
+                        <DialogDescription>New goals start active for your current profile.</DialogDescription>
+                    </DialogHeader>
+                    <GoalForm
+                        defaultValues={goalFormDefaults(null)}
+                        isSubmitting={createMutation.isPending}
+                        onSubmit={async values => {
+                            await createMutation.mutateAsync(values);
+                        }}
+                        submitError={createMutation.error}
+                        submitLabel="Add goal"
+                    />
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                onOpenChange={open => {
+                    if (!open) {
+                        setEditGoal(null);
+                        saveMutation.reset();
+                    }
+                }}
+                open={editGoal !== null}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Edit goal</DialogTitle>
+                        <DialogDescription>Update the target, timing, or status.</DialogDescription>
+                    </DialogHeader>
+                    {editGoal ? (
+                        <GoalForm
+                            defaultValues={goalFormDefaults(editGoal)}
+                            isSubmitting={saveMutation.isPending}
+                            key={`${editGoal.id}:${editGoal.version}`}
+                            onSubmit={async values => {
+                                await saveMutation.mutateAsync(values);
+                            }}
+                            showStatus
+                            submitError={saveMutation.error}
+                            submitLabel="Save goal"
                         />
                     ) : null}
                 </DialogContent>

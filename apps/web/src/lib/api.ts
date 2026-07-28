@@ -10,6 +10,11 @@ import {
     trainingProfileResponseSchema,
     updateTrainingProfileRequestSchema,
     type TrainingProfileResponse,
+    createTrainingGoalRequestSchema,
+    trainingGoalListResponseSchema,
+    trainingGoalResponseSchema,
+    updateTrainingGoalRequestSchema,
+    type TrainingGoalResponse,
     createExerciseRequestSchema,
     equipmentCatalogListResponseSchema,
     exerciseCatalogItemSchema,
@@ -116,6 +121,31 @@ export async function updateTrainingProfile(
             method: "PATCH",
             headers: mutationHeaders(profile.version, crypto.randomUUID()),
             body: JSON.stringify(updateTrainingProfileRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export const goalsQueryOptions = queryOptions({
+    queryKey: ["training-goals"],
+    queryFn: async () => trainingGoalListResponseSchema.parse(await apiRequest("/training/goals")),
+});
+
+export async function createGoal(input: unknown): Promise<TrainingGoalResponse> {
+    return trainingGoalResponseSchema.parse(
+        await apiRequest("/training/goals", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(createTrainingGoalRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updateGoal(goal: TrainingGoalResponse, input: unknown): Promise<TrainingGoalResponse> {
+    return trainingGoalResponseSchema.parse(
+        await apiRequest(`/training/goals/${encodeURIComponent(goal.id)}`, {
+            method: "PATCH",
+            headers: mutationHeaders(goal.version, crypto.randomUUID()),
+            body: JSON.stringify(updateTrainingGoalRequestSchema.parse(input)),
         }),
     );
 }
