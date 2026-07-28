@@ -44,9 +44,13 @@
     --color-warning-foreground: var(--warning-foreground);
     --color-warning-muted: var(--warning-muted);
 
-    /* Data-viz series. One blue slot today (neutral data hue); add slots — validated
-       per the dataviz method — as multi-series charts land. */
+    /* Data-viz series — one status-neutral hue per single-series chart
+       (weight, sleep, resting HR, readiness). Distinct from the green success and
+       gold milestone status hues. */
     --color-chart-1: var(--chart-1);
+    --color-chart-2: var(--chart-2);
+    --color-chart-3: var(--chart-3);
+    --color-chart-4: var(--chart-4);
 
     --radius-sm: calc(var(--radius) - 4px);
     --radius-md: calc(var(--radius) - 2px);
@@ -101,8 +105,11 @@
     --warning-foreground: oklch(0.24 0.04 72);
     --warning-muted: oklch(0.95 0.06 82);
 
-    /* Chart series 1 — blue: neutral "data" hue, distinct from the green success/primary. */
-    --chart-1: oklch(0.55 0.16 248);
+    /* Chart series — status-neutral hues, deep enough for a thin mark on white. */
+    --chart-1: oklch(0.55 0.16 248); /* weight — blue */
+    --chart-2: oklch(0.5 0.19 285); /* sleep — violet */
+    --chart-3: oklch(0.58 0.12 210); /* resting HR — cyan */
+    --chart-4: oklch(0.55 0.2 350); /* readiness — magenta */
 }
 
 /* ---- Dark ---- */
@@ -146,8 +153,11 @@
     --warning-foreground: oklch(0.2 0.04 78);
     --warning-muted: oklch(0.33 0.06 72);
 
-    /* Chart series 1 — brighter blue for legibility on the dark surface. */
-    --chart-1: oklch(0.72 0.14 248);
+    /* Chart series — brighter steps for legibility on the dark surface. */
+    --chart-1: oklch(0.72 0.14 248); /* weight — blue */
+    --chart-2: oklch(0.72 0.15 285); /* sleep — violet */
+    --chart-3: oklch(0.75 0.11 205); /* resting HR — cyan */
+    --chart-4: oklch(0.72 0.16 350); /* readiness — magenta */
 }
 
 /* Light is the default identity. Dark is opt-in: add the `.dark` class to

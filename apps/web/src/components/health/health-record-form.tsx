@@ -55,8 +55,10 @@ export function HealthRecordForm({
                                 <FormLabel>Record type</FormLabel>
                                 <Select
                                     onValueChange={next => {
+                                        // Switch types without validating: clear any shown errors and let the
+                                        // new type's fields validate only once the user touches them.
                                         field.onChange(next);
-                                        void form.trigger();
+                                        form.clearErrors();
                                     }}
                                     value={field.value}
                                 >

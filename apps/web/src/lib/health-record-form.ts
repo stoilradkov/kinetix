@@ -2,6 +2,7 @@ import {
     healthRecordTypeSchema,
     type CreateManualHealthRecordRequest,
     type HealthRecordBodyValue,
+    type HealthRecordTypeValue,
     type ManualHealthRecordResponse,
     type UpdateManualHealthRecordRequest,
 } from "@kinetix/types";
@@ -150,10 +151,13 @@ export const healthRecordFormSchema = z
 
 export type HealthRecordFormValues = z.infer<typeof healthRecordFormSchema>;
 
-export function healthRecordFormDefaults(record?: ManualHealthRecordResponse | null): HealthRecordFormValues {
+export function healthRecordFormDefaults(
+    record?: ManualHealthRecordResponse | null,
+    presetType?: HealthRecordTypeValue,
+): HealthRecordFormValues {
     const body = record?.body;
     return {
-        type: record?.type ?? "body_weight",
+        type: record?.type ?? presetType ?? "body_weight",
         effectiveAt: record && record.type !== "sleep" ? toLocalDateTime(record.effectiveAt) : "",
         timeZone: record?.timeZone ?? "",
         notes: record?.notes ?? "",

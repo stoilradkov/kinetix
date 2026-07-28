@@ -6,8 +6,8 @@ import { Archive, ChevronLeft, ChevronRight, Pencil, Plus } from "lucide-react";
 
 import type { HealthRecordTypeValue, ManualHealthRecordResponse } from "@kinetix/types";
 
-import { BodyWeightChart } from "@/components/health/body-weight-chart";
 import { HealthRecordForm } from "@/components/health/health-record-form";
+import { HealthTrendChart } from "@/components/health/health-trend-chart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -78,7 +78,9 @@ function HealthRecordsPage(): React.JSX.Element {
     const all = useQuery(healthRecordsQueryOptions("all", true));
     const records = [...(list.data?.items ?? [])].sort((a, b) => b.effectiveAt.localeCompare(a.effectiveAt));
     const selected = all.data?.items.find(record => record.id === selectedId) ?? null;
-    const weightSeries = windowedSeries(all.data?.items ?? [], "body_weight", range);
+    const chartTypes: HealthRecordTypeValue[] =
+        type === "all" ? (Object.keys(typeLabels) as HealthRecordTypeValue[]) : [type];
+    const allRecords = all.data?.items ?? [];
 
     const total = records.length;
     const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -159,31 +161,40 @@ function HealthRecordsPage(): React.JSX.Element {
                 </Select>
             </div>
 
-            {type === "body_weight" || type === "all" ? (
-                <section className="bg-card mt-6 rounded-xl border p-5">
-                    <div className="flex items-center justify-between gap-3">
-                        <div>
-                            <h2 className="text-sm font-semibold">Body-weight trend</h2>
-                            <p className="text-muted-foreground text-xs">One point per weigh-in over the window.</p>
+            <section className="bg-card mt-6 rounded-xl border p-5">
+                <div className="flex items-center justify-between gap-3">
+                    <div>
+                        <h2 className="text-sm font-semibold">
+                            {type === "all" ? "Trends" : `${typeLabels[type]} trend`}
+                        </h2>
+                        <p className="text-muted-foreground text-xs">One point per reading over the window.</p>
+                    </div>
+                    <Select onValueChange={value => setRange(value as RangeFilter)} value={range}>
+                        <SelectTrigger className="w-36" size="sm">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {(Object.keys(rangeLabels) as RangeFilter[]).map(value => (
+                                <SelectItem key={value} value={value}>
+                                    {rangeLabels[value]}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </div>
+                <div className={cn("mt-4 grid gap-4", chartTypes.length > 1 ? "lg:grid-cols-2" : undefined)}>
+                    {chartTypes.map(chartType => (
+                        <div className={chartTypes.length > 1 ? "rounded-lg border p-4" : undefined} key={chartType}>
+                            {chartTypes.length > 1 ? (
+                                <h3 className="text-muted-foreground mb-3 text-xs font-semibold tracking-wide uppercase">
+                                    {typeLabels[chartType]}
+                                </h3>
+                            ) : null}
+                            <HealthTrendChart records={windowedSeries(allRecords, chartType, range)} type={chartType} />
                         </div>
-                        <Select onValueChange={value => setRange(value as RangeFilter)} value={range}>
-                            <SelectTrigger className="w-36" size="sm">
-                                <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {(Object.keys(rangeLabels) as RangeFilter[]).map(value => (
-                                    <SelectItem key={value} value={value}>
-                                        {rangeLabels[value]}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
-                    </div>
-                    <div className="mt-4">
-                        <BodyWeightChart records={weightSeries} />
-                    </div>
-                </section>
-            ) : null}
+                    ))}
+                </div>
+            </section>
 
             <div className="bg-card mt-6 overflow-hidden rounded-xl border">
                 <div className="overflow-x-auto">
@@ -306,7 +317,7 @@ function HealthRecordsPage(): React.JSX.Element {
                     </DialogHeader>
                     <div className="min-h-0 flex-1 overflow-y-auto">
                         <HealthRecordForm
-                            defaultValues={healthRecordFormDefaults()}
+                            defaultValues={healthRecordFormDefaults(null, type === "all" ? undefined : type)}
                             isSubmitting={createMutation.isPending}
                             onSubmit={async values => {
                                 await createMutation.mutateAsync(healthRecordCreateInput(values));
