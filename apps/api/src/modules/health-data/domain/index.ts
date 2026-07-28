@@ -1,2 +1,22 @@
 /** Public entry point for the framework-free Health Data domain. */
-export {};
+export {
+    HEALTH_RECORD_BODY_SCHEMA_VERSION,
+    ManualHealthRecord,
+    healthRecordSources,
+    healthRecordTypes,
+    promoteHealthRecord,
+    sleepDurationMinutes,
+    type BodyWeightBody,
+    type CreateManualHealthRecordInput,
+    type DailyReadinessBody,
+    type DailyReadinessBodyInput,
+    type HealthRecordBody,
+    type HealthRecordBodyInput,
+    type HealthRecordPromotion,
+    type HealthRecordSource,
+    type HealthRecordType,
+    type ManualHealthRecordState,
+    type RestingHeartRateBody,
+    type SleepBody,
+    type UpdateManualHealthRecordInput,
+} from "#src/modules/health-data/domain/manual-health-record";

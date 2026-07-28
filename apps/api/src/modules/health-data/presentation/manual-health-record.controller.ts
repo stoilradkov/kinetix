@@ -1,0 +1,285 @@
+import { randomUUID } from "node:crypto";
+
+import {
+    Body,
+    Controller,
+    Get,
+    Headers,
+    HttpCode,
+    HttpException,
+    Inject,
+    Optional,
+    Param,
+    Patch,
+    Post,
+    Query,
+    Res,
+} from "@nestjs/common";
+import { ApiHeader, ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger";
+
+import {
+    createManualHealthRecordRequestSchema,
+    manualHealthRecordListResponseSchema,
+    manualHealthRecordResponseSchema,
+    updateManualHealthRecordRequestSchema,
+    type ManualHealthRecordListResponse,
+    type ManualHealthRecordResponse,
+} from "@kinetix/types";
+
+import {
+    HEALTH_RECORD_COMMANDS,
+    HEALTH_RECORD_REPOSITORY,
+    ManualHealthRecordNotFoundError,
+    type HealthRecordListFilter,
+    type HealthRecordMutationMetadata,
+    type ManualHealthRecordCommands,
+    type ManualHealthRecordResource,
+    type HealthRecordRepository,
+} from "#src/modules/health-data/application/index";
+import { healthRecordTypes, type HealthRecordType } from "#src/modules/health-data/domain/index";
+import {
+    ApplicationValidationError,
+    ExpectedVersionRequiredError,
+    IDEMPOTENT_COMMAND_EXECUTOR,
+    type IdempotentCommandExecutor,
+} from "#src/platform/application/index";
+import { entityId } from "#src/platform/domain/index";
+import { formatRevisionEtag, parseRevisionEtag } from "#src/platform/presentation/revision-etag";
+
+interface HeaderResponse {
+    setHeader(name: string, value: string): void;
+}
+
+@ApiTags("health records")
+@Controller({ path: "health/records", version: "1" })
+export class ManualHealthRecordController {
+    constructor(
+        @Inject(HEALTH_RECORD_COMMANDS)
+        private readonly commands: ManualHealthRecordCommands,
+        @Inject(HEALTH_RECORD_REPOSITORY)
+        private readonly repository: HealthRecordRepository,
+        @Optional()
+        @Inject(IDEMPOTENT_COMMAND_EXECUTOR)
+        private readonly idempotency?: IdempotentCommandExecutor,
+    ) {}
+
+    @Get()
+    @ApiOperation({ summary: "List manual health records, filtered by type and effective-time window" })
+    async list(
+        @Query("type") rawType: string | undefined,
+        @Query("from") from: string | undefined,
+        @Query("to") to: string | undefined,
+        @Query("includeArchived") includeArchived: string | undefined,
+    ): Promise<ManualHealthRecordListResponse> {
+        const filter: HealthRecordListFilter = {
+            ...(rawType ? { type: parseType(rawType) } : {}),
+            ...(from ? { from: parseInstant(from, "from") } : {}),
+            ...(to ? { to: parseInstant(to, "to") } : {}),
+            ...(includeArchived === "true" ? { includeArchived: true } : {}),
+        };
+        const items = await this.repository.listRecords(filter);
+        return manualHealthRecordListResponseSchema.parse({ items });
+    }
+
+    @Post()
+    @ApiOperation({ summary: "Record manual health data for the active profile" })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    create(
+        @Body() rawBody: unknown,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<ManualHealthRecordResponse> {
+        const request = parseContract(
+            createManualHealthRecordRequestSchema,
+            rawBody,
+            "Health record creation validation failed",
+        );
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "health.record.create",
+            idempotencyKey,
+            request,
+            metadata,
+            response,
+            status: 201,
+            command: transaction => this.commands.create(request, metadata, transaction),
+        });
+    }
+
+    @Get(":id")
+    @ApiOperation({ summary: "Get one manual health record" })
+    @ApiParam({ name: "id", format: "uuid" })
+    async get(
+        @Param("id") id: string,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<ManualHealthRecordResponse> {
+        const resource = await this.repository.readRecord(recordId(id));
+        if (!resource) throw new ManualHealthRecordNotFoundError(id);
+        response.setHeader("ETag", formatRevisionEtag(resource.version));
+        return manualHealthRecordResponseSchema.parse(resource);
+    }
+
+    @Patch(":id")
+    @ApiOperation({ summary: "Update a manual health record" })
+    @ApiParam({ name: "id", format: "uuid" })
+    @ApiHeader({ name: "If-Match", required: true })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    update(
+        @Param("id") id: string,
+        @Body() rawBody: unknown,
+        @Headers("if-match") ifMatch: string | undefined,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<ManualHealthRecordResponse> {
+        const request = parseContract(
+            updateManualHealthRecordRequestSchema,
+            rawBody,
+            "Health record update validation failed",
+        );
+        const expectedVersion = expectedVersionFrom(ifMatch);
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "health.record.update",
+            idempotencyKey,
+            request: { id, expectedVersion, body: request },
+            metadata,
+            response,
+            status: 200,
+            command: transaction => this.commands.update(id, expectedVersion, request, metadata, transaction),
+        });
+    }
+
+    @Post(":id/archive")
+    @HttpCode(200)
+    @ApiOperation({ summary: "Archive a manual health record" })
+    @ApiParam({ name: "id", format: "uuid" })
+    @ApiHeader({ name: "If-Match", required: true })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    archive(
+        @Param("id") id: string,
+        @Headers("if-match") ifMatch: string | undefined,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<ManualHealthRecordResponse> {
+        const expectedVersion = expectedVersionFrom(ifMatch);
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "health.record.archive",
+            idempotencyKey,
+            request: { id, expectedVersion },
+            metadata,
+            response,
+            status: 200,
+            command: transaction => this.commands.archive(id, expectedVersion, metadata, transaction),
+        });
+    }
+
+    private async executeMutation(input: {
+        readonly operation: string;
+        readonly idempotencyKey?: string;
+        readonly request: unknown;
+        readonly metadata: HealthRecordMutationMetadata;
+        readonly response: HeaderResponse;
+        readonly status: number;
+        readonly command: (transaction?: unknown) => Promise<ManualHealthRecordResource>;
+    }): Promise<ManualHealthRecordResponse> {
+        const perform = async (transaction?: unknown) =>
+            manualHealthRecordResponseSchema.parse(await input.command(transaction));
+        let body: ManualHealthRecordResponse;
+        if (input.idempotencyKey !== undefined) {
+            if (!this.idempotency) throw new Error("Idempotency support is not configured");
+            const result = await this.idempotency.execute(
+                {
+                    operation: input.operation,
+                    key: input.idempotencyKey,
+                    request: input.request,
+                    context: input.metadata,
+                },
+                async transaction => ({ status: input.status, body: await perform(transaction) }),
+            );
+            body = result.body;
+            input.response.setHeader("Idempotency-Replayed", String(result.replayed));
+        } else {
+            body = await perform();
+        }
+        input.response.setHeader("ETag", formatRevisionEtag(body.version));
+        return body;
+    }
+}
+
+function parseType(value: string): HealthRecordType {
+    if ((healthRecordTypes as readonly string[]).includes(value)) return value as HealthRecordType;
+    throw new ApplicationValidationError(`Unknown health record type '${value}'`, {
+        type: [`type must be one of: ${healthRecordTypes.join(", ")}`],
+    });
+}
+
+function parseInstant(value: string, name: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime()))
+        throw new ApplicationValidationError(`Query bound '${name}' must be an ISO 8601 date-time`, {
+            [name]: [`${name} must be an ISO 8601 date-time`],
+        });
+    return date.toISOString();
+}
+
+function recordId(value: string) {
+    try {
+        return entityId(value);
+    } catch {
+        throw new ApplicationValidationError("Health record ID must be a UUID", {
+            recordId: ["Health record ID must be a UUID"],
+        });
+    }
+}
+
+function parseContract<Output>(
+    schema: {
+        safeParse(
+            value: unknown,
+        ):
+            | { success: true; data: Output }
+            | { success: false; error: { issues: readonly { path: readonly PropertyKey[]; message: string }[] } };
+    },
+    value: unknown,
+    message: string,
+): Output {
+    const parsed = schema.safeParse(value);
+    if (!parsed.success) throw contractValidationException(message, parsed.error.issues);
+    return parsed.data;
+}
+
+function contractValidationException(
+    message: string,
+    issues: readonly { path: readonly PropertyKey[]; message: string }[],
+): HttpException {
+    const fieldErrors: Record<string, string[]> = {};
+    for (const issue of issues) {
+        const path = issue.path.length > 0 ? issue.path.map(String).join(".") : "$";
+        (fieldErrors[path] ??= []).push(issue.message);
+    }
+    return new HttpException({ code: "VALIDATION_FAILED", message, fieldErrors }, 422);
+}
+
+function mutationMetadata(rawCorrelationId: string | undefined, reason?: string | null): HealthRecordMutationMetadata {
+    return {
+        correlationId: rawCorrelationId?.trim() || randomUUID(),
+        actorId: null,
+        source: "user",
+        ...(reason !== undefined ? { reason } : {}),
+    };
+}
+
+function expectedVersionFrom(ifMatch: string | undefined): number {
+    if (!ifMatch) throw new ExpectedVersionRequiredError();
+    try {
+        return parseRevisionEtag(ifMatch);
+    } catch (error) {
+        throw new ApplicationValidationError(error instanceof Error ? error.message : "If-Match is invalid", {
+            ifMatch: ["If-Match must be a quoted positive version"],
+        });
+    }
+}

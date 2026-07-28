@@ -1,2 +1,2 @@
-/** Health Data adapters are exported here as capabilities are implemented. */
+/** Health Data infrastructure remains private to HealthDataModule. */
 export {};

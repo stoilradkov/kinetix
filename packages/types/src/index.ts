@@ -3,6 +3,7 @@ import { z } from "zod";
 export * from "#src/measurements";
 export * from "#src/jobs";
 export * from "#src/revisions";
+export * from "#src/health-record";
 export * from "#src/profile";
 export * from "#src/training-catalog";
 export * from "#src/training-goal";

@@ -82,4 +82,18 @@ describe("initial module migration", () => {
         expect(migration).toContain('"merged_exercise_version_after_apply" integer NOT NULL');
         expect(migration).toContain('"exercise_merges_state_valid"');
     });
+
+    it("stores manual health records with promoted numeric fields and schema-versioned JSON", () => {
+        expect(migration).toContain('CREATE TABLE "health_records"');
+        expect(migration).toContain('"data_schema_version" integer DEFAULT 1 NOT NULL');
+        expect(migration).toContain('"data" jsonb NOT NULL');
+        expect(migration).toContain('"mass_kg" numeric(7, 3)');
+        expect(migration).toContain('"resting_heart_rate_bpm" integer');
+        expect(migration).toContain('"sleep_duration_minutes" integer');
+        expect(migration).toContain('"readiness_score" integer');
+        expect(migration).toContain('"health_records_type_valid"');
+        expect(migration).toContain('"health_records_body_weight_promoted"');
+        expect(migration).toContain('"health_records_sleep_interval_valid"');
+        expect(migration).toContain('CREATE INDEX "health_records_profile_type_effective_idx"');
+    });
 });

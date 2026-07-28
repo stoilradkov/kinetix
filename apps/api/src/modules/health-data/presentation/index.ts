@@ -1,2 +1,1 @@
-/** Health Data transports are added with user-facing capabilities. */
-export {};
+export { ManualHealthRecordController } from "#src/modules/health-data/presentation/manual-health-record.controller";

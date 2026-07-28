@@ -288,7 +288,12 @@ describe("Training catalog schemas", () => {
     });
 });
 
-import { healthResponseSchema } from "#src/index";
+import {
+    createManualHealthRecordRequestSchema,
+    healthRecordBodySchema,
+    healthResponseSchema,
+    manualHealthRecordResponseSchema,
+} from "#src/index";
 
 describe("healthResponseSchema", () => {
     it("preserves the health wire contract", () => {
@@ -299,5 +304,54 @@ describe("healthResponseSchema", () => {
                 timestamp: "2026-07-12T12:00:00.000Z",
             }),
         ).toMatchObject({ status: "ok", service: "kinetix-api" });
+    });
+});
+
+describe("manual health record schemas", () => {
+    it("discriminates each body variant", () => {
+        expect(healthRecordBodySchema.safeParse({ type: "body_weight", massKg: 82.1 }).success).toBe(true);
+        expect(
+            healthRecordBodySchema.safeParse({
+                type: "sleep",
+                startAt: "2026-07-27T22:00:00.000Z",
+                endAt: "2026-07-28T06:00:00.000Z",
+            }).success,
+        ).toBe(true);
+        expect(healthRecordBodySchema.safeParse({ type: "resting_heart_rate", beatsPerMinute: 52 }).success).toBe(true);
+        expect(healthRecordBodySchema.safeParse({ type: "daily_readiness", score: 74 }).success).toBe(true);
+    });
+
+    it("rejects out-of-range and malformed bodies", () => {
+        expect(healthRecordBodySchema.safeParse({ type: "body_weight", massKg: 0 }).success).toBe(false);
+        expect(healthRecordBodySchema.safeParse({ type: "resting_heart_rate", beatsPerMinute: 10 }).success).toBe(
+            false,
+        );
+        expect(healthRecordBodySchema.safeParse({ type: "unknown" }).success).toBe(false);
+    });
+
+    it("accepts a create request and a full response envelope", () => {
+        expect(
+            createManualHealthRecordRequestSchema.safeParse({
+                effectiveAt: "2026-07-28T06:30:00.000Z",
+                body: { type: "body_weight", massKg: 82.1 },
+            }).success,
+        ).toBe(true);
+        expect(
+            manualHealthRecordResponseSchema.safeParse({
+                id: "0198a4db-d8da-7000-8000-0000000000b1",
+                profileId: "0198a4db-d8da-7000-8000-0000000000b9",
+                type: "body_weight",
+                source: "manual",
+                effectiveAt: "2026-07-28T06:30:00.000Z",
+                timeZone: null,
+                notes: null,
+                body: { type: "body_weight", massKg: 82.1 },
+                bodySchemaVersion: 1,
+                archivedAt: null,
+                version: 1,
+                createdAt: "2026-07-28T12:00:00.000Z",
+                updatedAt: "2026-07-28T12:00:00.000Z",
+            }).success,
+        ).toBe(true);
     });
 });

@@ -1,0 +1,37 @@
+CREATE TABLE "health_records" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"profile_id" uuid NOT NULL,
+	"type" text NOT NULL,
+	"source" text DEFAULT 'manual' NOT NULL,
+	"effective_at" timestamp with time zone NOT NULL,
+	"time_zone" text,
+	"notes" text,
+	"mass_kg" numeric(7, 3),
+	"resting_heart_rate_bpm" integer,
+	"sleep_start_at" timestamp with time zone,
+	"sleep_end_at" timestamp with time zone,
+	"sleep_duration_minutes" integer,
+	"readiness_score" integer,
+	"data_schema_version" integer DEFAULT 1 NOT NULL,
+	"data" jsonb NOT NULL,
+	"version" integer DEFAULT 1 NOT NULL,
+	"archived_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "health_records_type_valid" CHECK ("health_records"."type" IN ('body_weight', 'sleep', 'resting_heart_rate', 'daily_readiness')),
+	CONSTRAINT "health_records_source_valid" CHECK ("health_records"."source" IN ('manual')),
+	CONSTRAINT "health_records_data_schema_version_positive" CHECK ("health_records"."data_schema_version" > 0),
+	CONSTRAINT "health_records_version_positive" CHECK ("health_records"."version" > 0),
+	CONSTRAINT "health_records_mass_valid" CHECK ("health_records"."mass_kg" IS NULL OR ("health_records"."mass_kg" > 0 AND "health_records"."mass_kg" <= 1000)),
+	CONSTRAINT "health_records_resting_heart_rate_valid" CHECK ("health_records"."resting_heart_rate_bpm" IS NULL OR "health_records"."resting_heart_rate_bpm" BETWEEN 20 AND 250),
+	CONSTRAINT "health_records_sleep_duration_valid" CHECK ("health_records"."sleep_duration_minutes" IS NULL OR ("health_records"."sleep_duration_minutes" > 0 AND "health_records"."sleep_duration_minutes" <= 1440)),
+	CONSTRAINT "health_records_sleep_interval_valid" CHECK (("health_records"."sleep_start_at" IS NULL) = ("health_records"."sleep_end_at" IS NULL)
+                AND ("health_records"."sleep_end_at" IS NULL OR "health_records"."sleep_end_at" > "health_records"."sleep_start_at")),
+	CONSTRAINT "health_records_readiness_valid" CHECK ("health_records"."readiness_score" IS NULL OR "health_records"."readiness_score" >= 0),
+	CONSTRAINT "health_records_body_weight_promoted" CHECK (("health_records"."type" = 'body_weight') = ("health_records"."mass_kg" IS NOT NULL)),
+	CONSTRAINT "health_records_resting_heart_rate_promoted" CHECK (("health_records"."type" = 'resting_heart_rate') = ("health_records"."resting_heart_rate_bpm" IS NOT NULL)),
+	CONSTRAINT "health_records_sleep_promoted" CHECK (("health_records"."type" = 'sleep') = ("health_records"."sleep_start_at" IS NOT NULL)),
+	CONSTRAINT "health_records_daily_readiness_promoted" CHECK (("health_records"."type" = 'daily_readiness') = ("health_records"."readiness_score" IS NOT NULL))
+);
+--> statement-breakpoint
+CREATE INDEX "health_records_profile_type_effective_idx" ON "health_records" USING btree ("profile_id","type","effective_at","archived_at");

@@ -18,6 +18,10 @@ import {
     trainingInjuryListResponseSchema,
     trainingInjuryResponseSchema,
     updateTrainingInjuryRequestSchema,
+    createManualHealthRecordRequestSchema,
+    manualHealthRecordListResponseSchema,
+    manualHealthRecordResponseSchema,
+    updateManualHealthRecordRequestSchema,
     createExerciseRequestSchema,
     exerciseCatalogItemSchema,
     exerciseCatalogListResponseSchema,
@@ -135,6 +139,9 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
 
     registerProfileCommands(program, dependencies);
 
+    const health = program.command("health").description("Manage Health Data");
+    registerHealthRecordCommands(health, dependencies);
+
     const training = program.command("training").description("Manage Training data");
     registerExerciseCommands(training, dependencies);
     registerTrainingProfileCommands(training, dependencies);
@@ -222,6 +229,133 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
         );
 
     return program;
+}
+
+function registerHealthRecordCommands(health: Command, dependencies: ProgramDependencies): void {
+    const records = health.command("records").description("Manage manual health records");
+
+    records
+        .command("list")
+        .description("List manual health records, filtered by type and effective-time window")
+        .option("--type <type>", "Filter by body_weight, sleep, resting_heart_rate, or daily_readiness")
+        .option("--from <iso>", "Only records at or after this ISO date-time")
+        .option("--to <iso>", "Only records at or before this ISO date-time")
+        .option("--include-archived", "Include archived records")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: {
+                type?: string;
+                from?: string;
+                to?: string;
+                includeArchived?: boolean;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const query = new URLSearchParams();
+                if (options.type) query.set("type", options.type);
+                if (options.from) query.set("from", options.from);
+                if (options.to) query.set("to", options.to);
+                if (options.includeArchived) query.set("includeArchived", "true");
+                const suffix = query.size > 0 ? `?${query.toString()}` : "";
+                const result = manualHealthRecordListResponseSchema.parse(
+                    await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/health/records${suffix}`),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else for (const record of result.items) outputHealthRecord(dependencies.output, record, false);
+            },
+        );
+
+    records
+        .command("show")
+        .description("Show one manual health record")
+        .argument("<record-id>", "Health record UUID")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (recordId: string, options: { apiUrl?: string; json?: boolean }) => {
+            const result = manualHealthRecordResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/health/records/${encodeURIComponent(recordId)}`,
+                ),
+            );
+            outputHealthRecord(dependencies.output, result, options.json);
+        });
+
+    records
+        .command("create")
+        .description("Record manual health data from inline JSON")
+        .requiredOption("--input <json>", "CreateManualHealthRecordRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
+            const input = createManualHealthRecordRequestSchema.parse(parseJsonInput(options.input));
+            const result = manualHealthRecordResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/health/records`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                ),
+            );
+            outputHealthRecord(dependencies.output, result, options.json);
+        });
+
+    records
+        .command("update")
+        .description("Update a manual health record from inline JSON")
+        .argument("<record-id>", "Health record UUID")
+        .requiredOption("--version <version>", "Expected record version", parsePositiveInteger)
+        .requiredOption("--input <json>", "UpdateManualHealthRecordRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                recordId: string,
+                options: {
+                    version: number;
+                    input: string;
+                    idempotencyKey?: string;
+                    apiUrl?: string;
+                    json?: boolean;
+                },
+            ) => {
+                const input = updateManualHealthRecordRequestSchema.parse(parseJsonInput(options.input));
+                const result = manualHealthRecordResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/health/records/${encodeURIComponent(recordId)}`,
+                        mutationRequest("PATCH", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputHealthRecord(dependencies.output, result, options.json);
+            },
+        );
+
+    records
+        .command("archive")
+        .description("Archive a manual health record")
+        .argument("<record-id>", "Health record UUID")
+        .requiredOption("--version <version>", "Expected record version", parsePositiveInteger)
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                recordId: string,
+                options: { version: number; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const result = manualHealthRecordResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/health/records/${encodeURIComponent(recordId)}/archive`,
+                        mutationRequest("POST", {}, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputHealthRecord(dependencies.output, result, options.json);
+            },
+        );
 }
 
 function registerTrainingInjuryCommands(training: Command, dependencies: ProgramDependencies): void {
@@ -976,6 +1110,18 @@ function outputInjury(
 ): void {
     if (json) output(JSON.stringify(injury));
     else output(`${injury.id}\t${injury.version}\t${injury.status}\t${injury.severity}\t${injury.name}`);
+}
+
+function outputHealthRecord(
+    output: (message: string) => void,
+    record: ReturnType<typeof manualHealthRecordResponseSchema.parse>,
+    json?: boolean,
+): void {
+    if (json) output(JSON.stringify(record));
+    else {
+        const archived = record.archivedAt ? "archived" : "active";
+        output(`${record.id}\t${record.version}\t${record.type}\t${record.effectiveAt}\t${archived}`);
+    }
 }
 
 function outputMerge(
