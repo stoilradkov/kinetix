@@ -78,6 +78,13 @@
             "when": 1785232912020,
             "tag": "0010_furry_polaris",
             "breakpoints": true
+        },
+        {
+            "idx": 11,
+            "version": "7",
+            "when": 1785234061757,
+            "tag": "0011_quick_zombie",
+            "breakpoints": true
         }
     ]
 }

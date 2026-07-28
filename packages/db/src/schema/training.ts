@@ -546,3 +546,66 @@ export const trainingGoals = pgTable(
 );
 
 export type TrainingGoalRow = typeof trainingGoals.$inferSelect;
+
+export const trainingInjuries = pgTable(
+    "training_injuries",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        name: text("name").notNull(),
+        bodyArea: text("body_area").notNull(),
+        side: text("side"),
+        severity: text("severity").notNull().default("moderate"),
+        status: text("status").notNull().default("active"),
+        onsetDate: date("onset_date").notNull(),
+        resolvedDate: date("resolved_date"),
+        notes: text("notes"),
+        version: integer("version").notNull().default(1),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check(
+            "training_injuries_side_valid",
+            sql`${table.side} IS NULL OR ${table.side} IN ('left', 'right', 'bilateral')`,
+        ),
+        check("training_injuries_severity_valid", sql`${table.severity} IN ('mild', 'moderate', 'severe')`),
+        check("training_injuries_status_valid", sql`${table.status} IN ('active', 'recovering', 'resolved')`),
+        check(
+            "training_injuries_resolved_after_onset",
+            sql`${table.resolvedDate} IS NULL OR ${table.resolvedDate} >= ${table.onsetDate}`,
+        ),
+        check(
+            "training_injuries_resolved_pair",
+            sql`(${table.status} = 'resolved') = (${table.resolvedDate} IS NOT NULL)`,
+        ),
+        check("training_injuries_version_positive", sql`${table.version} > 0`),
+        index("training_injuries_profile_idx").on(table.profileId, table.status),
+    ],
+);
+
+export const trainingInjuryMuscles = pgTable(
+    "training_injury_muscles",
+    {
+        injuryId: uuid("injury_id")
+            .notNull()
+            .references(() => trainingInjuries.id, { onDelete: "cascade" }),
+        muscleGroupId: uuid("muscle_group_id").notNull(),
+    },
+    table => [primaryKey({ columns: [table.injuryId, table.muscleGroupId] })],
+);
+
+export const trainingInjuryExercises = pgTable(
+    "training_injury_exercises",
+    {
+        injuryId: uuid("injury_id")
+            .notNull()
+            .references(() => trainingInjuries.id, { onDelete: "cascade" }),
+        exerciseId: uuid("exercise_id").notNull(),
+    },
+    table => [primaryKey({ columns: [table.injuryId, table.exerciseId] })],
+);
+
+export type TrainingInjuryRow = typeof trainingInjuries.$inferSelect;
+export type TrainingInjuryMuscleRow = typeof trainingInjuryMuscles.$inferSelect;
+export type TrainingInjuryExerciseRow = typeof trainingInjuryExercises.$inferSelect;
