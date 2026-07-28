@@ -27,21 +27,35 @@ import {
     TRAINING_PROFILE_REVISION_HANDLER,
     TrainingProfileCommands,
     TrainingProfileRevisionHandler,
+    TRAINING_GOAL_COMMANDS,
+    TRAINING_GOAL_MUTATION_SERVICE,
+    TRAINING_GOAL_REPOSITORY,
+    TRAINING_GOAL_REVISION_HANDLER,
+    TrainingGoalCommands,
+    TrainingGoalRevisionHandler,
     exerciseDefinitionSerializer,
     trainingProfileSerializer,
+    trainingGoalSerializer,
     trainingModuleDefinition,
     type TrainingProfileRepository,
+    type TrainingGoalRepository,
     type ExerciseRepository,
     type ExerciseMergeRepository,
     type ExerciseReferenceUpdater,
     type TrainingCatalogReader,
     type TrainingCatalogSeedRepository,
 } from "#src/modules/training/application/index";
-import type { ExerciseDefinitionState, TrainingProfileState } from "#src/modules/training/domain/index";
+import type {
+    ExerciseDefinitionState,
+    TrainingGoalState,
+    TrainingProfileState,
+} from "#src/modules/training/domain/index";
 import { PROFILE_READER, ProfileModule, type ProfileReader } from "#src/modules/profile/index";
 import { DrizzleTrainingCatalogRepository } from "#src/modules/training/infrastructure/drizzle-training-catalog-repository";
 import { DrizzleTrainingProfileRepository } from "#src/modules/training/infrastructure/drizzle-training-profile-repository";
 import { TrainingProfileRevisionRegistrar } from "#src/modules/training/infrastructure/training-profile-revision-registrar";
+import { DrizzleTrainingGoalRepository } from "#src/modules/training/infrastructure/drizzle-training-goal-repository";
+import { TrainingGoalRevisionRegistrar } from "#src/modules/training/infrastructure/training-goal-revision-registrar";
 import {
     DrizzleExerciseMergeRepository,
     DrizzleExerciseReferenceUpdater,
@@ -54,6 +68,7 @@ import {
     ExerciseMergeController,
     TrainingCatalogController,
     TrainingProfileController,
+    TrainingGoalController,
 } from "#src/modules/training/presentation/index";
 import {
     OUTBOX_WRITER,
@@ -75,6 +90,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         ExerciseDefinitionController,
         ExerciseMergeController,
         TrainingProfileController,
+        TrainingGoalController,
     ],
     providers: [
         DrizzleTrainingCatalogRepository,
@@ -118,6 +134,44 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
             inject: [TRAINING_PROFILE_MUTATION_SERVICE, REVISION_STORE],
         },
         TrainingProfileRevisionRegistrar,
+        DrizzleTrainingGoalRepository,
+        { provide: TRAINING_GOAL_REPOSITORY, useExisting: DrizzleTrainingGoalRepository },
+        {
+            provide: TRAINING_GOAL_MUTATION_SERVICE,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: TrainingGoalRepository,
+                revisions: RevisionStore,
+                events: OutboxWriter,
+            ) => new RevisionMutationService(unitOfWork, repository, revisions, trainingGoalSerializer, events),
+            inject: [UNIT_OF_WORK, TRAINING_GOAL_REPOSITORY, REVISION_STORE, OUTBOX_WRITER],
+        },
+        {
+            provide: TRAINING_GOAL_COMMANDS,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: TrainingGoalRepository,
+                mutations: RevisionMutationService<TrainingGoalState, DomainEvent>,
+                profileReader: ProfileReader,
+            ) =>
+                new TrainingGoalCommands({
+                    unitOfWork,
+                    repository,
+                    mutations,
+                    profileReader,
+                    generateId: randomUUID,
+                }),
+            inject: [UNIT_OF_WORK, TRAINING_GOAL_REPOSITORY, TRAINING_GOAL_MUTATION_SERVICE, PROFILE_READER],
+        },
+        {
+            provide: TRAINING_GOAL_REVISION_HANDLER,
+            useFactory: (
+                mutations: RevisionMutationService<TrainingGoalState, DomainEvent>,
+                revisions: RevisionStore,
+            ) => new TrainingGoalRevisionHandler(mutations, revisions, { now: () => new Date() }, randomUUID),
+            inject: [TRAINING_GOAL_MUTATION_SERVICE, REVISION_STORE],
+        },
+        TrainingGoalRevisionRegistrar,
         {
             provide: TRAINING_MODULE_DEFINITION,
             useValue: trainingModuleDefinition,
