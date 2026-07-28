@@ -68,7 +68,10 @@ export function BodyWeightChart({
                 <ChartTooltip
                     content={
                         <ChartTooltipContent
-                            labelFormatter={value => fullFormatter.format(new Date(value as number))}
+                            labelFormatter={(_label, payload) => {
+                                const point = payload?.[0]?.payload as WeightPoint | undefined;
+                                return point ? fullFormatter.format(new Date(point.t)) : "";
+                            }}
                         />
                     }
                     cursor

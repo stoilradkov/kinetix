@@ -164,7 +164,7 @@ function HealthRecordsPage(): React.JSX.Element {
                     <div className="flex items-center justify-between gap-3">
                         <div>
                             <h2 className="text-sm font-semibold">Body-weight trend</h2>
-                            <p className="text-muted-foreground text-xs">Green marks each weigh-in over the window.</p>
+                            <p className="text-muted-foreground text-xs">One point per weigh-in over the window.</p>
                         </div>
                         <Select onValueChange={value => setRange(value as RangeFilter)} value={range}>
                             <SelectTrigger className="w-36" size="sm">
