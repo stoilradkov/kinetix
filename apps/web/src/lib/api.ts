@@ -15,6 +15,11 @@ import {
     trainingGoalResponseSchema,
     updateTrainingGoalRequestSchema,
     type TrainingGoalResponse,
+    createTrainingInjuryRequestSchema,
+    trainingInjuryListResponseSchema,
+    trainingInjuryResponseSchema,
+    updateTrainingInjuryRequestSchema,
+    type TrainingInjuryResponse,
     createExerciseRequestSchema,
     equipmentCatalogListResponseSchema,
     exerciseCatalogItemSchema,
@@ -146,6 +151,31 @@ export async function updateGoal(goal: TrainingGoalResponse, input: unknown): Pr
             method: "PATCH",
             headers: mutationHeaders(goal.version, crypto.randomUUID()),
             body: JSON.stringify(updateTrainingGoalRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export const injuriesQueryOptions = queryOptions({
+    queryKey: ["training-injuries"],
+    queryFn: async () => trainingInjuryListResponseSchema.parse(await apiRequest("/training/injuries")),
+});
+
+export async function createInjury(input: unknown): Promise<TrainingInjuryResponse> {
+    return trainingInjuryResponseSchema.parse(
+        await apiRequest("/training/injuries", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(createTrainingInjuryRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updateInjury(injury: TrainingInjuryResponse, input: unknown): Promise<TrainingInjuryResponse> {
+    return trainingInjuryResponseSchema.parse(
+        await apiRequest(`/training/injuries/${encodeURIComponent(injury.id)}`, {
+            method: "PATCH",
+            headers: mutationHeaders(injury.version, crypto.randomUUID()),
+            body: JSON.stringify(updateTrainingInjuryRequestSchema.parse(input)),
         }),
     );
 }

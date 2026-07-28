@@ -4,26 +4,34 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { LoaderCircle, Pencil, Plus } from "lucide-react";
 
-import type { GoalStatusValue, TrainingGoalResponse } from "@kinetix/types";
+import type { GoalStatusValue, InjuryStatusValue, TrainingGoalResponse, TrainingInjuryResponse } from "@kinetix/types";
 
 import { CoreProfileForm } from "@/components/profile/core-profile-form";
 import { GoalForm } from "@/components/profile/goal-form";
+import { InjuryForm } from "@/components/profile/injury-form";
 import { TrainingProfileForm } from "@/components/profile/training-profile-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import type { MultiSelectOption } from "@/components/ui/multi-select-field";
 import {
     createGoal,
+    createInjury,
     createProfile,
     createTrainingProfile,
+    exerciseFormCatalogQueryOptions,
+    exerciseListQueryOptions,
     goalsQueryOptions,
+    injuriesQueryOptions,
     profileQueryOptions,
     trainingProfileQueryOptions,
     updateGoal,
+    updateInjury,
     updateProfile,
     updateTrainingProfile,
 } from "@/lib/api";
 import { goalCreateInput, goalFormDefaults, goalUpdateInput, type GoalFormValues } from "@/lib/goal-form";
+import { injuryCreateInput, injuryFormDefaults, injuryUpdateInput, type InjuryFormValues } from "@/lib/injury-form";
 import {
     profileCreateInput,
     profileFormDefaults,
@@ -145,6 +153,7 @@ function SettingsPage(): React.JSX.Element {
 
             {profile ? <TrainingProfileSection /> : null}
             {profile ? <TrainingGoalsSection /> : null}
+            {profile ? <TrainingInjuriesSection /> : null}
 
             <Dialog
                 onOpenChange={open => {
@@ -476,6 +485,165 @@ function TrainingGoalsSection(): React.JSX.Element {
                             showStatus
                             submitError={saveMutation.error}
                             submitLabel="Save goal"
+                        />
+                    ) : null}
+                </DialogContent>
+            </Dialog>
+        </div>
+    );
+}
+
+const injuryStatusVariants: Record<InjuryStatusValue, "warning" | "info" | "success"> = {
+    active: "warning",
+    recovering: "info",
+    resolved: "success",
+};
+
+function TrainingInjuriesSection(): React.JSX.Element {
+    const queryClient = useQueryClient();
+    const query = useQuery(injuriesQueryOptions);
+    const catalogQuery = useQuery(exerciseFormCatalogQueryOptions);
+    const exercisesQuery = useQuery(exerciseListQueryOptions("", "active"));
+    const [createOpen, setCreateOpen] = useState(false);
+    const [editInjury, setEditInjury] = useState<TrainingInjuryResponse | null>(null);
+    const injuries = query.data?.items ?? [];
+
+    const muscleOptions: MultiSelectOption[] = (catalogQuery.data?.muscles ?? []).map(muscle => ({
+        value: muscle.id,
+        label: muscle.name,
+    }));
+    const exerciseOptions: MultiSelectOption[] = (exercisesQuery.data?.items ?? []).map(exercise => ({
+        value: exercise.id,
+        label: exercise.name,
+    }));
+
+    const refresh = async () => {
+        await queryClient.invalidateQueries({ queryKey: ["training-injuries"] });
+    };
+    const createMutation = useMutation({
+        mutationFn: (values: InjuryFormValues) => createInjury(injuryCreateInput(values)),
+        onSuccess: async () => {
+            setCreateOpen(false);
+            await refresh();
+        },
+    });
+    const saveMutation = useMutation({
+        mutationFn: (values: InjuryFormValues) => updateInjury(editInjury!, injuryUpdateInput(values)),
+        onSuccess: async () => {
+            setEditInjury(null);
+            await refresh();
+        },
+    });
+
+    return (
+        <div className="mt-6">
+            <div className="bg-card rounded-xl border p-6">
+                <div className="flex items-center justify-between gap-3">
+                    <h2 className="text-muted-foreground font-mono text-xs font-semibold tracking-wide uppercase">
+                        Injuries &amp; limitations
+                    </h2>
+                    <Button onClick={() => setCreateOpen(true)} size="sm">
+                        <Plus />
+                        Add injury
+                    </Button>
+                </div>
+
+                {query.isPending ? (
+                    <div className="text-muted-foreground mt-4 flex items-center gap-2 text-sm">
+                        <LoaderCircle className="size-4 animate-spin" />
+                        Loading injuries…
+                    </div>
+                ) : query.isError ? (
+                    <div className="bg-destructive/10 text-destructive border-destructive/30 mt-4 rounded-lg border p-3 text-sm">
+                        {query.error.message}
+                    </div>
+                ) : injuries.length === 0 ? (
+                    <p className="text-muted-foreground mt-4 text-sm">
+                        No injuries recorded. Add one to inform safety checks.
+                    </p>
+                ) : (
+                    <ul className="mt-4 divide-y">
+                        {injuries.map(injury => (
+                            <li key={injury.id}>
+                                <button
+                                    className="hover:bg-muted/50 flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg px-2 py-3 text-left transition-colors"
+                                    onClick={() => setEditInjury(injury)}
+                                    type="button"
+                                >
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-medium">{injury.name}</span>
+                                            <Badge variant={injuryStatusVariants[injury.status]}>{injury.status}</Badge>
+                                        </div>
+                                        <p className="text-muted-foreground mt-1 truncate text-sm">
+                                            {injury.bodyArea}
+                                            {injury.side ? ` · ${injury.side}` : ""} · {injury.severity} · since{" "}
+                                            {injury.onsetDate}
+                                        </p>
+                                    </div>
+                                    <span className="text-muted-foreground font-mono text-xs tabular-nums">
+                                        {injury.muscleGroupIds.length + injury.exerciseIds.length} links
+                                    </span>
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+
+            <Dialog
+                onOpenChange={open => {
+                    setCreateOpen(open);
+                    if (!open) createMutation.reset();
+                }}
+                open={createOpen}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Add injury</DialogTitle>
+                        <DialogDescription>New injuries start active for your current profile.</DialogDescription>
+                    </DialogHeader>
+                    <InjuryForm
+                        defaultValues={injuryFormDefaults(null)}
+                        exerciseOptions={exerciseOptions}
+                        isSubmitting={createMutation.isPending}
+                        muscleOptions={muscleOptions}
+                        onSubmit={async values => {
+                            await createMutation.mutateAsync(values);
+                        }}
+                        submitError={createMutation.error}
+                        submitLabel="Add injury"
+                    />
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                onOpenChange={open => {
+                    if (!open) {
+                        setEditInjury(null);
+                        saveMutation.reset();
+                    }
+                }}
+                open={editInjury !== null}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Edit injury</DialogTitle>
+                        <DialogDescription>Update severity, status, dates, or catalog links.</DialogDescription>
+                    </DialogHeader>
+                    {editInjury ? (
+                        <InjuryForm
+                            defaultValues={injuryFormDefaults(editInjury)}
+                            exerciseOptions={exerciseOptions}
+                            isSubmitting={saveMutation.isPending}
+                            key={`${editInjury.id}:${editInjury.version}`}
+                            muscleOptions={muscleOptions}
+                            onSubmit={async values => {
+                                await saveMutation.mutateAsync(values);
+                            }}
+                            showStatus
+                            submitError={saveMutation.error}
+                            submitLabel="Save injury"
                         />
                     ) : null}
                 </DialogContent>

@@ -84,6 +84,8 @@ re-masking inline:
   mid-keystroke, so typing is not interrupted).
 - **Height** → `HeightField` (cm / m / ft-in unit selector; emits canonical
   metres). Model other multi-unit measurements the same way.
+- **Multi-select over a fixed set** (catalog links, tags) → `MultiSelectField`
+  (searchable `Command` popover; selected values render as removable badges).
 
 These take `value` + `onValueChange` (+ `onBlur`) and compose with `FormField` /
 `FormControl` like any other control.
