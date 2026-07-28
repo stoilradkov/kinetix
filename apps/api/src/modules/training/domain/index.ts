@@ -4,4 +4,5 @@ export * from "#src/modules/training/domain/catalog";
 export * from "#src/modules/training/domain/exercise-definition";
 export * from "#src/modules/training/domain/exercise-merge";
 export * from "#src/modules/training/domain/measurement";
+export * from "#src/modules/training/domain/training-goal";
 export * from "#src/modules/training/domain/training-profile";
