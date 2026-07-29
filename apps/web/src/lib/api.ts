@@ -62,8 +62,14 @@ import {
     replaceExerciseRelationshipsRequestSchema,
     revisionHistoryResponseSchema,
     updateExerciseRequestSchema,
+    createWorkoutTemplateRequestSchema,
+    updateWorkoutTemplateRequestSchema,
+    workoutTemplateListResponseSchema,
+    workoutTemplateResponseSchema,
     type ExerciseCatalogItemResponse,
     type ExerciseMergeResource,
+    type WorkoutTemplateResponse,
+    type WorkoutTemplateSummary,
 } from "@kinetix/types";
 import { healthResponseSchema } from "@kinetix/types";
 
@@ -376,6 +382,63 @@ export async function archiveHealthRecord(record: ManualHealthRecordResponse): P
         await apiRequest(`/health/records/${encodeURIComponent(record.id)}/archive`, {
             method: "POST",
             headers: mutationHeaders(record.version, crypto.randomUUID()),
+            body: "{}",
+        }),
+    );
+}
+
+export function workoutTemplatesQueryOptions(includeArchived: boolean) {
+    return queryOptions({
+        queryKey: ["training-templates", { includeArchived }],
+        queryFn: async () =>
+            workoutTemplateListResponseSchema.parse(
+                await apiRequest(`/training/templates${includeArchived ? "?includeArchived=true" : ""}`),
+            ),
+    });
+}
+
+export function workoutTemplateQueryOptions(templateId: string | null) {
+    return queryOptions({
+        queryKey: ["training-template", templateId],
+        enabled: templateId !== null,
+        queryFn: async () =>
+            workoutTemplateResponseSchema.parse(
+                await apiRequest(`/training/templates/${encodeURIComponent(templateId!)}`),
+            ),
+    });
+}
+
+export async function createWorkoutTemplate(input: unknown): Promise<WorkoutTemplateResponse> {
+    return workoutTemplateResponseSchema.parse(
+        await apiRequest("/training/templates", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(createWorkoutTemplateRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updateWorkoutTemplate(
+    template: Pick<WorkoutTemplateSummary, "id" | "version">,
+    input: unknown,
+): Promise<WorkoutTemplateResponse> {
+    return workoutTemplateResponseSchema.parse(
+        await apiRequest(`/training/templates/${encodeURIComponent(template.id)}`, {
+            method: "PATCH",
+            headers: mutationHeaders(template.version, crypto.randomUUID()),
+            body: JSON.stringify(updateWorkoutTemplateRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function changeWorkoutTemplateStatus(
+    template: Pick<WorkoutTemplateSummary, "id" | "version">,
+    action: "archive" | "restore",
+): Promise<WorkoutTemplateResponse> {
+    return workoutTemplateResponseSchema.parse(
+        await apiRequest(`/training/templates/${encodeURIComponent(template.id)}/${action}`, {
+            method: "POST",
+            headers: mutationHeaders(template.version, crypto.randomUUID()),
             body: "{}",
         }),
     );

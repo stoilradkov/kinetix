@@ -81,6 +81,16 @@ import {
     PrescriptionPublisher,
     PrescriptionCloner,
     type SessionPrescriptionRepository,
+    WORKOUT_TEMPLATE_REPOSITORY,
+    WORKOUT_TEMPLATE_MUTATION_SERVICE,
+    WORKOUT_TEMPLATE_COMMANDS,
+    WORKOUT_TEMPLATE_REVISION_HANDLER,
+    WORKOUT_TEMPLATE_PLANNING_READER,
+    WorkoutTemplateCommands,
+    WorkoutTemplateRevisionHandler,
+    RepositoryWorkoutTemplatePlanningReader,
+    workoutTemplateSerializer,
+    type WorkoutTemplateRepository,
     exerciseDefinitionSerializer,
     trainingProfileSerializer,
     trainingGoalSerializer,
@@ -103,6 +113,7 @@ import type {
     TrainingGoalState,
     TrainingInjuryState,
     TrainingProfileState,
+    WorkoutTemplateState,
 } from "#src/modules/training/domain/index";
 import { PROFILE_READER, ProfileModule, type ProfileReader } from "#src/modules/profile/index";
 import { DrizzleTrainingCatalogRepository } from "#src/modules/training/infrastructure/drizzle-training-catalog-repository";
@@ -119,6 +130,8 @@ import { EquipmentIncrementRevisionRegistrar } from "#src/modules/training/infra
 import { DrizzleGearItemRepository } from "#src/modules/training/infrastructure/drizzle-gear-item-repository";
 import { GearItemRevisionRegistrar } from "#src/modules/training/infrastructure/gear-item-revision-registrar";
 import { DrizzleSessionPrescriptionRepository } from "#src/modules/training/infrastructure/drizzle-session-prescription-repository";
+import { DrizzleWorkoutTemplateRepository } from "#src/modules/training/infrastructure/drizzle-workout-template-repository";
+import { WorkoutTemplateRevisionRegistrar } from "#src/modules/training/infrastructure/workout-template-revision-registrar";
 import {
     DrizzleExerciseMergeRepository,
     DrizzleExerciseReferenceUpdater,
@@ -137,6 +150,7 @@ import {
     ZoneDefinitionController,
     EquipmentIncrementController,
     GearItemController,
+    WorkoutTemplateController,
 } from "#src/modules/training/presentation/index";
 import {
     OUTBOX_WRITER,
@@ -164,6 +178,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         ZoneDefinitionController,
         EquipmentIncrementController,
         GearItemController,
+        WorkoutTemplateController,
     ],
     providers: [
         DrizzleTrainingCatalogRepository,
@@ -444,6 +459,64 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                 new PrescriptionCloner({ unitOfWork, repository, outbox, generateId: randomUUID }),
             inject: [UNIT_OF_WORK, SESSION_PRESCRIPTION_REPOSITORY, OUTBOX_WRITER],
         },
+        DrizzleWorkoutTemplateRepository,
+        { provide: WORKOUT_TEMPLATE_REPOSITORY, useExisting: DrizzleWorkoutTemplateRepository },
+        {
+            provide: WORKOUT_TEMPLATE_MUTATION_SERVICE,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: WorkoutTemplateRepository,
+                revisions: RevisionStore,
+                events: OutboxWriter,
+            ) => new RevisionMutationService(unitOfWork, repository, revisions, workoutTemplateSerializer, events),
+            inject: [UNIT_OF_WORK, WORKOUT_TEMPLATE_REPOSITORY, REVISION_STORE, OUTBOX_WRITER],
+        },
+        {
+            provide: WORKOUT_TEMPLATE_COMMANDS,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: WorkoutTemplateRepository,
+                mutations: RevisionMutationService<WorkoutTemplateState, DomainEvent>,
+                publisher: PrescriptionPublisher,
+                prescriptions: SessionPrescriptionRepository,
+                profileReader: ProfileReader,
+            ) =>
+                new WorkoutTemplateCommands({
+                    unitOfWork,
+                    repository,
+                    mutations,
+                    publisher,
+                    prescriptions,
+                    profileReader,
+                    generateId: randomUUID,
+                }),
+            inject: [
+                UNIT_OF_WORK,
+                WORKOUT_TEMPLATE_REPOSITORY,
+                WORKOUT_TEMPLATE_MUTATION_SERVICE,
+                PRESCRIPTION_PUBLISHER,
+                SESSION_PRESCRIPTION_REPOSITORY,
+                PROFILE_READER,
+            ],
+        },
+        {
+            provide: WORKOUT_TEMPLATE_REVISION_HANDLER,
+            useFactory: (
+                mutations: RevisionMutationService<WorkoutTemplateState, DomainEvent>,
+                revisions: RevisionStore,
+            ) => new WorkoutTemplateRevisionHandler(mutations, revisions, { now: () => new Date() }, randomUUID),
+            inject: [WORKOUT_TEMPLATE_MUTATION_SERVICE, REVISION_STORE],
+        },
+        {
+            provide: WORKOUT_TEMPLATE_PLANNING_READER,
+            useFactory: (
+                repository: WorkoutTemplateRepository,
+                prescriptions: SessionPrescriptionRepository,
+                cloner: PrescriptionCloner,
+            ) => new RepositoryWorkoutTemplatePlanningReader(repository, prescriptions, cloner),
+            inject: [WORKOUT_TEMPLATE_REPOSITORY, SESSION_PRESCRIPTION_REPOSITORY, PRESCRIPTION_CLONER],
+        },
+        WorkoutTemplateRevisionRegistrar,
         {
             provide: TRAINING_MODULE_DEFINITION,
             useValue: trainingModuleDefinition,
@@ -555,6 +628,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         TRAINING_EXERCISE_CATALOG,
         TRAINING_TARGET_CONTEXT_READER,
         ZONE_CONTEXT_READER,
+        WORKOUT_TEMPLATE_PLANNING_READER,
     ],
 })
 export class TrainingModule {}

@@ -28,6 +28,10 @@ import {
     updateGearItemRequestSchema,
     gearItemListResponseSchema,
     gearItemResponseSchema,
+    createWorkoutTemplateRequestSchema,
+    updateWorkoutTemplateRequestSchema,
+    workoutTemplateListResponseSchema,
+    workoutTemplateResponseSchema,
     createTrainingInjuryRequestSchema,
     trainingInjuryListResponseSchema,
     trainingInjuryResponseSchema,
@@ -164,6 +168,7 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
     registerZoneCommands(training, dependencies);
     registerEquipmentIncrementCommands(training, dependencies);
     registerGearCommands(training, dependencies);
+    registerWorkoutTemplateCommands(training, dependencies);
     registerTrainingInjuryCommands(training, dependencies);
     const history = training.command("history").description("Inspect and restore aggregate history");
 
@@ -825,6 +830,111 @@ function registerGearCommands(training: Command, dependencies: ProgramDependenci
             );
 }
 
+function registerWorkoutTemplateCommands(training: Command, dependencies: ProgramDependencies): void {
+    const templates = training.command("templates").description("Manage reusable workout templates");
+
+    templates
+        .command("list")
+        .description("List workout templates, optionally including archived ones")
+        .option("--include-archived", "Include archived templates")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { includeArchived?: boolean; apiUrl?: string; json?: boolean }) => {
+            const query = options.includeArchived ? "?includeArchived=true" : "";
+            const result = workoutTemplateListResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/templates${query}`),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const template of result.items) outputWorkoutTemplate(dependencies.output, template, false);
+        });
+
+    templates
+        .command("show")
+        .description("Show one workout template with its current prescription")
+        .argument("<template-id>", "Workout template UUID")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (templateId: string, options: { apiUrl?: string; json?: boolean }) => {
+            const result = workoutTemplateResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/templates/${encodeURIComponent(templateId)}`,
+                ),
+            );
+            outputWorkoutTemplate(dependencies.output, result, options.json);
+        });
+
+    templates
+        .command("create")
+        .description("Create a workout template from inline JSON")
+        .requiredOption("--input <json>", "CreateWorkoutTemplateRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
+            const input = createWorkoutTemplateRequestSchema.parse(parseJsonInput(options.input));
+            const result = workoutTemplateResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/templates`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                ),
+            );
+            outputWorkoutTemplate(dependencies.output, result, options.json);
+        });
+
+    templates
+        .command("update")
+        .description("Update a workout template from inline JSON, republishing its prescription when supplied")
+        .argument("<template-id>", "Workout template UUID")
+        .requiredOption("--version <version>", "Expected template version", parsePositiveInteger)
+        .requiredOption("--input <json>", "UpdateWorkoutTemplateRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                templateId: string,
+                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const input = updateWorkoutTemplateRequestSchema.parse(parseJsonInput(options.input));
+                const result = workoutTemplateResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/templates/${encodeURIComponent(templateId)}`,
+                        mutationRequest("PATCH", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputWorkoutTemplate(dependencies.output, result, options.json);
+            },
+        );
+
+    for (const action of ["archive", "restore"] as const)
+        templates
+            .command(action)
+            .description(`${action === "archive" ? "Archive" : "Restore"} a workout template`)
+            .argument("<template-id>", "Workout template UUID")
+            .requiredOption("--version <version>", "Expected template version", parsePositiveInteger)
+            .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+            .option("--api-url <url>", "Override the Kinetix API URL")
+            .option("--json", "Emit machine-readable JSON")
+            .action(
+                async (
+                    templateId: string,
+                    options: { version: number; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+                ) => {
+                    const result = workoutTemplateResponseSchema.parse(
+                        await responseJson(
+                            dependencies,
+                            `${resolveApiUrl(options.apiUrl)}/training/templates/${encodeURIComponent(templateId)}/${action}`,
+                            mutationRequest("POST", {}, options.version, options.idempotencyKey),
+                        ),
+                    );
+                    outputWorkoutTemplate(dependencies.output, result, options.json);
+                },
+            );
+}
+
 function registerTrainingProfileCommands(training: Command, dependencies: ProgramDependencies): void {
     const profile = training.command("profile").description("Manage the training profile");
 
@@ -1441,6 +1551,21 @@ function outputGear(
 ): void {
     if (json) output(JSON.stringify(gear));
     else output(`${gear.id}\t${gear.version}\t${gear.status}\t${gear.gearType}\t${gear.name}`);
+}
+
+function outputWorkoutTemplate(
+    output: (message: string) => void,
+    template:
+        | ReturnType<typeof workoutTemplateResponseSchema.parse>
+        | ReturnType<typeof workoutTemplateListResponseSchema.parse>["items"][number],
+    json?: boolean,
+): void {
+    if (json) output(JSON.stringify(template));
+    else {
+        const activityCount =
+            "prescription" in template ? template.prescription.activities.length : template.activities.length;
+        output(`${template.id}\t${template.version}\t${template.status}\t${activityCount}\t${template.name}`);
+    }
 }
 
 function outputInjury(

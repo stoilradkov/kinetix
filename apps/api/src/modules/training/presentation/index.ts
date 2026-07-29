@@ -8,3 +8,4 @@ export { TrainingProfileController } from "#src/modules/training/presentation/tr
 export { ZoneDefinitionController } from "#src/modules/training/presentation/zone-definition.controller";
 export { EquipmentIncrementController } from "#src/modules/training/presentation/equipment-increment.controller";
 export { GearItemController } from "#src/modules/training/presentation/gear-item.controller";
+export { WorkoutTemplateController } from "#src/modules/training/presentation/workout-template.controller";

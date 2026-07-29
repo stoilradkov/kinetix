@@ -1189,6 +1189,72 @@ export const prescribedRunSteps = pgTable(
     ],
 );
 
+/* --------------------------------------------------------------------------------------
+ * Workout templates (design 5.5, 10.3, PRD PR-4/TS-3).
+ *
+ * A WorkoutTemplate is a versioned, archivable revision root owning metadata plus a
+ * pointer to its current immutable SessionPrescription tree. Editing a template publishes
+ * a new prescription tree and advances the template version; the pointer swap mutates only
+ * this row (never the immutable prescription rows). `workout_template_prescriptions`
+ * preserves every published template prescription keyed by template version so history and
+ * restore can rehydrate any past tree without dereferencing revision snapshots.
+ * ----------------------------------------------------------------------------------- */
+
+export const workoutTemplates = pgTable(
+    "workout_templates",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        name: text("name").notNull(),
+        description: text("description"),
+        currentPrescriptionId: uuid("current_prescription_id")
+            .notNull()
+            .references(() => sessionPrescriptions.id),
+        status: text("status").notNull().default("active"),
+        archivedAt: timestamp("archived_at", { withTimezone: true }),
+        version: integer("version").notNull().default(1),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("workout_templates_name_valid", sql`length(btrim(${table.name})) > 0`),
+        check("workout_templates_status_valid", sql`${table.status} IN ('active', 'archived')`),
+        check(
+            "workout_templates_archive_state_valid",
+            sql`(${table.status} = 'active' AND ${table.archivedAt} IS NULL)
+                OR (${table.status} = 'archived' AND ${table.archivedAt} IS NOT NULL)`,
+        ),
+        check("workout_templates_version_positive", sql`${table.version} > 0`),
+        index("workout_templates_profile_idx").on(table.profileId, table.status),
+    ],
+);
+
+/** Version→prescription link preserving every published template prescription. */
+export const workoutTemplatePrescriptions = pgTable(
+    "workout_template_prescriptions",
+    {
+        templateId: uuid("template_id")
+            .notNull()
+            .references(() => workoutTemplates.id, { onDelete: "cascade" }),
+        templateVersion: integer("template_version").notNull(),
+        prescriptionId: uuid("prescription_id")
+            .notNull()
+            .references(() => sessionPrescriptions.id),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        primaryKey({
+            name: "workout_template_prescriptions_pk",
+            columns: [table.templateId, table.templateVersion],
+        }),
+        check("workout_template_prescriptions_version_positive", sql`${table.templateVersion} > 0`),
+        index("workout_template_prescriptions_prescription_idx").on(table.prescriptionId),
+    ],
+);
+
+export type WorkoutTemplateRow = typeof workoutTemplates.$inferSelect;
+export type WorkoutTemplatePrescriptionRow = typeof workoutTemplatePrescriptions.$inferSelect;
+
 export type SessionPrescriptionRow = typeof sessionPrescriptions.$inferSelect;
 export type PrescribedActivityRow = typeof prescribedActivities.$inferSelect;
 export type PrescribedStrengthActivityRow = typeof prescribedStrengthActivities.$inferSelect;

@@ -18,3 +18,4 @@ export * from "#src/modules/training/application/training-maxes";
 export * from "#src/modules/training/application/zones";
 export * from "#src/modules/training/application/session-prescriptions";
 export * from "#src/modules/training/application/training-profile";
+export * from "#src/modules/training/application/workout-templates";

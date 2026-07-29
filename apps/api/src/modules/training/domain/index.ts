@@ -12,3 +12,4 @@ export * from "#src/modules/training/domain/training-injury";
 export * from "#src/modules/training/domain/training-max";
 export * from "#src/modules/training/domain/zone-definition";
 export * from "#src/modules/training/domain/training-profile";
+export * from "#src/modules/training/domain/workout-template";
