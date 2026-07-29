@@ -20,6 +20,26 @@ import {
     trainingInjuryResponseSchema,
     updateTrainingInjuryRequestSchema,
     type TrainingInjuryResponse,
+    recordTrainingMaxRequestSchema,
+    trainingMaxListResponseSchema,
+    trainingMaxResponseSchema,
+    type TrainingMaxResponse,
+    type TrainingMaxTypeValue,
+    recordZoneDefinitionRequestSchema,
+    zoneDefinitionListResponseSchema,
+    zoneDefinitionResponseSchema,
+    type ZoneDefinitionResponse,
+    type ZoneFamilyValue,
+    createEquipmentIncrementRequestSchema,
+    equipmentIncrementListResponseSchema,
+    equipmentIncrementResponseSchema,
+    updateEquipmentIncrementRequestSchema,
+    type EquipmentIncrementResponse,
+    createGearItemRequestSchema,
+    gearItemListResponseSchema,
+    gearItemResponseSchema,
+    updateGearItemRequestSchema,
+    type GearItemResponse,
     createManualHealthRecordRequestSchema,
     manualHealthRecordListResponseSchema,
     manualHealthRecordResponseSchema,
@@ -182,6 +202,135 @@ export async function updateInjury(injury: TrainingInjuryResponse, input: unknow
             method: "PATCH",
             headers: mutationHeaders(injury.version, crypto.randomUUID()),
             body: JSON.stringify(updateTrainingInjuryRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export function trainingMaxesQueryOptions(exerciseId?: string) {
+    return queryOptions({
+        queryKey: ["training-maxes", { exerciseId: exerciseId ?? null }],
+        queryFn: async () => {
+            const suffix = exerciseId ? `?exerciseId=${encodeURIComponent(exerciseId)}` : "";
+            return trainingMaxListResponseSchema.parse(await apiRequest(`/training/maxes${suffix}`));
+        },
+    });
+}
+
+export function trainingMaxHistoryQueryOptions(
+    series: { exerciseId: string; maxType: TrainingMaxTypeValue; customLabel: string | null } | null,
+) {
+    return queryOptions({
+        queryKey: ["training-max-history", series],
+        enabled: series !== null,
+        queryFn: async () => {
+            const query = new URLSearchParams({ exerciseId: series!.exerciseId, maxType: series!.maxType });
+            if (series!.customLabel) query.set("customLabel", series!.customLabel);
+            return trainingMaxListResponseSchema.parse(await apiRequest(`/training/maxes/history?${query.toString()}`));
+        },
+    });
+}
+
+export async function recordTrainingMax(input: unknown): Promise<TrainingMaxResponse> {
+    return trainingMaxResponseSchema.parse(
+        await apiRequest("/training/maxes", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(recordTrainingMaxRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export const zonesQueryOptions = queryOptions({
+    queryKey: ["training-zones"],
+    queryFn: async () => zoneDefinitionListResponseSchema.parse(await apiRequest("/training/zones")),
+});
+
+export function zoneHistoryQueryOptions(family: ZoneFamilyValue | null) {
+    return queryOptions({
+        queryKey: ["training-zone-history", family],
+        enabled: family !== null,
+        queryFn: async () =>
+            zoneDefinitionListResponseSchema.parse(
+                await apiRequest(`/training/zones/history?family=${encodeURIComponent(family!)}`),
+            ),
+    });
+}
+
+export async function recordZoneDefinition(input: unknown): Promise<ZoneDefinitionResponse> {
+    return zoneDefinitionResponseSchema.parse(
+        await apiRequest("/training/zones", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(recordZoneDefinitionRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export const equipmentIncrementsQueryOptions = queryOptions({
+    queryKey: ["training-equipment-increments"],
+    queryFn: async () => equipmentIncrementListResponseSchema.parse(await apiRequest("/training/equipment-increments")),
+});
+
+export async function createEquipmentIncrement(input: unknown): Promise<EquipmentIncrementResponse> {
+    return equipmentIncrementResponseSchema.parse(
+        await apiRequest("/training/equipment-increments", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(createEquipmentIncrementRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updateEquipmentIncrement(
+    increment: EquipmentIncrementResponse,
+    input: unknown,
+): Promise<EquipmentIncrementResponse> {
+    return equipmentIncrementResponseSchema.parse(
+        await apiRequest(`/training/equipment-increments/${encodeURIComponent(increment.id)}`, {
+            method: "PATCH",
+            headers: mutationHeaders(increment.version, crypto.randomUUID()),
+            body: JSON.stringify(updateEquipmentIncrementRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export function gearItemsQueryOptions(includeArchived: boolean) {
+    return queryOptions({
+        queryKey: ["training-gear", { includeArchived }],
+        queryFn: async () => {
+            const suffix = includeArchived ? "?includeArchived=true" : "";
+            return gearItemListResponseSchema.parse(await apiRequest(`/training/gear${suffix}`));
+        },
+    });
+}
+
+export async function createGearItem(input: unknown): Promise<GearItemResponse> {
+    return gearItemResponseSchema.parse(
+        await apiRequest("/training/gear", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(createGearItemRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updateGearItem(gear: GearItemResponse, input: unknown): Promise<GearItemResponse> {
+    return gearItemResponseSchema.parse(
+        await apiRequest(`/training/gear/${encodeURIComponent(gear.id)}`, {
+            method: "PATCH",
+            headers: mutationHeaders(gear.version, crypto.randomUUID()),
+            body: JSON.stringify(updateGearItemRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function changeGearStatus(gear: GearItemResponse): Promise<GearItemResponse> {
+    const action = gear.status === "active" ? "archive" : "restore";
+    return gearItemResponseSchema.parse(
+        await apiRequest(`/training/gear/${encodeURIComponent(gear.id)}/${action}`, {
+            method: "POST",
+            headers: mutationHeaders(gear.version, crypto.randomUUID()),
+            body: "{}",
         }),
     );
 }

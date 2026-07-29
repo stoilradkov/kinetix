@@ -8,7 +8,12 @@ export * from "#src/profile";
 export * from "#src/training-catalog";
 export * from "#src/training-goal";
 export * from "#src/training-injury";
+export * from "#src/training-max";
 export * from "#src/training-profile";
+export * from "#src/zone";
+export * from "#src/equipment-increment";
+export * from "#src/gear-item";
+export * from "#src/session-prescription";
 
 export const healthResponseSchema = z.object({
     status: z.enum(["ok", "error"]),

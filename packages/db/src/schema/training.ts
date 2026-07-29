@@ -609,3 +609,592 @@ export const trainingInjuryExercises = pgTable(
 export type TrainingInjuryRow = typeof trainingInjuries.$inferSelect;
 export type TrainingInjuryMuscleRow = typeof trainingInjuryMuscles.$inferSelect;
 export type TrainingInjuryExerciseRow = typeof trainingInjuryExercises.$inferSelect;
+
+/**
+ * Exercise training maxima as an append-only, effective-interval time series
+ * (design 9.1). Changing a value closes the current open interval and inserts a
+ * new record, so historical sessions keep the exact value in force at their time.
+ */
+export const trainingMaxes = pgTable(
+    "training_maxes",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        exerciseId: uuid("exercise_id")
+            .notNull()
+            .references(() => exercises.id),
+        maxType: text("max_type").notNull(),
+        customLabel: text("custom_label"),
+        valueKg: numeric("value_kg", { precision: 12, scale: 3 }).notNull(),
+        enteredValue: numeric("entered_value", { precision: 12, scale: 3 }).notNull(),
+        enteredUnit: text("entered_unit").notNull().default("kg"),
+        source: text("source").notNull().default("web"),
+        note: text("note"),
+        effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull(),
+        effectiveTo: timestamp("effective_to", { withTimezone: true }),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("training_maxes_type_valid", sql`${table.maxType} IN ('estimated_1rm', 'training_max', 'custom')`),
+        check(
+            "training_maxes_custom_label_pair",
+            sql`(${table.maxType} = 'custom') = (${table.customLabel} IS NOT NULL)`,
+        ),
+        check(
+            "training_maxes_custom_label_len",
+            sql`${table.customLabel} IS NULL OR length(btrim(${table.customLabel})) BETWEEN 1 AND 60`,
+        ),
+        check("training_maxes_value_positive", sql`${table.valueKg} > 0`),
+        check("training_maxes_entered_value_positive", sql`${table.enteredValue} > 0`),
+        check("training_maxes_entered_unit_valid", sql`${table.enteredUnit} IN ('kg', 'lb')`),
+        check(
+            "training_maxes_source_valid",
+            sql`${table.source} IN (
+                'web', 'cli', 'agent', 'bulk_import', 'progression_rule', 'manual_correction', 'provider_sync'
+            )`,
+        ),
+        check(
+            "training_maxes_interval_valid",
+            sql`${table.effectiveTo} IS NULL OR ${table.effectiveTo} > ${table.effectiveFrom}`,
+        ),
+        uniqueIndex("training_maxes_single_open_unique")
+            .on(table.profileId, table.exerciseId, table.maxType, sql`coalesce(${table.customLabel}, '')`)
+            .where(isNull(table.effectiveTo)),
+        index("training_maxes_series_idx").on(table.profileId, table.exerciseId, table.maxType, table.effectiveFrom),
+    ],
+);
+
+export type TrainingMaxRow = typeof trainingMaxes.$inferSelect;
+
+/**
+ * Heart-rate/pace/power zone definitions as an append-only, effective-interval
+ * series (design 9.1, PRD RN-5). Historical runs use the version valid at their
+ * performance time. Ranges live in {@link zoneRanges}.
+ */
+export const zoneDefinitions = pgTable(
+    "zone_definitions",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        family: text("family").notNull(),
+        method: text("method").notNull(),
+        config: jsonb("config").$type<Record<string, number>>().notNull().default({}),
+        source: text("source").notNull().default("web"),
+        note: text("note"),
+        effectiveFrom: timestamp("effective_from", { withTimezone: true }).notNull(),
+        effectiveTo: timestamp("effective_to", { withTimezone: true }),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("zone_definitions_family_valid", sql`${table.family} IN ('heart_rate', 'pace', 'power')`),
+        check(
+            "zone_definitions_method_valid",
+            sql`${table.method} IN (
+                'percent_max_hr', 'percent_hr_reserve', 'lactate_threshold',
+                'percent_threshold_pace', 'percent_ftp', 'manual'
+            )`,
+        ),
+        check(
+            "zone_definitions_source_valid",
+            sql`${table.source} IN (
+                'web', 'cli', 'agent', 'bulk_import', 'progression_rule', 'manual_correction', 'provider_sync'
+            )`,
+        ),
+        check(
+            "zone_definitions_interval_valid",
+            sql`${table.effectiveTo} IS NULL OR ${table.effectiveTo} > ${table.effectiveFrom}`,
+        ),
+        uniqueIndex("zone_definitions_single_open_unique")
+            .on(table.profileId, table.family)
+            .where(isNull(table.effectiveTo)),
+        index("zone_definitions_series_idx").on(table.profileId, table.family, table.effectiveFrom),
+    ],
+);
+
+export const zoneRanges = pgTable(
+    "zone_ranges",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        zoneDefinitionId: uuid("zone_definition_id")
+            .notNull()
+            .references(() => zoneDefinitions.id, { onDelete: "cascade" }),
+        position: integer("position").notNull(),
+        name: text("name").notNull(),
+        lowerBound: numeric("lower_bound", { precision: 14, scale: 4 }).notNull(),
+        upperBound: numeric("upper_bound", { precision: 14, scale: 4 }),
+        lowerInclusive: boolean("lower_inclusive").notNull().default(true),
+        upperInclusive: boolean("upper_inclusive").notNull().default(false),
+    },
+    table => [
+        check("zone_ranges_position_valid", sql`${table.position} >= 0`),
+        check("zone_ranges_name_valid", sql`length(btrim(${table.name})) > 0`),
+        check("zone_ranges_lower_nonnegative", sql`${table.lowerBound} >= 0`),
+        check(
+            "zone_ranges_bounds_ordered",
+            sql`${table.upperBound} IS NULL OR ${table.upperBound} > ${table.lowerBound}`,
+        ),
+        uniqueIndex("zone_ranges_position_unique").on(table.zoneDefinitionId, table.position),
+        index("zone_ranges_definition_idx").on(table.zoneDefinitionId, table.position),
+    ],
+);
+
+export type ZoneDefinitionRow = typeof zoneDefinitions.$inferSelect;
+export type ZoneRangeRow = typeof zoneRanges.$inferSelect;
+
+/**
+ * Available load increments used for exercise-specific rounding of resolved
+ * percentage loads (design 9.1, PRD PG-6). A versioned revision root; the most
+ * specific scope (exercise > equipment > default) wins at resolution.
+ */
+export const equipmentIncrements = pgTable(
+    "equipment_increments",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        scope: text("scope").notNull(),
+        exerciseId: uuid("exercise_id").references(() => exercises.id),
+        equipmentTypeId: uuid("equipment_type_id").references(() => equipmentTypes.id),
+        incrementKg: numeric("increment_kg", { precision: 12, scale: 3 }).notNull(),
+        minimumKg: numeric("minimum_kg", { precision: 12, scale: 3 }),
+        label: text("label"),
+        version: integer("version").notNull().default(1),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("equipment_increments_scope_valid", sql`${table.scope} IN ('default', 'exercise', 'equipment')`),
+        check("equipment_increments_increment_positive", sql`${table.incrementKg} > 0`),
+        check("equipment_increments_minimum_nonnegative", sql`${table.minimumKg} IS NULL OR ${table.minimumKg} >= 0`),
+        check(
+            "equipment_increments_exercise_pair",
+            sql`(${table.scope} = 'exercise') = (${table.exerciseId} IS NOT NULL)`,
+        ),
+        check(
+            "equipment_increments_equipment_pair",
+            sql`(${table.scope} = 'equipment') = (${table.equipmentTypeId} IS NOT NULL)`,
+        ),
+        check("equipment_increments_version_positive", sql`${table.version} > 0`),
+        uniqueIndex("equipment_increments_default_unique")
+            .on(table.profileId)
+            .where(sql`${table.scope} = 'default'`),
+        uniqueIndex("equipment_increments_exercise_unique")
+            .on(table.profileId, table.exerciseId)
+            .where(sql`${table.scope} = 'exercise'`),
+        uniqueIndex("equipment_increments_equipment_unique")
+            .on(table.profileId, table.equipmentTypeId)
+            .where(sql`${table.scope} = 'equipment'`),
+        index("equipment_increments_profile_idx").on(table.profileId, table.scope),
+    ],
+);
+
+export type EquipmentIncrementRow = typeof equipmentIncrements.$inferSelect;
+
+/**
+ * User-owned shoes/equipment with acquisition/retirement, an optional distance
+ * limit, and archive state (design 9.1, PRD RN-6). A versioned revision root.
+ */
+export const gearItems = pgTable(
+    "gear_items",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        name: text("name").notNull(),
+        gearType: text("gear_type").notNull(),
+        acquiredOn: date("acquired_on"),
+        retiredOn: date("retired_on"),
+        distanceLimitM: numeric("distance_limit_m", { precision: 14, scale: 3 }),
+        notes: text("notes"),
+        status: text("status").notNull().default("active"),
+        archivedAt: timestamp("archived_at", { withTimezone: true }),
+        version: integer("version").notNull().default(1),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("gear_items_name_valid", sql`length(btrim(${table.name})) > 0`),
+        check("gear_items_type_valid", sql`${table.gearType} IN ('shoes', 'equipment')`),
+        check(
+            "gear_items_distance_limit_positive",
+            sql`${table.distanceLimitM} IS NULL OR ${table.distanceLimitM} > 0`,
+        ),
+        check(
+            "gear_items_retired_after_acquired",
+            sql`${table.retiredOn} IS NULL OR ${table.acquiredOn} IS NULL OR ${table.retiredOn} >= ${table.acquiredOn}`,
+        ),
+        check("gear_items_status_valid", sql`${table.status} IN ('active', 'archived')`),
+        check(
+            "gear_items_archive_state_valid",
+            sql`(${table.status} = 'active' AND ${table.archivedAt} IS NULL)
+                OR (${table.status} = 'archived' AND ${table.archivedAt} IS NOT NULL)`,
+        ),
+        check("gear_items_version_positive", sql`${table.version} > 0`),
+        index("gear_items_profile_idx").on(table.profileId, table.status),
+    ],
+);
+
+export type GearItemRow = typeof gearItems.$inferSelect;
+
+/* --------------------------------------------------------------------------------------
+ * Immutable prescription trees (design 10, ADR 0003).
+ *
+ * Templates and planned sessions each own a distinct, immutable SessionPrescription tree.
+ * Published rows are never updated or deleted; an edit publishes a whole new tree. That
+ * immutability is enforced at the database by per-table BEFORE UPDATE OR DELETE triggers
+ * installed in the migration (0015) — Drizzle's schema DSL cannot express them, so the
+ * migration hand-appends them and the persistence integration test guards them.
+ *
+ * `prescription_id` is denormalized onto every child so a bounded loader can fetch a
+ * whole tree with one query per table. Intra-tree references travel by `logical_key` in
+ * the domain and by row-ID foreign keys here.
+ * ----------------------------------------------------------------------------------- */
+
+export const sessionPrescriptions = pgTable(
+    "session_prescriptions",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        kind: text("kind").notNull(),
+        schemaVersion: integer("schema_version").notNull().default(1),
+        expectedDurationMs: bigint("expected_duration_ms", { mode: "number" }),
+        notes: text("notes"),
+        sourcePrescriptionId: uuid("source_prescription_id").references((): AnyPgColumn => sessionPrescriptions.id),
+        sourceKind: text("source_kind"),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("session_prescriptions_kind_valid", sql`${table.kind} IN ('template', 'planned', 'resolved_execution')`),
+        check("session_prescriptions_schema_version_positive", sql`${table.schemaVersion} > 0`),
+        check(
+            "session_prescriptions_duration_nonneg",
+            sql`${table.expectedDurationMs} IS NULL OR ${table.expectedDurationMs} >= 0`,
+        ),
+        check(
+            "session_prescriptions_source_pair",
+            sql`(${table.sourcePrescriptionId} IS NULL) = (${table.sourceKind} IS NULL)`,
+        ),
+        check(
+            "session_prescriptions_source_kind_valid",
+            sql`${table.sourceKind} IS NULL OR ${table.sourceKind} IN ('template', 'planned', 'resolved_execution')`,
+        ),
+        index("session_prescriptions_source_idx").on(table.sourcePrescriptionId),
+    ],
+);
+
+/** Immutable lineage columns shared by every prescribed node. */
+const prescriptionNodeColumns = () => ({
+    id: uuid("id").defaultRandom().primaryKey(),
+    prescriptionId: uuid("prescription_id")
+        .notNull()
+        .references(() => sessionPrescriptions.id),
+    logicalKey: uuid("logical_key").notNull(),
+    sourceLogicalKey: uuid("source_logical_key"),
+    sourceRowId: uuid("source_row_id"),
+});
+
+/** Canonical structured target columns shared by sets, run steps, and run overalls (design 10.2). */
+const targetColumns = () => ({
+    repsMin: integer("reps_min"),
+    repsMax: integer("reps_max"),
+    loadKgMin: numeric("load_kg_min", { precision: 12, scale: 3 }),
+    loadKgMax: numeric("load_kg_max", { precision: 12, scale: 3 }),
+    durationMsMin: bigint("duration_ms_min", { mode: "number" }),
+    durationMsMax: bigint("duration_ms_max", { mode: "number" }),
+    distanceMMin: numeric("distance_m_min", { precision: 14, scale: 3 }),
+    distanceMMax: numeric("distance_m_max", { precision: 14, scale: 3 }),
+    speedMpsMin: numeric("speed_mps_min", { precision: 12, scale: 4 }),
+    speedMpsMax: numeric("speed_mps_max", { precision: 12, scale: 4 }),
+    powerWMin: numeric("power_w_min", { precision: 12, scale: 2 }),
+    powerWMax: numeric("power_w_max", { precision: 12, scale: 2 }),
+    rpeMin: numeric("rpe_min", { precision: 3, scale: 1 }),
+    rpeMax: numeric("rpe_max", { precision: 3, scale: 1 }),
+    rirMin: smallint("rir_min"),
+    rirMax: smallint("rir_max"),
+    hrBpmMin: integer("hr_bpm_min"),
+    hrBpmMax: integer("hr_bpm_max"),
+    percent1rm: numeric("percent_1rm", { precision: 8, scale: 5 }),
+    percentTrainingMax: numeric("percent_training_max", { precision: 8, scale: 5 }),
+    tempoEccentricMs: bigint("tempo_eccentric_ms", { mode: "number" }),
+    tempoBottomPauseMs: bigint("tempo_bottom_pause_ms", { mode: "number" }),
+    tempoConcentricMs: bigint("tempo_concentric_ms", { mode: "number" }),
+    tempoTopPauseMs: bigint("tempo_top_pause_ms", { mode: "number" }),
+    restMsMin: bigint("rest_ms_min", { mode: "number" }),
+    restMsMax: bigint("rest_ms_max", { mode: "number" }),
+    enteredTargets: jsonb("entered_targets").$type<Record<string, unknown>>().notNull().default({}),
+});
+
+/** min<=max range, non-negative, percentage bound, and single-load-mode checks (design 10.2). */
+function targetRangeChecks(t: Record<string, AnyPgColumn>, prefix: string) {
+    const col = (key: string): AnyPgColumn => {
+        const column = t[key];
+        if (!column) throw new Error(`Missing target column ${key}`);
+        return column;
+    };
+    const pairs: Array<[string, AnyPgColumn, AnyPgColumn]> = [
+        ["reps", col("repsMin"), col("repsMax")],
+        ["load_kg", col("loadKgMin"), col("loadKgMax")],
+        ["duration_ms", col("durationMsMin"), col("durationMsMax")],
+        ["distance_m", col("distanceMMin"), col("distanceMMax")],
+        ["speed_mps", col("speedMpsMin"), col("speedMpsMax")],
+        ["power_w", col("powerWMin"), col("powerWMax")],
+        ["rpe", col("rpeMin"), col("rpeMax")],
+        ["rir", col("rirMin"), col("rirMax")],
+        ["hr_bpm", col("hrBpmMin"), col("hrBpmMax")],
+        ["rest_ms", col("restMsMin"), col("restMsMax")],
+    ];
+    const checks = pairs.flatMap(([name, min, max]) => [
+        check(`${prefix}_${name}_range`, sql`${min} IS NULL OR ${max} IS NULL OR ${min} <= ${max}`),
+        check(`${prefix}_${name}_min_nonneg`, sql`${min} IS NULL OR ${min} >= 0`),
+        check(`${prefix}_${name}_max_nonneg`, sql`${max} IS NULL OR ${max} >= 0`),
+    ]);
+    const percent1rm = col("percent1rm");
+    const percentTrainingMax = col("percentTrainingMax");
+    const loadMin = col("loadKgMin");
+    const loadMax = col("loadKgMax");
+    checks.push(
+        check(
+            `${prefix}_percent_1rm_bound`,
+            sql`${percent1rm} IS NULL OR (${percent1rm} >= 0 AND ${percent1rm} <= 100)`,
+        ),
+        check(
+            `${prefix}_percent_tm_bound`,
+            sql`${percentTrainingMax} IS NULL OR (${percentTrainingMax} >= 0 AND ${percentTrainingMax} <= 100)`,
+        ),
+        check(
+            `${prefix}_tempo_nonneg`,
+            sql`(${col("tempoEccentricMs")} IS NULL OR ${col("tempoEccentricMs")} >= 0)
+                AND (${col("tempoBottomPauseMs")} IS NULL OR ${col("tempoBottomPauseMs")} >= 0)
+                AND (${col("tempoConcentricMs")} IS NULL OR ${col("tempoConcentricMs")} >= 0)
+                AND (${col("tempoTopPauseMs")} IS NULL OR ${col("tempoTopPauseMs")} >= 0)`,
+        ),
+        check(
+            `${prefix}_load_mode`,
+            sql`((CASE WHEN ${loadMin} IS NOT NULL OR ${loadMax} IS NOT NULL THEN 1 ELSE 0 END)
+                + (CASE WHEN ${percent1rm} IS NOT NULL THEN 1 ELSE 0 END)
+                + (CASE WHEN ${percentTrainingMax} IS NOT NULL THEN 1 ELSE 0 END)) <= 1`,
+        ),
+    );
+    return checks;
+}
+
+export const prescribedActivities = pgTable(
+    "prescribed_activities",
+    {
+        ...prescriptionNodeColumns(),
+        type: text("type").notNull(),
+        position: integer("position").notNull(),
+        expectedDurationMs: bigint("expected_duration_ms", { mode: "number" }),
+        rpeTarget: numeric("rpe_target", { precision: 3, scale: 1 }),
+        notes: text("notes"),
+    },
+    table => [
+        check("prescribed_activities_type_valid", sql`${table.type} IN ('strength', 'running')`),
+        check("prescribed_activities_position_nonneg", sql`${table.position} >= 0`),
+        check(
+            "prescribed_activities_duration_nonneg",
+            sql`${table.expectedDurationMs} IS NULL OR ${table.expectedDurationMs} >= 0`,
+        ),
+        uniqueIndex("prescribed_activities_position_unique").on(table.prescriptionId, table.position),
+        uniqueIndex("prescribed_activities_logical_unique").on(table.prescriptionId, table.logicalKey),
+        index("prescribed_activities_prescription_idx").on(table.prescriptionId),
+    ],
+);
+
+export const prescribedStrengthActivities = pgTable(
+    "prescribed_strength_activities",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        prescriptionId: uuid("prescription_id")
+            .notNull()
+            .references(() => sessionPrescriptions.id),
+        activityId: uuid("activity_id")
+            .notNull()
+            .references(() => prescribedActivities.id),
+    },
+    table => [
+        uniqueIndex("prescribed_strength_activities_activity_unique").on(table.activityId),
+        index("prescribed_strength_activities_prescription_idx").on(table.prescriptionId),
+    ],
+);
+
+export const prescribedRunningActivities = pgTable(
+    "prescribed_running_activities",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        prescriptionId: uuid("prescription_id")
+            .notNull()
+            .references(() => sessionPrescriptions.id),
+        activityId: uuid("activity_id")
+            .notNull()
+            .references(() => prescribedActivities.id),
+        runTags: jsonb("run_tags").$type<string[]>().notNull().default([]),
+        ...targetColumns(),
+    },
+    table => [
+        uniqueIndex("prescribed_running_activities_activity_unique").on(table.activityId),
+        index("prescribed_running_activities_prescription_idx").on(table.prescriptionId),
+        ...targetRangeChecks(table, "prescribed_running_activities"),
+    ],
+);
+
+export const prescribedExercises = pgTable(
+    "prescribed_exercises",
+    {
+        ...prescriptionNodeColumns(),
+        strengthActivityId: uuid("strength_activity_id")
+            .notNull()
+            .references(() => prescribedStrengthActivities.id),
+        exerciseId: uuid("exercise_id")
+            .notNull()
+            .references(() => exercises.id),
+        exerciseSnapshot: jsonb("exercise_snapshot").notNull(),
+        position: integer("position").notNull(),
+        purpose: text("purpose"),
+        substitutionPolicy: text("substitution_policy"),
+    },
+    table => [
+        check("prescribed_exercises_position_nonneg", sql`${table.position} >= 0`),
+        check(
+            "prescribed_exercises_substitution_valid",
+            sql`${table.substitutionPolicy} IS NULL OR ${table.substitutionPolicy} IN ('none', 'same_pattern', 'same_muscle', 'free')`,
+        ),
+        check("prescribed_exercises_snapshot_valid", sql`${table.exerciseSnapshot} ? 'schemaVersion'`),
+        uniqueIndex("prescribed_exercises_position_unique").on(table.strengthActivityId, table.position),
+        uniqueIndex("prescribed_exercises_logical_unique").on(table.prescriptionId, table.logicalKey),
+        index("prescribed_exercises_prescription_idx").on(table.prescriptionId),
+        index("prescribed_exercises_activity_idx").on(table.strengthActivityId),
+    ],
+);
+
+export const prescribedSetGroups = pgTable(
+    "prescribed_set_groups",
+    {
+        ...prescriptionNodeColumns(),
+        strengthActivityId: uuid("strength_activity_id")
+            .notNull()
+            .references(() => prescribedStrengthActivities.id),
+        parentGroupId: uuid("parent_group_id").references((): AnyPgColumn => prescribedSetGroups.id),
+        type: text("type").notNull(),
+        position: integer("position").notNull(),
+        rounds: integer("rounds"),
+        restMs: bigint("rest_ms", { mode: "number" }),
+    },
+    table => [
+        check(
+            "prescribed_set_groups_type_valid",
+            sql`${table.type} IN ('straight', 'superset', 'circuit', 'drop', 'cluster', 'rest_pause')`,
+        ),
+        check("prescribed_set_groups_position_nonneg", sql`${table.position} >= 0`),
+        check("prescribed_set_groups_rounds_positive", sql`${table.rounds} IS NULL OR ${table.rounds} >= 1`),
+        check("prescribed_set_groups_rest_nonneg", sql`${table.restMs} IS NULL OR ${table.restMs} >= 0`),
+        uniqueIndex("prescribed_set_groups_root_position_unique")
+            .on(table.strengthActivityId, table.position)
+            .where(isNull(table.parentGroupId)),
+        uniqueIndex("prescribed_set_groups_child_position_unique")
+            .on(table.parentGroupId, table.position)
+            .where(isNotNull(table.parentGroupId)),
+        uniqueIndex("prescribed_set_groups_logical_unique").on(table.prescriptionId, table.logicalKey),
+        index("prescribed_set_groups_prescription_idx").on(table.prescriptionId),
+        index("prescribed_set_groups_activity_idx").on(table.strengthActivityId),
+    ],
+);
+
+export const prescribedSetGroupMembers = pgTable(
+    "prescribed_set_group_members",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        prescriptionId: uuid("prescription_id")
+            .notNull()
+            .references(() => sessionPrescriptions.id),
+        setGroupId: uuid("set_group_id")
+            .notNull()
+            .references(() => prescribedSetGroups.id),
+        exerciseId: uuid("exercise_id")
+            .notNull()
+            .references(() => prescribedExercises.id),
+        position: integer("position").notNull(),
+    },
+    table => [
+        check("prescribed_set_group_members_position_nonneg", sql`${table.position} >= 0`),
+        uniqueIndex("prescribed_set_group_members_position_unique").on(table.setGroupId, table.position),
+        uniqueIndex("prescribed_set_group_members_exercise_unique").on(table.setGroupId, table.exerciseId),
+        index("prescribed_set_group_members_prescription_idx").on(table.prescriptionId),
+    ],
+);
+
+export const prescribedSets = pgTable(
+    "prescribed_sets",
+    {
+        ...prescriptionNodeColumns(),
+        exerciseId: uuid("exercise_id")
+            .notNull()
+            .references(() => prescribedExercises.id),
+        setGroupId: uuid("set_group_id").references(() => prescribedSetGroups.id),
+        position: integer("position").notNull(),
+        round: integer("round"),
+        setType: text("set_type").notNull(),
+        ...targetColumns(),
+        notes: text("notes"),
+    },
+    table => [
+        check(
+            "prescribed_sets_type_valid",
+            sql`${table.setType} IN (
+                'warm_up', 'working', 'back_off', 'drop', 'failure_amrap',
+                'superset_circuit', 'rest_pause', 'technique', 'cluster', 'other'
+            )`,
+        ),
+        check("prescribed_sets_position_nonneg", sql`${table.position} >= 0`),
+        check("prescribed_sets_round_positive", sql`${table.round} IS NULL OR ${table.round} >= 1`),
+        uniqueIndex("prescribed_sets_position_unique").on(table.exerciseId, table.position),
+        uniqueIndex("prescribed_sets_logical_unique").on(table.prescriptionId, table.logicalKey),
+        index("prescribed_sets_prescription_idx").on(table.prescriptionId),
+        index("prescribed_sets_group_idx").on(table.setGroupId),
+        ...targetRangeChecks(table, "prescribed_sets"),
+    ],
+);
+
+export const prescribedRunSteps = pgTable(
+    "prescribed_run_steps",
+    {
+        ...prescriptionNodeColumns(),
+        runningActivityId: uuid("running_activity_id")
+            .notNull()
+            .references(() => prescribedRunningActivities.id),
+        parentStepId: uuid("parent_step_id").references((): AnyPgColumn => prescribedRunSteps.id),
+        type: text("type").notNull(),
+        position: integer("position").notNull(),
+        repeatCount: integer("repeat_count"),
+        ...targetColumns(),
+        notes: text("notes"),
+    },
+    table => [
+        check(
+            "prescribed_run_steps_type_valid",
+            sql`${table.type} IN ('warm_up', 'work', 'recovery', 'repeat', 'cool_down', 'open')`,
+        ),
+        check("prescribed_run_steps_position_nonneg", sql`${table.position} >= 0`),
+        check("prescribed_run_steps_repeat_pair", sql`(${table.type} = 'repeat') = (${table.repeatCount} IS NOT NULL)`),
+        check("prescribed_run_steps_repeat_positive", sql`${table.repeatCount} IS NULL OR ${table.repeatCount} >= 1`),
+        uniqueIndex("prescribed_run_steps_root_position_unique")
+            .on(table.runningActivityId, table.position)
+            .where(isNull(table.parentStepId)),
+        uniqueIndex("prescribed_run_steps_child_position_unique")
+            .on(table.parentStepId, table.position)
+            .where(isNotNull(table.parentStepId)),
+        uniqueIndex("prescribed_run_steps_logical_unique").on(table.prescriptionId, table.logicalKey),
+        index("prescribed_run_steps_prescription_idx").on(table.prescriptionId),
+        index("prescribed_run_steps_activity_idx").on(table.runningActivityId),
+        ...targetRangeChecks(table, "prescribed_run_steps"),
+    ],
+);
+
+export type SessionPrescriptionRow = typeof sessionPrescriptions.$inferSelect;
+export type PrescribedActivityRow = typeof prescribedActivities.$inferSelect;
+export type PrescribedStrengthActivityRow = typeof prescribedStrengthActivities.$inferSelect;
+export type PrescribedRunningActivityRow = typeof prescribedRunningActivities.$inferSelect;
+export type PrescribedExerciseRow = typeof prescribedExercises.$inferSelect;
+export type PrescribedSetGroupRow = typeof prescribedSetGroups.$inferSelect;
+export type PrescribedSetGroupMemberRow = typeof prescribedSetGroupMembers.$inferSelect;
+export type PrescribedSetRow = typeof prescribedSets.$inferSelect;
+export type PrescribedRunStepRow = typeof prescribedRunSteps.$inferSelect;

@@ -14,6 +14,20 @@ import {
     trainingGoalListResponseSchema,
     trainingGoalResponseSchema,
     updateTrainingGoalRequestSchema,
+    recordTrainingMaxRequestSchema,
+    trainingMaxListResponseSchema,
+    trainingMaxResponseSchema,
+    recordZoneDefinitionRequestSchema,
+    zoneDefinitionListResponseSchema,
+    zoneDefinitionResponseSchema,
+    createEquipmentIncrementRequestSchema,
+    updateEquipmentIncrementRequestSchema,
+    equipmentIncrementListResponseSchema,
+    equipmentIncrementResponseSchema,
+    createGearItemRequestSchema,
+    updateGearItemRequestSchema,
+    gearItemListResponseSchema,
+    gearItemResponseSchema,
     createTrainingInjuryRequestSchema,
     trainingInjuryListResponseSchema,
     trainingInjuryResponseSchema,
@@ -146,6 +160,10 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
     registerExerciseCommands(training, dependencies);
     registerTrainingProfileCommands(training, dependencies);
     registerTrainingGoalCommands(training, dependencies);
+    registerTrainingMaxCommands(training, dependencies);
+    registerZoneCommands(training, dependencies);
+    registerEquipmentIncrementCommands(training, dependencies);
+    registerGearCommands(training, dependencies);
     registerTrainingInjuryCommands(training, dependencies);
     const history = training.command("history").description("Inspect and restore aggregate history");
 
@@ -528,6 +546,283 @@ function registerTrainingGoalCommands(training: Command, dependencies: ProgramDe
                 outputGoal(dependencies.output, result, options.json);
             },
         );
+}
+
+function registerTrainingMaxCommands(training: Command, dependencies: ProgramDependencies): void {
+    const maxes = training.command("maxes").description("Manage exercise training maxima");
+
+    maxes
+        .command("list")
+        .description("List the current training maxima, optionally filtered by exercise")
+        .option("--exercise <exercise-id>", "Filter by exercise UUID")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { exercise?: string; apiUrl?: string; json?: boolean }) => {
+            const query = options.exercise ? `?exerciseId=${encodeURIComponent(options.exercise)}` : "";
+            const result = trainingMaxListResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/maxes${query}`),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const max of result.items) outputMax(dependencies.output, max, false);
+        });
+
+    maxes
+        .command("history")
+        .description("List the effective-interval history for one training-max series")
+        .requiredOption("--exercise <exercise-id>", "Exercise UUID")
+        .requiredOption("--type <type>", "estimated_1rm, training_max, or custom")
+        .option("--label <label>", "Custom-max label (required for custom types)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: { exercise: string; type: string; label?: string; apiUrl?: string; json?: boolean }) => {
+                const query = new URLSearchParams({ exerciseId: options.exercise, maxType: options.type });
+                if (options.label) query.set("customLabel", options.label);
+                const result = trainingMaxListResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/maxes/history?${query}`,
+                    ),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else for (const max of result.items) outputMax(dependencies.output, max, false);
+            },
+        );
+
+    maxes
+        .command("record")
+        .description("Record a new training max from inline JSON, closing the current one")
+        .requiredOption("--input <json>", "RecordTrainingMaxRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
+            const input = recordTrainingMaxRequestSchema.parse(parseJsonInput(options.input));
+            const result = trainingMaxResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/maxes`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                ),
+            );
+            outputMax(dependencies.output, result, options.json);
+        });
+}
+
+function registerZoneCommands(training: Command, dependencies: ProgramDependencies): void {
+    const zones = training.command("zones").description("Manage heart-rate, pace, and power zones");
+
+    zones
+        .command("list")
+        .description("List the current zone definitions across families")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { apiUrl?: string; json?: boolean }) => {
+            const result = zoneDefinitionListResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/zones`),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const zone of result.items) outputZone(dependencies.output, zone, false);
+        });
+
+    zones
+        .command("history")
+        .description("List the effective-interval history for one zone family")
+        .requiredOption("--family <family>", "heart_rate, pace, or power")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { family: string; apiUrl?: string; json?: boolean }) => {
+            const result = zoneDefinitionListResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/zones/history?family=${encodeURIComponent(options.family)}`,
+                ),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const zone of result.items) outputZone(dependencies.output, zone, false);
+        });
+
+    zones
+        .command("record")
+        .description("Record a new zone definition from inline JSON, closing the current one")
+        .requiredOption("--input <json>", "RecordZoneDefinitionRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
+            const input = recordZoneDefinitionRequestSchema.parse(parseJsonInput(options.input));
+            const result = zoneDefinitionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/zones`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                ),
+            );
+            outputZone(dependencies.output, result, options.json);
+        });
+}
+
+function registerEquipmentIncrementCommands(training: Command, dependencies: ProgramDependencies): void {
+    const increments = training.command("equipment-increments").description("Manage load increments for rounding");
+
+    increments
+        .command("list")
+        .description("List configured equipment increments")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { apiUrl?: string; json?: boolean }) => {
+            const result = equipmentIncrementListResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/equipment-increments`),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const item of result.items) outputIncrement(dependencies.output, item, false);
+        });
+
+    increments
+        .command("resolve")
+        .description("Resolve the most specific increment for an exercise")
+        .argument("<exercise-id>", "Exercise UUID")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (exerciseId: string, options: { apiUrl?: string; json?: boolean }) => {
+            const result = equipmentIncrementResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/equipment-increments/resolve?exerciseId=${encodeURIComponent(exerciseId)}`,
+                ),
+            );
+            outputIncrement(dependencies.output, result, options.json);
+        });
+
+    increments
+        .command("create")
+        .description("Create an equipment increment from inline JSON")
+        .requiredOption("--input <json>", "CreateEquipmentIncrementRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
+            const input = createEquipmentIncrementRequestSchema.parse(parseJsonInput(options.input));
+            const result = equipmentIncrementResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/equipment-increments`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                ),
+            );
+            outputIncrement(dependencies.output, result, options.json);
+        });
+
+    increments
+        .command("update")
+        .description("Update an equipment increment from inline JSON")
+        .argument("<increment-id>", "Increment UUID")
+        .requiredOption("--version <version>", "Expected increment version", parsePositiveInteger)
+        .requiredOption("--input <json>", "UpdateEquipmentIncrementRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                incrementId: string,
+                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const input = updateEquipmentIncrementRequestSchema.parse(parseJsonInput(options.input));
+                const result = equipmentIncrementResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/equipment-increments/${encodeURIComponent(incrementId)}`,
+                        mutationRequest("PATCH", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputIncrement(dependencies.output, result, options.json);
+            },
+        );
+}
+
+function registerGearCommands(training: Command, dependencies: ProgramDependencies): void {
+    const gear = training.command("gear").description("Manage shoes and equipment");
+
+    gear.command("list")
+        .description("List gear items, optionally including archived ones")
+        .option("--include-archived", "Include archived gear")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { includeArchived?: boolean; apiUrl?: string; json?: boolean }) => {
+            const query = options.includeArchived ? "?includeArchived=true" : "";
+            const result = gearItemListResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/gear${query}`),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const item of result.items) outputGear(dependencies.output, item, false);
+        });
+
+    gear.command("create")
+        .description("Create a gear item from inline JSON")
+        .requiredOption("--input <json>", "CreateGearItemRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
+            const input = createGearItemRequestSchema.parse(parseJsonInput(options.input));
+            const result = gearItemResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/gear`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                ),
+            );
+            outputGear(dependencies.output, result, options.json);
+        });
+
+    gear.command("update")
+        .description("Update a gear item from inline JSON")
+        .argument("<gear-id>", "Gear UUID")
+        .requiredOption("--version <version>", "Expected gear version", parsePositiveInteger)
+        .requiredOption("--input <json>", "UpdateGearItemRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                gearId: string,
+                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const input = updateGearItemRequestSchema.parse(parseJsonInput(options.input));
+                const result = gearItemResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/gear/${encodeURIComponent(gearId)}`,
+                        mutationRequest("PATCH", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputGear(dependencies.output, result, options.json);
+            },
+        );
+
+    for (const action of ["archive", "restore"] as const)
+        gear.command(action)
+            .description(`${action === "archive" ? "Archive" : "Restore"} a gear item`)
+            .argument("<gear-id>", "Gear UUID")
+            .requiredOption("--version <version>", "Expected gear version", parsePositiveInteger)
+            .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+            .option("--api-url <url>", "Override the Kinetix API URL")
+            .option("--json", "Emit machine-readable JSON")
+            .action(
+                async (
+                    gearId: string,
+                    options: { version: number; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+                ) => {
+                    const result = gearItemResponseSchema.parse(
+                        await responseJson(
+                            dependencies,
+                            `${resolveApiUrl(options.apiUrl)}/training/gear/${encodeURIComponent(gearId)}/${action}`,
+                            mutationRequest("POST", {}, options.version, options.idempotencyKey),
+                        ),
+                    );
+                    outputGear(dependencies.output, result, options.json);
+                },
+            );
 }
 
 function registerTrainingProfileCommands(training: Command, dependencies: ProgramDependencies): void {
@@ -1101,6 +1396,51 @@ function outputGoal(
 ): void {
     if (json) output(JSON.stringify(goal));
     else output(`${goal.id}\t${goal.version}\t${goal.status}\t${goal.type}\t${goal.priority}`);
+}
+
+function outputMax(
+    output: (message: string) => void,
+    max: ReturnType<typeof trainingMaxResponseSchema.parse>,
+    json?: boolean,
+): void {
+    if (json) output(JSON.stringify(max));
+    else {
+        const label = max.maxType === "custom" ? `${max.maxType}:${max.customLabel ?? ""}` : max.maxType;
+        output(`${max.id}\t${label}\t${max.valueKg}kg\t${max.effectiveFrom}\t${max.effectiveTo ?? "current"}`);
+    }
+}
+
+function outputZone(
+    output: (message: string) => void,
+    zone: ReturnType<typeof zoneDefinitionResponseSchema.parse>,
+    json?: boolean,
+): void {
+    if (json) output(JSON.stringify(zone));
+    else
+        output(
+            `${zone.id}\t${zone.family}\t${zone.method}\t${zone.ranges.length} ranges\t${zone.effectiveFrom}\t${zone.effectiveTo ?? "current"}`,
+        );
+}
+
+function outputIncrement(
+    output: (message: string) => void,
+    increment: ReturnType<typeof equipmentIncrementResponseSchema.parse>,
+    json?: boolean,
+): void {
+    if (json) output(JSON.stringify(increment));
+    else
+        output(
+            `${increment.id}\t${increment.version}\t${increment.scope}\t${increment.incrementKg}kg\t${increment.minimumKg ?? "-"}`,
+        );
+}
+
+function outputGear(
+    output: (message: string) => void,
+    gear: ReturnType<typeof gearItemResponseSchema.parse>,
+    json?: boolean,
+): void {
+    if (json) output(JSON.stringify(gear));
+    else output(`${gear.id}\t${gear.version}\t${gear.status}\t${gear.gearType}\t${gear.name}`);
 }
 
 function outputInjury(

@@ -39,6 +39,48 @@ import {
     TRAINING_INJURY_REVISION_HANDLER,
     TrainingInjuryCommands,
     TrainingInjuryRevisionHandler,
+    TRAINING_MAX_COMMANDS,
+    TRAINING_MAX_QUERIES,
+    TRAINING_MAX_REPOSITORY,
+    TRAINING_TARGET_CONTEXT_READER,
+    TrainingMaxCommands,
+    TrainingMaxQueries,
+    RepositoryTrainingTargetContextReader,
+    type TrainingMaxCatalogReader,
+    type TrainingMaxRepository,
+    ZONE_DEFINITION_COMMANDS,
+    ZONE_DEFINITION_QUERIES,
+    ZONE_DEFINITION_REPOSITORY,
+    ZONE_CONTEXT_READER,
+    ZoneDefinitionCommands,
+    ZoneDefinitionQueries,
+    RepositoryZoneContextReader,
+    type ZoneDefinitionRepository,
+    EQUIPMENT_INCREMENT_COMMANDS,
+    EQUIPMENT_INCREMENT_MUTATION_SERVICE,
+    EQUIPMENT_INCREMENT_QUERIES,
+    EQUIPMENT_INCREMENT_REPOSITORY,
+    EQUIPMENT_INCREMENT_REVISION_HANDLER,
+    EquipmentIncrementCommands,
+    EquipmentIncrementQueries,
+    EquipmentIncrementRevisionHandler,
+    equipmentIncrementSerializer,
+    type EquipmentIncrementCatalogReader,
+    type EquipmentIncrementRepository,
+    GEAR_ITEM_COMMANDS,
+    GEAR_ITEM_MUTATION_SERVICE,
+    GEAR_ITEM_REPOSITORY,
+    GEAR_ITEM_REVISION_HANDLER,
+    GearItemCommands,
+    GearItemRevisionHandler,
+    gearItemSerializer,
+    type GearItemRepository,
+    SESSION_PRESCRIPTION_REPOSITORY,
+    PRESCRIPTION_PUBLISHER,
+    PRESCRIPTION_CLONER,
+    PrescriptionPublisher,
+    PrescriptionCloner,
+    type SessionPrescriptionRepository,
     exerciseDefinitionSerializer,
     trainingProfileSerializer,
     trainingGoalSerializer,
@@ -56,6 +98,8 @@ import {
 } from "#src/modules/training/application/index";
 import type {
     ExerciseDefinitionState,
+    EquipmentIncrementState,
+    GearItemState,
     TrainingGoalState,
     TrainingInjuryState,
     TrainingProfileState,
@@ -68,6 +112,13 @@ import { DrizzleTrainingGoalRepository } from "#src/modules/training/infrastruct
 import { TrainingGoalRevisionRegistrar } from "#src/modules/training/infrastructure/training-goal-revision-registrar";
 import { DrizzleTrainingInjuryRepository } from "#src/modules/training/infrastructure/drizzle-training-injury-repository";
 import { TrainingInjuryRevisionRegistrar } from "#src/modules/training/infrastructure/training-injury-revision-registrar";
+import { DrizzleTrainingMaxRepository } from "#src/modules/training/infrastructure/drizzle-training-max-repository";
+import { DrizzleZoneDefinitionRepository } from "#src/modules/training/infrastructure/drizzle-zone-definition-repository";
+import { DrizzleEquipmentIncrementRepository } from "#src/modules/training/infrastructure/drizzle-equipment-increment-repository";
+import { EquipmentIncrementRevisionRegistrar } from "#src/modules/training/infrastructure/equipment-increment-revision-registrar";
+import { DrizzleGearItemRepository } from "#src/modules/training/infrastructure/drizzle-gear-item-repository";
+import { GearItemRevisionRegistrar } from "#src/modules/training/infrastructure/gear-item-revision-registrar";
+import { DrizzleSessionPrescriptionRepository } from "#src/modules/training/infrastructure/drizzle-session-prescription-repository";
 import {
     DrizzleExerciseMergeRepository,
     DrizzleExerciseReferenceUpdater,
@@ -82,6 +133,10 @@ import {
     TrainingProfileController,
     TrainingGoalController,
     TrainingInjuryController,
+    TrainingMaxController,
+    ZoneDefinitionController,
+    EquipmentIncrementController,
+    GearItemController,
 } from "#src/modules/training/presentation/index";
 import {
     OUTBOX_WRITER,
@@ -105,6 +160,10 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         TrainingProfileController,
         TrainingGoalController,
         TrainingInjuryController,
+        TrainingMaxController,
+        ZoneDefinitionController,
+        EquipmentIncrementController,
+        GearItemController,
     ],
     providers: [
         DrizzleTrainingCatalogRepository,
@@ -232,6 +291,159 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
             inject: [TRAINING_INJURY_MUTATION_SERVICE, REVISION_STORE],
         },
         TrainingInjuryRevisionRegistrar,
+        DrizzleTrainingMaxRepository,
+        { provide: TRAINING_MAX_REPOSITORY, useExisting: DrizzleTrainingMaxRepository },
+        {
+            provide: TRAINING_MAX_COMMANDS,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: TrainingMaxRepository,
+                catalog: TrainingMaxCatalogReader,
+                outbox: OutboxWriter,
+                profileReader: ProfileReader,
+            ) =>
+                new TrainingMaxCommands({
+                    unitOfWork,
+                    repository,
+                    catalog,
+                    outbox,
+                    profileReader,
+                    generateId: randomUUID,
+                }),
+            inject: [UNIT_OF_WORK, TRAINING_MAX_REPOSITORY, TRAINING_CATALOG_READER, OUTBOX_WRITER, PROFILE_READER],
+        },
+        {
+            provide: TRAINING_MAX_QUERIES,
+            useFactory: (repository: TrainingMaxRepository, profileReader: ProfileReader) =>
+                new TrainingMaxQueries(repository, profileReader),
+            inject: [TRAINING_MAX_REPOSITORY, PROFILE_READER],
+        },
+        {
+            provide: TRAINING_TARGET_CONTEXT_READER,
+            useFactory: (repository: TrainingMaxRepository) => new RepositoryTrainingTargetContextReader(repository),
+            inject: [TRAINING_MAX_REPOSITORY],
+        },
+        DrizzleZoneDefinitionRepository,
+        { provide: ZONE_DEFINITION_REPOSITORY, useExisting: DrizzleZoneDefinitionRepository },
+        {
+            provide: ZONE_DEFINITION_COMMANDS,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: ZoneDefinitionRepository,
+                outbox: OutboxWriter,
+                profileReader: ProfileReader,
+            ) => new ZoneDefinitionCommands({ unitOfWork, repository, outbox, profileReader, generateId: randomUUID }),
+            inject: [UNIT_OF_WORK, ZONE_DEFINITION_REPOSITORY, OUTBOX_WRITER, PROFILE_READER],
+        },
+        {
+            provide: ZONE_DEFINITION_QUERIES,
+            useFactory: (repository: ZoneDefinitionRepository, profileReader: ProfileReader) =>
+                new ZoneDefinitionQueries(repository, profileReader),
+            inject: [ZONE_DEFINITION_REPOSITORY, PROFILE_READER],
+        },
+        {
+            provide: ZONE_CONTEXT_READER,
+            useFactory: (repository: ZoneDefinitionRepository) => new RepositoryZoneContextReader(repository),
+            inject: [ZONE_DEFINITION_REPOSITORY],
+        },
+        DrizzleEquipmentIncrementRepository,
+        { provide: EQUIPMENT_INCREMENT_REPOSITORY, useExisting: DrizzleEquipmentIncrementRepository },
+        {
+            provide: EQUIPMENT_INCREMENT_MUTATION_SERVICE,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: EquipmentIncrementRepository,
+                revisions: RevisionStore,
+                events: OutboxWriter,
+            ) => new RevisionMutationService(unitOfWork, repository, revisions, equipmentIncrementSerializer, events),
+            inject: [UNIT_OF_WORK, EQUIPMENT_INCREMENT_REPOSITORY, REVISION_STORE, OUTBOX_WRITER],
+        },
+        {
+            provide: EQUIPMENT_INCREMENT_COMMANDS,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: EquipmentIncrementRepository,
+                mutations: RevisionMutationService<EquipmentIncrementState, DomainEvent>,
+                profileReader: ProfileReader,
+                catalog: EquipmentIncrementCatalogReader,
+            ) =>
+                new EquipmentIncrementCommands({
+                    unitOfWork,
+                    repository,
+                    mutations,
+                    profileReader,
+                    catalog,
+                    generateId: randomUUID,
+                }),
+            inject: [
+                UNIT_OF_WORK,
+                EQUIPMENT_INCREMENT_REPOSITORY,
+                EQUIPMENT_INCREMENT_MUTATION_SERVICE,
+                PROFILE_READER,
+                TRAINING_CATALOG_READER,
+            ],
+        },
+        {
+            provide: EQUIPMENT_INCREMENT_QUERIES,
+            useFactory: (
+                repository: EquipmentIncrementRepository,
+                profileReader: ProfileReader,
+                catalog: EquipmentIncrementCatalogReader,
+            ) => new EquipmentIncrementQueries(repository, profileReader, catalog),
+            inject: [EQUIPMENT_INCREMENT_REPOSITORY, PROFILE_READER, TRAINING_CATALOG_READER],
+        },
+        {
+            provide: EQUIPMENT_INCREMENT_REVISION_HANDLER,
+            useFactory: (
+                mutations: RevisionMutationService<EquipmentIncrementState, DomainEvent>,
+                revisions: RevisionStore,
+            ) => new EquipmentIncrementRevisionHandler(mutations, revisions, { now: () => new Date() }, randomUUID),
+            inject: [EQUIPMENT_INCREMENT_MUTATION_SERVICE, REVISION_STORE],
+        },
+        EquipmentIncrementRevisionRegistrar,
+        DrizzleGearItemRepository,
+        { provide: GEAR_ITEM_REPOSITORY, useExisting: DrizzleGearItemRepository },
+        {
+            provide: GEAR_ITEM_MUTATION_SERVICE,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: GearItemRepository,
+                revisions: RevisionStore,
+                events: OutboxWriter,
+            ) => new RevisionMutationService(unitOfWork, repository, revisions, gearItemSerializer, events),
+            inject: [UNIT_OF_WORK, GEAR_ITEM_REPOSITORY, REVISION_STORE, OUTBOX_WRITER],
+        },
+        {
+            provide: GEAR_ITEM_COMMANDS,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: GearItemRepository,
+                mutations: RevisionMutationService<GearItemState, DomainEvent>,
+                profileReader: ProfileReader,
+            ) => new GearItemCommands({ unitOfWork, repository, mutations, profileReader, generateId: randomUUID }),
+            inject: [UNIT_OF_WORK, GEAR_ITEM_REPOSITORY, GEAR_ITEM_MUTATION_SERVICE, PROFILE_READER],
+        },
+        {
+            provide: GEAR_ITEM_REVISION_HANDLER,
+            useFactory: (mutations: RevisionMutationService<GearItemState, DomainEvent>, revisions: RevisionStore) =>
+                new GearItemRevisionHandler(mutations, revisions, { now: () => new Date() }, randomUUID),
+            inject: [GEAR_ITEM_MUTATION_SERVICE, REVISION_STORE],
+        },
+        GearItemRevisionRegistrar,
+        DrizzleSessionPrescriptionRepository,
+        { provide: SESSION_PRESCRIPTION_REPOSITORY, useExisting: DrizzleSessionPrescriptionRepository },
+        {
+            provide: PRESCRIPTION_PUBLISHER,
+            useFactory: (unitOfWork: UnitOfWork, repository: SessionPrescriptionRepository, outbox: OutboxWriter) =>
+                new PrescriptionPublisher({ unitOfWork, repository, outbox, generateId: randomUUID }),
+            inject: [UNIT_OF_WORK, SESSION_PRESCRIPTION_REPOSITORY, OUTBOX_WRITER],
+        },
+        {
+            provide: PRESCRIPTION_CLONER,
+            useFactory: (unitOfWork: UnitOfWork, repository: SessionPrescriptionRepository, outbox: OutboxWriter) =>
+                new PrescriptionCloner({ unitOfWork, repository, outbox, generateId: randomUUID }),
+            inject: [UNIT_OF_WORK, SESSION_PRESCRIPTION_REPOSITORY, OUTBOX_WRITER],
+        },
         {
             provide: TRAINING_MODULE_DEFINITION,
             useValue: trainingModuleDefinition,
@@ -337,6 +549,12 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         ExerciseRevisionRegistrar,
         TrainingCatalogSeedRunner,
     ],
-    exports: [TRAINING_MODULE_DEFINITION, TRAINING_CATALOG_QUERIES, TRAINING_EXERCISE_CATALOG],
+    exports: [
+        TRAINING_MODULE_DEFINITION,
+        TRAINING_CATALOG_QUERIES,
+        TRAINING_EXERCISE_CATALOG,
+        TRAINING_TARGET_CONTEXT_READER,
+        ZONE_CONTEXT_READER,
+    ],
 })
 export class TrainingModule {}

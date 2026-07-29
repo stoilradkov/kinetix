@@ -3,4 +3,8 @@ export { ExerciseMergeController } from "#src/modules/training/presentation/exer
 export { TrainingCatalogController } from "#src/modules/training/presentation/training-catalog.controller";
 export { TrainingGoalController } from "#src/modules/training/presentation/training-goal.controller";
 export { TrainingInjuryController } from "#src/modules/training/presentation/training-injury.controller";
+export { TrainingMaxController } from "#src/modules/training/presentation/training-max.controller";
 export { TrainingProfileController } from "#src/modules/training/presentation/training-profile.controller";
+export { ZoneDefinitionController } from "#src/modules/training/presentation/zone-definition.controller";
+export { EquipmentIncrementController } from "#src/modules/training/presentation/equipment-increment.controller";
+export { GearItemController } from "#src/modules/training/presentation/gear-item.controller";

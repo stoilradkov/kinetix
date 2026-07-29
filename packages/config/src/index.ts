@@ -9,7 +9,7 @@ export const apiEnvSchema = z.object({
     DATABASE_URL: z.string().url(),
     CORS_ORIGINS: z
         .string()
-        .default("http://localhost:5173")
+        .default("http://localhost:5173,http://localhost:5174")
         .transform(value =>
             value
                 .split(",")

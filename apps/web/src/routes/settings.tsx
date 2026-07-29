@@ -4,12 +4,25 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { LoaderCircle, Pencil, Plus } from "lucide-react";
 
-import type { GoalStatusValue, InjuryStatusValue, TrainingGoalResponse, TrainingInjuryResponse } from "@kinetix/types";
+import type {
+    EquipmentIncrementResponse,
+    GearItemResponse,
+    GoalStatusValue,
+    InjuryStatusValue,
+    TrainingGoalResponse,
+    TrainingInjuryResponse,
+    TrainingMaxResponse,
+    ZoneFamilyValue,
+} from "@kinetix/types";
 
 import { CoreProfileForm } from "@/components/profile/core-profile-form";
+import { EquipmentIncrementForm } from "@/components/profile/equipment-increment-form";
+import { GearForm } from "@/components/profile/gear-form";
 import { GoalForm } from "@/components/profile/goal-form";
 import { InjuryForm } from "@/components/profile/injury-form";
+import { TrainingMaxForm } from "@/components/profile/training-max-form";
 import { TrainingProfileForm } from "@/components/profile/training-profile-form";
+import { ZoneForm } from "@/components/profile/zone-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -24,13 +37,35 @@ import {
     goalsQueryOptions,
     injuriesQueryOptions,
     profileQueryOptions,
+    recordTrainingMax,
+    trainingMaxHistoryQueryOptions,
+    trainingMaxesQueryOptions,
     trainingProfileQueryOptions,
     updateGoal,
     updateInjury,
     updateProfile,
     updateTrainingProfile,
+    changeGearStatus,
+    createEquipmentIncrement,
+    createGearItem,
+    equipmentIncrementsQueryOptions,
+    gearItemsQueryOptions,
+    recordZoneDefinition,
+    updateEquipmentIncrement,
+    updateGearItem,
+    zoneHistoryQueryOptions,
+    zonesQueryOptions,
 } from "@/lib/api";
+import {
+    equipmentIncrementCreateInput,
+    equipmentIncrementFormDefaults,
+    equipmentIncrementUpdateInput,
+    type EquipmentIncrementFormValues,
+} from "@/lib/equipment-increment-form";
+import { gearCreateInput, gearFormDefaults, gearUpdateInput, type GearFormValues } from "@/lib/gear-form";
 import { goalCreateInput, goalFormDefaults, goalUpdateInput, type GoalFormValues } from "@/lib/goal-form";
+import { trainingMaxFormDefaults, trainingMaxRecordInput, type TrainingMaxFormValues } from "@/lib/training-max-form";
+import { zoneFormDefaults, zoneRecordInput, type ZoneFormValues } from "@/lib/zone-form";
 import { injuryCreateInput, injuryFormDefaults, injuryUpdateInput, type InjuryFormValues } from "@/lib/injury-form";
 import {
     profileCreateInput,
@@ -153,6 +188,10 @@ function SettingsPage(): React.JSX.Element {
 
             {profile ? <TrainingProfileSection /> : null}
             {profile ? <TrainingGoalsSection /> : null}
+            {profile ? <TrainingMaxesSection /> : null}
+            {profile ? <ZonesSection /> : null}
+            {profile ? <EquipmentIncrementsSection /> : null}
+            {profile ? <GearSection /> : null}
             {profile ? <TrainingInjuriesSection /> : null}
 
             <Dialog
@@ -644,6 +683,620 @@ function TrainingInjuriesSection(): React.JSX.Element {
                             showStatus
                             submitError={saveMutation.error}
                             submitLabel="Save injury"
+                        />
+                    ) : null}
+                </DialogContent>
+            </Dialog>
+        </div>
+    );
+}
+
+function maxTypeLabel(max: Pick<TrainingMaxResponse, "maxType" | "customLabel">): string {
+    if (max.maxType === "custom") return max.customLabel ?? "Custom";
+    return max.maxType === "estimated_1rm" ? "Est. 1RM" : "Training max";
+}
+
+function TrainingMaxesSection(): React.JSX.Element {
+    const queryClient = useQueryClient();
+    const query = useQuery(trainingMaxesQueryOptions());
+    const exercisesQuery = useQuery(exerciseListQueryOptions("", "active"));
+    const [createOpen, setCreateOpen] = useState(false);
+    const [historySeries, setHistorySeries] = useState<Pick<
+        TrainingMaxResponse,
+        "exerciseId" | "maxType" | "customLabel"
+    > | null>(null);
+    const historyQuery = useQuery(trainingMaxHistoryQueryOptions(historySeries));
+    const maxes = query.data?.items ?? [];
+
+    const exerciseName = new Map((exercisesQuery.data?.items ?? []).map(exercise => [exercise.id, exercise.name]));
+    const exerciseOptions = (exercisesQuery.data?.items ?? []).map(exercise => ({
+        value: exercise.id,
+        label: exercise.name,
+    }));
+
+    const createMutation = useMutation({
+        mutationFn: (values: TrainingMaxFormValues) => recordTrainingMax(trainingMaxRecordInput(values)),
+        onSuccess: async () => {
+            setCreateOpen(false);
+            await queryClient.invalidateQueries({ queryKey: ["training-maxes"] });
+            await queryClient.invalidateQueries({ queryKey: ["training-max-history"] });
+        },
+    });
+
+    return (
+        <div className="mt-6">
+            <div className="bg-card rounded-xl border p-6">
+                <div className="flex items-center justify-between gap-3">
+                    <h2 className="text-muted-foreground font-mono text-xs font-semibold tracking-wide uppercase">
+                        Training maxima
+                    </h2>
+                    <Button onClick={() => setCreateOpen(true)} size="sm">
+                        <Plus />
+                        Record max
+                    </Button>
+                </div>
+
+                {query.isPending ? (
+                    <div className="text-muted-foreground mt-4 flex items-center gap-2 text-sm">
+                        <LoaderCircle className="size-4 animate-spin" />
+                        Loading maxima…
+                    </div>
+                ) : query.isError ? (
+                    <div className="bg-destructive/10 text-destructive border-destructive/30 mt-4 rounded-lg border p-3 text-sm">
+                        {query.error.message}
+                    </div>
+                ) : maxes.length === 0 ? (
+                    <p className="text-muted-foreground mt-4 text-sm">
+                        No maxima yet. Record one to drive percentage-based loads.
+                    </p>
+                ) : (
+                    <ul className="mt-4 divide-y">
+                        {maxes.map(max => (
+                            <li key={max.id}>
+                                <button
+                                    className="hover:bg-muted/50 flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg px-2 py-3 text-left transition-colors"
+                                    onClick={() =>
+                                        setHistorySeries({
+                                            exerciseId: max.exerciseId,
+                                            maxType: max.maxType,
+                                            customLabel: max.customLabel,
+                                        })
+                                    }
+                                    type="button"
+                                >
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-medium">
+                                                {exerciseName.get(max.exerciseId) ?? max.exerciseId}
+                                            </span>
+                                            <Badge variant="info">{maxTypeLabel(max)}</Badge>
+                                        </div>
+                                        <p className="text-muted-foreground mt-1 truncate text-sm">
+                                            since {max.effectiveFrom.slice(0, 10)}
+                                        </p>
+                                    </div>
+                                    <span className="font-mono text-sm tabular-nums">{max.valueKg} kg</span>
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+
+            <Dialog
+                onOpenChange={open => {
+                    setCreateOpen(open);
+                    if (!open) createMutation.reset();
+                }}
+                open={createOpen}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Record training max</DialogTitle>
+                        <DialogDescription>
+                            Recording a new value closes the current one and keeps it in history.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <TrainingMaxForm
+                        defaultValues={trainingMaxFormDefaults()}
+                        exerciseOptions={exerciseOptions}
+                        isSubmitting={createMutation.isPending}
+                        onSubmit={async values => {
+                            await createMutation.mutateAsync(values);
+                        }}
+                        submitError={createMutation.error}
+                        submitLabel="Record max"
+                    />
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                onOpenChange={open => {
+                    if (!open) setHistorySeries(null);
+                }}
+                open={historySeries !== null}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>
+                            {historySeries ? (exerciseName.get(historySeries.exerciseId) ?? "Exercise") : "History"} ·{" "}
+                            {historySeries ? maxTypeLabel(historySeries) : ""}
+                        </DialogTitle>
+                        <DialogDescription>Effective-interval history for this max.</DialogDescription>
+                    </DialogHeader>
+                    {historyQuery.isPending ? (
+                        <div className="text-muted-foreground flex items-center gap-2 text-sm">
+                            <LoaderCircle className="size-4 animate-spin" />
+                            Loading history…
+                        </div>
+                    ) : historyQuery.isError ? (
+                        <div className="bg-destructive/10 text-destructive border-destructive/30 rounded-lg border p-3 text-sm">
+                            {historyQuery.error.message}
+                        </div>
+                    ) : (
+                        <ul className="divide-y">
+                            {(historyQuery.data?.items ?? [])
+                                .slice()
+                                .reverse()
+                                .map(record => (
+                                    <li className="flex items-center justify-between gap-3 py-3" key={record.id}>
+                                        <div className="min-w-0">
+                                            <span className="font-mono text-sm tabular-nums">{record.valueKg} kg</span>
+                                            <p className="text-muted-foreground mt-1 text-sm">
+                                                {record.effectiveFrom.slice(0, 10)} →{" "}
+                                                {record.effectiveTo ? record.effectiveTo.slice(0, 10) : "current"}
+                                            </p>
+                                        </div>
+                                        {record.effectiveTo === null ? <Badge variant="success">Current</Badge> : null}
+                                    </li>
+                                ))}
+                        </ul>
+                    )}
+                </DialogContent>
+            </Dialog>
+        </div>
+    );
+}
+
+const zoneFamilyLabels: Record<ZoneFamilyValue, string> = {
+    heart_rate: "Heart rate",
+    pace: "Pace",
+    power: "Power",
+};
+
+function ZonesSection(): React.JSX.Element {
+    const queryClient = useQueryClient();
+    const query = useQuery(zonesQueryOptions);
+    const [createOpen, setCreateOpen] = useState(false);
+    const [historyFamily, setHistoryFamily] = useState<ZoneFamilyValue | null>(null);
+    const historyQuery = useQuery(zoneHistoryQueryOptions(historyFamily));
+    const zones = query.data?.items ?? [];
+
+    const createMutation = useMutation({
+        mutationFn: (values: ZoneFormValues) => recordZoneDefinition(zoneRecordInput(values)),
+        onSuccess: async () => {
+            setCreateOpen(false);
+            await queryClient.invalidateQueries({ queryKey: ["training-zones"] });
+            await queryClient.invalidateQueries({ queryKey: ["training-zone-history"] });
+        },
+    });
+
+    return (
+        <div className="mt-6">
+            <div className="bg-card rounded-xl border p-6">
+                <div className="flex items-center justify-between gap-3">
+                    <h2 className="text-muted-foreground font-mono text-xs font-semibold tracking-wide uppercase">
+                        Training zones
+                    </h2>
+                    <Button onClick={() => setCreateOpen(true)} size="sm">
+                        <Plus />
+                        Record zones
+                    </Button>
+                </div>
+
+                {query.isPending ? (
+                    <div className="text-muted-foreground mt-4 flex items-center gap-2 text-sm">
+                        <LoaderCircle className="size-4 animate-spin" />
+                        Loading zones…
+                    </div>
+                ) : query.isError ? (
+                    <div className="bg-destructive/10 text-destructive border-destructive/30 mt-4 rounded-lg border p-3 text-sm">
+                        {query.error.message}
+                    </div>
+                ) : zones.length === 0 ? (
+                    <p className="text-muted-foreground mt-4 text-sm">
+                        No zone definitions yet. Record heart-rate, pace, or power zones.
+                    </p>
+                ) : (
+                    <ul className="mt-4 divide-y">
+                        {zones.map(zone => (
+                            <li key={zone.id}>
+                                <button
+                                    className="hover:bg-muted/50 flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg px-2 py-3 text-left transition-colors"
+                                    onClick={() => setHistoryFamily(zone.family)}
+                                    type="button"
+                                >
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-medium">{zoneFamilyLabels[zone.family]}</span>
+                                            <Badge variant="info">{zone.method}</Badge>
+                                        </div>
+                                        <p className="text-muted-foreground mt-1 truncate text-sm">
+                                            since {zone.effectiveFrom.slice(0, 10)}
+                                        </p>
+                                    </div>
+                                    <span className="text-muted-foreground font-mono text-xs tabular-nums">
+                                        {zone.ranges.length} ranges
+                                    </span>
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+
+            <Dialog
+                onOpenChange={open => {
+                    setCreateOpen(open);
+                    if (!open) createMutation.reset();
+                }}
+                open={createOpen}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Record zones</DialogTitle>
+                        <DialogDescription>
+                            Recording new zones for a family closes the current ones and keeps them in history.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <ZoneForm
+                        defaultValues={zoneFormDefaults()}
+                        isSubmitting={createMutation.isPending}
+                        onSubmit={async values => {
+                            await createMutation.mutateAsync(values);
+                        }}
+                        submitError={createMutation.error}
+                        submitLabel="Record zones"
+                    />
+                </DialogContent>
+            </Dialog>
+
+            <Dialog onOpenChange={open => (open ? undefined : setHistoryFamily(null))} open={historyFamily !== null}>
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>{historyFamily ? zoneFamilyLabels[historyFamily] : "Zones"} history</DialogTitle>
+                        <DialogDescription>Effective-interval history for this family.</DialogDescription>
+                    </DialogHeader>
+                    {historyQuery.isPending ? (
+                        <div className="text-muted-foreground flex items-center gap-2 text-sm">
+                            <LoaderCircle className="size-4 animate-spin" />
+                            Loading history…
+                        </div>
+                    ) : (
+                        <ul className="divide-y">
+                            {(historyQuery.data?.items ?? [])
+                                .slice()
+                                .reverse()
+                                .map(record => (
+                                    <li className="flex items-center justify-between gap-3 py-3" key={record.id}>
+                                        <div className="min-w-0">
+                                            <span className="font-medium">{record.method}</span>
+                                            <p className="text-muted-foreground mt-1 text-sm">
+                                                {record.effectiveFrom.slice(0, 10)} →{" "}
+                                                {record.effectiveTo ? record.effectiveTo.slice(0, 10) : "current"}
+                                            </p>
+                                        </div>
+                                        {record.effectiveTo === null ? <Badge variant="success">Current</Badge> : null}
+                                    </li>
+                                ))}
+                        </ul>
+                    )}
+                </DialogContent>
+            </Dialog>
+        </div>
+    );
+}
+
+const incrementScopeLabels: Record<EquipmentIncrementResponse["scope"], string> = {
+    default: "Default",
+    exercise: "Exercise",
+    equipment: "Equipment",
+};
+
+function EquipmentIncrementsSection(): React.JSX.Element {
+    const queryClient = useQueryClient();
+    const query = useQuery(equipmentIncrementsQueryOptions);
+    const exercisesQuery = useQuery(exerciseListQueryOptions("", "active"));
+    const catalogQuery = useQuery(exerciseFormCatalogQueryOptions);
+    const [createOpen, setCreateOpen] = useState(false);
+    const [editIncrement, setEditIncrement] = useState<EquipmentIncrementResponse | null>(null);
+    const increments = query.data?.items ?? [];
+
+    const exerciseOptions = (exercisesQuery.data?.items ?? []).map(exercise => ({
+        value: exercise.id,
+        label: exercise.name,
+    }));
+    const equipmentOptions = (catalogQuery.data?.equipment ?? []).map(item => ({ value: item.id, label: item.name }));
+
+    const refresh = async () => {
+        await queryClient.invalidateQueries({ queryKey: ["training-equipment-increments"] });
+    };
+    const createMutation = useMutation({
+        mutationFn: (values: EquipmentIncrementFormValues) =>
+            createEquipmentIncrement(equipmentIncrementCreateInput(values)),
+        onSuccess: async () => {
+            setCreateOpen(false);
+            await refresh();
+        },
+    });
+    const saveMutation = useMutation({
+        mutationFn: (values: EquipmentIncrementFormValues) =>
+            updateEquipmentIncrement(editIncrement!, equipmentIncrementUpdateInput(values)),
+        onSuccess: async () => {
+            setEditIncrement(null);
+            await refresh();
+        },
+    });
+
+    return (
+        <div className="mt-6">
+            <div className="bg-card rounded-xl border p-6">
+                <div className="flex items-center justify-between gap-3">
+                    <h2 className="text-muted-foreground font-mono text-xs font-semibold tracking-wide uppercase">
+                        Load increments
+                    </h2>
+                    <Button onClick={() => setCreateOpen(true)} size="sm">
+                        <Plus />
+                        Add increment
+                    </Button>
+                </div>
+
+                {query.isPending ? (
+                    <div className="text-muted-foreground mt-4 flex items-center gap-2 text-sm">
+                        <LoaderCircle className="size-4 animate-spin" />
+                        Loading increments…
+                    </div>
+                ) : query.isError ? (
+                    <div className="bg-destructive/10 text-destructive border-destructive/30 mt-4 rounded-lg border p-3 text-sm">
+                        {query.error.message}
+                    </div>
+                ) : increments.length === 0 ? (
+                    <p className="text-muted-foreground mt-4 text-sm">
+                        No increments yet. Add one to round percentage-based loads.
+                    </p>
+                ) : (
+                    <ul className="mt-4 divide-y">
+                        {increments.map(increment => (
+                            <li key={increment.id}>
+                                <button
+                                    className="hover:bg-muted/50 flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg px-2 py-3 text-left transition-colors"
+                                    onClick={() => setEditIncrement(increment)}
+                                    type="button"
+                                >
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-medium">
+                                                {increment.label ?? incrementScopeLabels[increment.scope]}
+                                            </span>
+                                            <Badge variant="secondary">{incrementScopeLabels[increment.scope]}</Badge>
+                                        </div>
+                                        <p className="text-muted-foreground mt-1 truncate text-sm">
+                                            {increment.minimumKg ? `min ${increment.minimumKg} kg · ` : ""}step{" "}
+                                            {increment.incrementKg} kg
+                                        </p>
+                                    </div>
+                                    <span className="font-mono text-sm tabular-nums">{increment.incrementKg} kg</span>
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+
+            <Dialog
+                onOpenChange={open => {
+                    setCreateOpen(open);
+                    if (!open) createMutation.reset();
+                }}
+                open={createOpen}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Add increment</DialogTitle>
+                        <DialogDescription>Configure rounding for a scope.</DialogDescription>
+                    </DialogHeader>
+                    <EquipmentIncrementForm
+                        defaultValues={equipmentIncrementFormDefaults(null)}
+                        equipmentOptions={equipmentOptions}
+                        exerciseOptions={exerciseOptions}
+                        isSubmitting={createMutation.isPending}
+                        onSubmit={async values => {
+                            await createMutation.mutateAsync(values);
+                        }}
+                        submitError={createMutation.error}
+                        submitLabel="Add increment"
+                    />
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                onOpenChange={open => {
+                    if (!open) {
+                        setEditIncrement(null);
+                        saveMutation.reset();
+                    }
+                }}
+                open={editIncrement !== null}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Edit increment</DialogTitle>
+                        <DialogDescription>Update the step, minimum, or label.</DialogDescription>
+                    </DialogHeader>
+                    {editIncrement ? (
+                        <EquipmentIncrementForm
+                            defaultValues={equipmentIncrementFormDefaults(editIncrement)}
+                            equipmentOptions={equipmentOptions}
+                            exerciseOptions={exerciseOptions}
+                            isSubmitting={saveMutation.isPending}
+                            key={`${editIncrement.id}:${editIncrement.version}`}
+                            lockScope
+                            onSubmit={async values => {
+                                await saveMutation.mutateAsync(values);
+                            }}
+                            submitError={saveMutation.error}
+                            submitLabel="Save increment"
+                        />
+                    ) : null}
+                </DialogContent>
+            </Dialog>
+        </div>
+    );
+}
+
+function GearSection(): React.JSX.Element {
+    const queryClient = useQueryClient();
+    const [includeArchived, setIncludeArchived] = useState(false);
+    const query = useQuery(gearItemsQueryOptions(includeArchived));
+    const [createOpen, setCreateOpen] = useState(false);
+    const [editGear, setEditGear] = useState<GearItemResponse | null>(null);
+    const gear = query.data?.items ?? [];
+
+    const refresh = async () => {
+        await queryClient.invalidateQueries({ queryKey: ["training-gear"] });
+    };
+    const createMutation = useMutation({
+        mutationFn: (values: GearFormValues) => createGearItem(gearCreateInput(values)),
+        onSuccess: async () => {
+            setCreateOpen(false);
+            await refresh();
+        },
+    });
+    const saveMutation = useMutation({
+        mutationFn: (values: GearFormValues) => updateGearItem(editGear!, gearUpdateInput(values)),
+        onSuccess: async () => {
+            setEditGear(null);
+            await refresh();
+        },
+    });
+    const statusMutation = useMutation({
+        mutationFn: (item: GearItemResponse) => changeGearStatus(item),
+        onSuccess: refresh,
+    });
+
+    return (
+        <div className="mt-6">
+            <div className="bg-card rounded-xl border p-6">
+                <div className="flex items-center justify-between gap-3">
+                    <h2 className="text-muted-foreground font-mono text-xs font-semibold tracking-wide uppercase">
+                        Shoes &amp; gear
+                    </h2>
+                    <div className="flex items-center gap-2">
+                        <Button onClick={() => setIncludeArchived(value => !value)} size="sm" variant="ghost">
+                            {includeArchived ? "Hide archived" : "Show archived"}
+                        </Button>
+                        <Button onClick={() => setCreateOpen(true)} size="sm">
+                            <Plus />
+                            Add gear
+                        </Button>
+                    </div>
+                </div>
+
+                {query.isPending ? (
+                    <div className="text-muted-foreground mt-4 flex items-center gap-2 text-sm">
+                        <LoaderCircle className="size-4 animate-spin" />
+                        Loading gear…
+                    </div>
+                ) : query.isError ? (
+                    <div className="bg-destructive/10 text-destructive border-destructive/30 mt-4 rounded-lg border p-3 text-sm">
+                        {query.error.message}
+                    </div>
+                ) : gear.length === 0 ? (
+                    <p className="text-muted-foreground mt-4 text-sm">No gear yet. Add shoes or equipment to track.</p>
+                ) : (
+                    <ul className="mt-4 divide-y">
+                        {gear.map(item => (
+                            <li className="flex items-center justify-between gap-3 py-1" key={item.id}>
+                                <button
+                                    className="hover:bg-muted/50 flex flex-1 cursor-pointer items-center justify-between gap-3 rounded-lg px-2 py-3 text-left transition-colors"
+                                    onClick={() => setEditGear(item)}
+                                    type="button"
+                                >
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                            <span className="font-medium">{item.name}</span>
+                                            <Badge variant={item.status === "archived" ? "secondary" : "success"}>
+                                                {item.status}
+                                            </Badge>
+                                        </div>
+                                        <p className="text-muted-foreground mt-1 truncate text-sm">
+                                            {item.gearType}
+                                            {item.distanceLimitM ? ` · limit ${item.distanceLimitM} m` : ""}
+                                        </p>
+                                    </div>
+                                </button>
+                                <Button
+                                    disabled={statusMutation.isPending}
+                                    onClick={() => statusMutation.mutate(item)}
+                                    size="sm"
+                                    variant="outline"
+                                >
+                                    {item.status === "active" ? "Archive" : "Restore"}
+                                </Button>
+                            </li>
+                        ))}
+                    </ul>
+                )}
+            </div>
+
+            <Dialog
+                onOpenChange={open => {
+                    setCreateOpen(open);
+                    if (!open) createMutation.reset();
+                }}
+                open={createOpen}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Add gear</DialogTitle>
+                        <DialogDescription>Track shoes or equipment for your runs.</DialogDescription>
+                    </DialogHeader>
+                    <GearForm
+                        defaultValues={gearFormDefaults(null)}
+                        isSubmitting={createMutation.isPending}
+                        onSubmit={async values => {
+                            await createMutation.mutateAsync(values);
+                        }}
+                        submitError={createMutation.error}
+                        submitLabel="Add gear"
+                    />
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                onOpenChange={open => {
+                    if (!open) {
+                        setEditGear(null);
+                        saveMutation.reset();
+                    }
+                }}
+                open={editGear !== null}
+            >
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>Edit gear</DialogTitle>
+                        <DialogDescription>Update details or the distance limit.</DialogDescription>
+                    </DialogHeader>
+                    {editGear ? (
+                        <GearForm
+                            defaultValues={gearFormDefaults(editGear)}
+                            isSubmitting={saveMutation.isPending}
+                            key={`${editGear.id}:${editGear.version}`}
+                            onSubmit={async values => {
+                                await saveMutation.mutateAsync(values);
+                            }}
+                            submitError={saveMutation.error}
+                            submitLabel="Save gear"
                         />
                     ) : null}
                 </DialogContent>

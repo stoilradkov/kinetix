@@ -1,9 +1,14 @@
 /** Public entry point for the framework-free Training domain. */
 export {};
 export * from "#src/modules/training/domain/catalog";
+export * from "#src/modules/training/domain/equipment-increment";
 export * from "#src/modules/training/domain/exercise-definition";
 export * from "#src/modules/training/domain/exercise-merge";
+export * from "#src/modules/training/domain/gear-item";
 export * from "#src/modules/training/domain/measurement";
+export * from "#src/modules/training/domain/session-prescription";
 export * from "#src/modules/training/domain/training-goal";
 export * from "#src/modules/training/domain/training-injury";
+export * from "#src/modules/training/domain/training-max";
+export * from "#src/modules/training/domain/zone-definition";
 export * from "#src/modules/training/domain/training-profile";
