@@ -1252,8 +1252,239 @@ export const workoutTemplatePrescriptions = pgTable(
     ],
 );
 
+/**
+ * Program — editable, versioned, archivable root owning metadata and its nested block tree
+ * (design 5.6, 10.3). Schedule mode selects relative/dated/ordered planning; dates and focus
+ * are optional so a relative program can stay active without a calendar.
+ */
+export const programs = pgTable(
+    "programs",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        name: text("name").notNull(),
+        description: text("description"),
+        status: text("status").notNull().default("draft"),
+        scheduleMode: text("schedule_mode").notNull().default("ordered"),
+        startDate: date("start_date"),
+        endDate: date("end_date"),
+        focus: text("focus"),
+        version: integer("version").notNull().default(1),
+        archivedAt: timestamp("archived_at", { withTimezone: true }),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("programs_name_valid", sql`length(btrim(${table.name})) > 0`),
+        check("programs_status_valid", sql`${table.status} IN ('draft', 'active', 'paused', 'completed', 'archived')`),
+        check("programs_schedule_mode_valid", sql`${table.scheduleMode} IN ('relative', 'dated', 'ordered')`),
+        check(
+            "programs_date_range_valid",
+            sql`${table.startDate} IS NULL OR ${table.endDate} IS NULL OR ${table.startDate} <= ${table.endDate}`,
+        ),
+        check("programs_archive_state_valid", sql`(${table.status} = 'archived') = (${table.archivedAt} IS NOT NULL)`),
+        check("programs_version_positive", sql`${table.version} > 0`),
+        index("programs_profile_idx").on(table.profileId, table.status),
+    ],
+);
+
+/**
+ * Nested program block. Parent must belong to the same program; the tree stays acyclic and
+ * sibling positions are unique. Overlapping date/relative ranges are allowed and surfaced as
+ * warnings, not constraint failures (design 10.3).
+ */
+export const programBlocks = pgTable(
+    "program_blocks",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        programId: uuid("program_id")
+            .notNull()
+            .references(() => programs.id, { onDelete: "cascade" }),
+        parentBlockId: uuid("parent_block_id").references((): AnyPgColumn => programBlocks.id, {
+            onDelete: "cascade",
+        }),
+        type: text("type").notNull(),
+        label: text("label"),
+        position: integer("position").notNull(),
+        startDate: date("start_date"),
+        endDate: date("end_date"),
+        relativeStartWeek: integer("relative_start_week"),
+        relativeEndWeek: integer("relative_end_week"),
+        focus: text("focus"),
+        targetMuscles: jsonb("target_muscles").$type<string[]>().notNull().default([]),
+        targetVolume: text("target_volume"),
+        targetIntensity: text("target_intensity"),
+        deload: boolean("deload").notNull().default(false),
+        expectedAdaptations: text("expected_adaptations"),
+        notes: text("notes"),
+        tags: jsonb("tags").$type<string[]>().notNull().default([]),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("program_blocks_type_valid", sql`${table.type} IN ('macrocycle', 'mesocycle', 'microcycle', 'custom')`),
+        check("program_blocks_position_nonneg", sql`${table.position} >= 0`),
+        check(
+            "program_blocks_not_self_parent",
+            sql`${table.parentBlockId} IS NULL OR ${table.parentBlockId} <> ${table.id}`,
+        ),
+        check(
+            "program_blocks_date_range_valid",
+            sql`${table.startDate} IS NULL OR ${table.endDate} IS NULL OR ${table.startDate} <= ${table.endDate}`,
+        ),
+        check(
+            "program_blocks_relative_range_valid",
+            sql`${table.relativeStartWeek} IS NULL OR ${table.relativeEndWeek} IS NULL
+                OR ${table.relativeStartWeek} <= ${table.relativeEndWeek}`,
+        ),
+        index("program_blocks_program_idx").on(table.programId),
+        index("program_blocks_parent_idx").on(table.parentBlockId),
+    ],
+);
+
+/** Program-to-training-goal link (design 10.3). */
+export const programGoals = pgTable(
+    "program_goals",
+    {
+        programId: uuid("program_id")
+            .notNull()
+            .references(() => programs.id, { onDelete: "cascade" }),
+        goalId: uuid("goal_id")
+            .notNull()
+            .references(() => trainingGoals.id),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        primaryKey({ name: "program_goals_pk", columns: [table.programId, table.goalId] }),
+        index("program_goals_goal_idx").on(table.goalId),
+    ],
+);
+
+/**
+ * PlannedSession — editable, versioned, archivable root owning schedule/lifecycle plus a pointer
+ * to its current immutable prescription (design 5.7, 10.3). It is an independent aggregate so one
+ * planned session can participate in several programs and blocks through the join tables below.
+ */
+export const plannedSessions = pgTable(
+    "planned_sessions",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        title: text("title"),
+        status: text("status").notNull().default("planned"),
+        localDate: date("local_date"),
+        timeZone: text("time_zone"),
+        preferredTime: text("preferred_time"),
+        expectedDurationMinutes: integer("expected_duration_minutes"),
+        notes: text("notes"),
+        tags: jsonb("tags").$type<string[]>().notNull().default([]),
+        skipReason: text("skip_reason"),
+        skipNotes: text("skip_notes"),
+        currentPrescriptionId: uuid("current_prescription_id")
+            .notNull()
+            .references(() => sessionPrescriptions.id),
+        sourceTemplateId: uuid("source_template_id").references(() => workoutTemplates.id),
+        sourceTemplateVersion: integer("source_template_version"),
+        version: integer("version").notNull().default(1),
+        archivedAt: timestamp("archived_at", { withTimezone: true }),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check(
+            "planned_sessions_status_valid",
+            sql`${table.status} IN ('planned', 'completed', 'partially_completed', 'skipped', 'cancelled')`,
+        ),
+        check(
+            "planned_sessions_skip_reason_valid",
+            sql`${table.skipReason} IS NULL OR ${table.skipReason} IN
+                ('illness', 'fatigue', 'pain', 'schedule', 'recovery', 'equipment_unavailable', 'other')`,
+        ),
+        check(
+            "planned_sessions_duration_nonneg",
+            sql`${table.expectedDurationMinutes} IS NULL OR ${table.expectedDurationMinutes} >= 0`,
+        ),
+        check(
+            "planned_sessions_source_pair",
+            sql`(${table.sourceTemplateId} IS NULL) = (${table.sourceTemplateVersion} IS NULL)`,
+        ),
+        check("planned_sessions_version_positive", sql`${table.version} > 0`),
+        index("planned_sessions_profile_idx").on(table.profileId, table.status),
+        index("planned_sessions_date_idx").on(table.localDate),
+    ],
+);
+
+/** Version→prescription link preserving every published planned-session prescription (design 10.3). */
+export const plannedSessionPrescriptions = pgTable(
+    "planned_session_prescriptions",
+    {
+        plannedSessionId: uuid("planned_session_id")
+            .notNull()
+            .references(() => plannedSessions.id, { onDelete: "cascade" }),
+        plannedSessionVersion: integer("planned_session_version").notNull(),
+        prescriptionId: uuid("prescription_id")
+            .notNull()
+            .references(() => sessionPrescriptions.id),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        primaryKey({
+            name: "planned_session_prescriptions_pk",
+            columns: [table.plannedSessionId, table.plannedSessionVersion],
+        }),
+        check("planned_session_prescriptions_version_positive", sql`${table.plannedSessionVersion} > 0`),
+        index("planned_session_prescriptions_prescription_idx").on(table.prescriptionId),
+    ],
+);
+
+/** Program-to-session membership with program-relative week/day/sequence (design 10.3). */
+export const programPlannedSessions = pgTable(
+    "program_planned_sessions",
+    {
+        programId: uuid("program_id")
+            .notNull()
+            .references(() => programs.id, { onDelete: "cascade" }),
+        plannedSessionId: uuid("planned_session_id")
+            .notNull()
+            .references(() => plannedSessions.id, { onDelete: "cascade" }),
+        relativeWeek: integer("relative_week"),
+        relativeDay: integer("relative_day"),
+        sequence: integer("sequence").notNull(),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        primaryKey({ name: "program_planned_sessions_pk", columns: [table.programId, table.plannedSessionId] }),
+        check("program_planned_sessions_sequence_nonneg", sql`${table.sequence} >= 0`),
+        index("program_planned_sessions_session_idx").on(table.plannedSessionId),
+    ],
+);
+
+/** Planned-session-to-block membership; supports overlapping/nested block scopes (design 10.3). */
+export const plannedSessionBlocks = pgTable(
+    "planned_session_blocks",
+    {
+        plannedSessionId: uuid("planned_session_id")
+            .notNull()
+            .references(() => plannedSessions.id, { onDelete: "cascade" }),
+        blockId: uuid("block_id")
+            .notNull()
+            .references(() => programBlocks.id, { onDelete: "cascade" }),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        primaryKey({ name: "planned_session_blocks_pk", columns: [table.plannedSessionId, table.blockId] }),
+        index("planned_session_blocks_block_idx").on(table.blockId),
+    ],
+);
+
 export type WorkoutTemplateRow = typeof workoutTemplates.$inferSelect;
 export type WorkoutTemplatePrescriptionRow = typeof workoutTemplatePrescriptions.$inferSelect;
+export type ProgramRow = typeof programs.$inferSelect;
+export type ProgramBlockRow = typeof programBlocks.$inferSelect;
+export type ProgramGoalRow = typeof programGoals.$inferSelect;
+export type PlannedSessionRow = typeof plannedSessions.$inferSelect;
+export type PlannedSessionPrescriptionRow = typeof plannedSessionPrescriptions.$inferSelect;
+export type ProgramPlannedSessionRow = typeof programPlannedSessions.$inferSelect;
+export type PlannedSessionBlockRow = typeof plannedSessionBlocks.$inferSelect;
 
 export type SessionPrescriptionRow = typeof sessionPrescriptions.$inferSelect;
 export type PrescribedActivityRow = typeof prescribedActivities.$inferSelect;

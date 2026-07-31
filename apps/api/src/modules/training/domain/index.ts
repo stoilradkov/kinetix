@@ -13,3 +13,6 @@ export * from "#src/modules/training/domain/training-max";
 export * from "#src/modules/training/domain/zone-definition";
 export * from "#src/modules/training/domain/training-profile";
 export * from "#src/modules/training/domain/workout-template";
+export * from "#src/modules/training/domain/program";
+export * from "#src/modules/training/domain/program-planning";
+export * from "#src/modules/training/domain/planned-session";

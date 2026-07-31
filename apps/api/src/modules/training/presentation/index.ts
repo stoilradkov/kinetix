@@ -9,3 +9,5 @@ export { ZoneDefinitionController } from "#src/modules/training/presentation/zon
 export { EquipmentIncrementController } from "#src/modules/training/presentation/equipment-increment.controller";
 export { GearItemController } from "#src/modules/training/presentation/gear-item.controller";
 export { WorkoutTemplateController } from "#src/modules/training/presentation/workout-template.controller";
+export { ProgramController } from "#src/modules/training/presentation/program.controller";
+export { PlannedSessionController } from "#src/modules/training/presentation/planned-session.controller";

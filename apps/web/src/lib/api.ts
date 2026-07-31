@@ -66,10 +66,16 @@ import {
     updateWorkoutTemplateRequestSchema,
     workoutTemplateListResponseSchema,
     workoutTemplateResponseSchema,
+    createProgramRequestSchema,
+    updateProgramRequestSchema,
+    programListResponseSchema,
+    programResponseSchema,
     type ExerciseCatalogItemResponse,
     type ExerciseMergeResource,
     type WorkoutTemplateResponse,
     type WorkoutTemplateSummary,
+    type ProgramResponse,
+    type ProgramSummary,
 } from "@kinetix/types";
 import { healthResponseSchema } from "@kinetix/types";
 
@@ -439,6 +445,73 @@ export async function changeWorkoutTemplateStatus(
         await apiRequest(`/training/templates/${encodeURIComponent(template.id)}/${action}`, {
             method: "POST",
             headers: mutationHeaders(template.version, crypto.randomUUID()),
+            body: "{}",
+        }),
+    );
+}
+
+export function programsQueryOptions(includeArchived: boolean) {
+    return queryOptions({
+        queryKey: ["training-programs", { includeArchived }],
+        queryFn: async () =>
+            programListResponseSchema.parse(
+                await apiRequest(`/training/programs${includeArchived ? "?includeArchived=true" : ""}`),
+            ),
+    });
+}
+
+export function programQueryOptions(programId: string | null) {
+    return queryOptions({
+        queryKey: ["training-program", programId],
+        enabled: programId !== null,
+        queryFn: async () =>
+            programResponseSchema.parse(await apiRequest(`/training/programs/${encodeURIComponent(programId!)}`)),
+    });
+}
+
+export function programRevisionHistoryQueryOptions(programId: string | null) {
+    return queryOptions({
+        queryKey: ["training", "program-history", programId],
+        enabled: programId !== null,
+        queryFn: async () =>
+            revisionHistoryResponseSchema.parse(
+                await apiRequest(`/history/training.program/${encodeURIComponent(programId!)}`),
+            ),
+    });
+}
+
+export async function createProgram(input: unknown): Promise<ProgramResponse> {
+    return programResponseSchema.parse(
+        await apiRequest("/training/programs", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(createProgramRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updateProgram(
+    program: Pick<ProgramSummary, "id" | "version">,
+    input: unknown,
+): Promise<ProgramResponse> {
+    return programResponseSchema.parse(
+        await apiRequest(`/training/programs/${encodeURIComponent(program.id)}`, {
+            method: "PATCH",
+            headers: mutationHeaders(program.version, crypto.randomUUID()),
+            body: JSON.stringify(updateProgramRequestSchema.parse(input)),
+        }),
+    );
+}
+
+/** Program lifecycle transitions plus archive/restore share one quoted-ETag POST shape. */
+export async function changeProgramStatus(
+    program: Pick<ProgramSummary, "id" | "version">,
+    action: "pause" | "resume" | "complete" | "archive" | "restore",
+): Promise<ProgramResponse> {
+    return programResponseSchema.parse(
+        await apiRequest(`/training/programs/${encodeURIComponent(program.id)}/${action}`, {
+            method: "POST",
+            headers: mutationHeaders(program.version, crypto.randomUUID()),
             body: "{}",
         }),
     );

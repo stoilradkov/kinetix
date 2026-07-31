@@ -15,6 +15,8 @@ export * from "#src/equipment-increment";
 export * from "#src/gear-item";
 export * from "#src/session-prescription";
 export * from "#src/workout-template";
+export * from "#src/planned-session";
+export * from "#src/program";
 
 export const healthResponseSchema = z.object({
     status: z.enum(["ok", "error"]),

@@ -91,6 +91,29 @@ import {
     RepositoryWorkoutTemplatePlanningReader,
     workoutTemplateSerializer,
     type WorkoutTemplateRepository,
+    type WorkoutTemplatePlanningReader,
+    PLANNED_SESSION_REPOSITORY,
+    PLANNED_SESSION_MUTATION_SERVICE,
+    PLANNED_SESSION_COMMANDS,
+    PLANNED_SESSION_REVISION_HANDLER,
+    PlannedSessionCommands,
+    PlannedSessionRevisionHandler,
+    plannedSessionSerializer,
+    type PlannedSessionRepository,
+    PROGRAM_REPOSITORY,
+    PROGRAM_MEMBERSHIP_REPOSITORY,
+    PROGRAM_GOAL_VALIDATOR,
+    PROGRAM_MUTATION_SERVICE,
+    PROGRAM_COMMANDS,
+    PROGRAM_QUERIES,
+    PROGRAM_REVISION_HANDLER,
+    ProgramCommands,
+    ProgramQueries,
+    ProgramRevisionHandler,
+    programSerializer,
+    type ProgramRepository,
+    type ProgramMembershipRepository,
+    type ProgramGoalValidator,
     exerciseDefinitionSerializer,
     trainingProfileSerializer,
     trainingGoalSerializer,
@@ -114,6 +137,8 @@ import type {
     TrainingInjuryState,
     TrainingProfileState,
     WorkoutTemplateState,
+    PlannedSessionState,
+    ProgramState,
 } from "#src/modules/training/domain/index";
 import { PROFILE_READER, ProfileModule, type ProfileReader } from "#src/modules/profile/index";
 import { DrizzleTrainingCatalogRepository } from "#src/modules/training/infrastructure/drizzle-training-catalog-repository";
@@ -132,6 +157,12 @@ import { GearItemRevisionRegistrar } from "#src/modules/training/infrastructure/
 import { DrizzleSessionPrescriptionRepository } from "#src/modules/training/infrastructure/drizzle-session-prescription-repository";
 import { DrizzleWorkoutTemplateRepository } from "#src/modules/training/infrastructure/drizzle-workout-template-repository";
 import { WorkoutTemplateRevisionRegistrar } from "#src/modules/training/infrastructure/workout-template-revision-registrar";
+import { DrizzlePlannedSessionRepository } from "#src/modules/training/infrastructure/drizzle-planned-session-repository";
+import { PlannedSessionRevisionRegistrar } from "#src/modules/training/infrastructure/planned-session-revision-registrar";
+import { DrizzleProgramRepository } from "#src/modules/training/infrastructure/drizzle-program-repository";
+import { DrizzleProgramMembershipRepository } from "#src/modules/training/infrastructure/drizzle-program-membership-repository";
+import { DrizzleProgramGoalValidator } from "#src/modules/training/infrastructure/drizzle-program-goal-validator";
+import { ProgramRevisionRegistrar } from "#src/modules/training/infrastructure/program-revision-registrar";
 import {
     DrizzleExerciseMergeRepository,
     DrizzleExerciseReferenceUpdater,
@@ -151,6 +182,8 @@ import {
     EquipmentIncrementController,
     GearItemController,
     WorkoutTemplateController,
+    ProgramController,
+    PlannedSessionController,
 } from "#src/modules/training/presentation/index";
 import {
     OUTBOX_WRITER,
@@ -179,6 +212,8 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         EquipmentIncrementController,
         GearItemController,
         WorkoutTemplateController,
+        ProgramController,
+        PlannedSessionController,
     ],
     providers: [
         DrizzleTrainingCatalogRepository,
@@ -517,6 +552,118 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
             inject: [WORKOUT_TEMPLATE_REPOSITORY, SESSION_PRESCRIPTION_REPOSITORY, PRESCRIPTION_CLONER],
         },
         WorkoutTemplateRevisionRegistrar,
+        DrizzlePlannedSessionRepository,
+        { provide: PLANNED_SESSION_REPOSITORY, useExisting: DrizzlePlannedSessionRepository },
+        {
+            provide: PLANNED_SESSION_MUTATION_SERVICE,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: PlannedSessionRepository,
+                revisions: RevisionStore,
+                events: OutboxWriter,
+            ) => new RevisionMutationService(unitOfWork, repository, revisions, plannedSessionSerializer, events),
+            inject: [UNIT_OF_WORK, PLANNED_SESSION_REPOSITORY, REVISION_STORE, OUTBOX_WRITER],
+        },
+        {
+            provide: PLANNED_SESSION_COMMANDS,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: PlannedSessionRepository,
+                mutations: RevisionMutationService<PlannedSessionState, DomainEvent>,
+                publisher: PrescriptionPublisher,
+                prescriptions: SessionPrescriptionRepository,
+                profileReader: ProfileReader,
+            ) =>
+                new PlannedSessionCommands({
+                    unitOfWork,
+                    repository,
+                    mutations,
+                    publisher,
+                    prescriptions,
+                    profileReader,
+                    generateId: randomUUID,
+                }),
+            inject: [
+                UNIT_OF_WORK,
+                PLANNED_SESSION_REPOSITORY,
+                PLANNED_SESSION_MUTATION_SERVICE,
+                PRESCRIPTION_PUBLISHER,
+                SESSION_PRESCRIPTION_REPOSITORY,
+                PROFILE_READER,
+            ],
+        },
+        {
+            provide: PLANNED_SESSION_REVISION_HANDLER,
+            useFactory: (
+                mutations: RevisionMutationService<PlannedSessionState, DomainEvent>,
+                revisions: RevisionStore,
+            ) => new PlannedSessionRevisionHandler(mutations, revisions, { now: () => new Date() }, randomUUID),
+            inject: [PLANNED_SESSION_MUTATION_SERVICE, REVISION_STORE],
+        },
+        PlannedSessionRevisionRegistrar,
+        DrizzleProgramRepository,
+        DrizzleProgramMembershipRepository,
+        DrizzleProgramGoalValidator,
+        { provide: PROGRAM_REPOSITORY, useExisting: DrizzleProgramRepository },
+        { provide: PROGRAM_MEMBERSHIP_REPOSITORY, useExisting: DrizzleProgramMembershipRepository },
+        { provide: PROGRAM_GOAL_VALIDATOR, useExisting: DrizzleProgramGoalValidator },
+        {
+            provide: PROGRAM_MUTATION_SERVICE,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: ProgramRepository,
+                revisions: RevisionStore,
+                events: OutboxWriter,
+            ) => new RevisionMutationService(unitOfWork, repository, revisions, programSerializer, events),
+            inject: [UNIT_OF_WORK, PROGRAM_REPOSITORY, REVISION_STORE, OUTBOX_WRITER],
+        },
+        {
+            provide: PROGRAM_COMMANDS,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: ProgramRepository,
+                mutations: RevisionMutationService<ProgramState, DomainEvent>,
+                membership: ProgramMembershipRepository,
+                plannedSessions: PlannedSessionCommands,
+                templates: WorkoutTemplatePlanningReader,
+                goalValidator: ProgramGoalValidator,
+                profileReader: ProfileReader,
+            ) =>
+                new ProgramCommands({
+                    unitOfWork,
+                    repository,
+                    mutations,
+                    membership,
+                    plannedSessions,
+                    templates,
+                    goalValidator,
+                    profileReader,
+                    generateId: randomUUID,
+                }),
+            inject: [
+                UNIT_OF_WORK,
+                PROGRAM_REPOSITORY,
+                PROGRAM_MUTATION_SERVICE,
+                PROGRAM_MEMBERSHIP_REPOSITORY,
+                PLANNED_SESSION_COMMANDS,
+                WORKOUT_TEMPLATE_PLANNING_READER,
+                PROGRAM_GOAL_VALIDATOR,
+                PROFILE_READER,
+            ],
+        },
+        {
+            provide: PROGRAM_QUERIES,
+            useFactory: (repository: ProgramRepository, membership: ProgramMembershipRepository) =>
+                new ProgramQueries(repository, membership),
+            inject: [PROGRAM_REPOSITORY, PROGRAM_MEMBERSHIP_REPOSITORY],
+        },
+        {
+            provide: PROGRAM_REVISION_HANDLER,
+            useFactory: (mutations: RevisionMutationService<ProgramState, DomainEvent>, revisions: RevisionStore) =>
+                new ProgramRevisionHandler(mutations, revisions, { now: () => new Date() }, randomUUID),
+            inject: [PROGRAM_MUTATION_SERVICE, REVISION_STORE],
+        },
+        ProgramRevisionRegistrar,
         {
             provide: TRAINING_MODULE_DEFINITION,
             useValue: trainingModuleDefinition,

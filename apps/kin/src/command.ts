@@ -32,6 +32,20 @@ import {
     updateWorkoutTemplateRequestSchema,
     workoutTemplateListResponseSchema,
     workoutTemplateResponseSchema,
+    createProgramRequestSchema,
+    updateProgramRequestSchema,
+    activateProgramRequestSchema,
+    activateProgramResponseSchema,
+    attachProgramSessionRequestSchema,
+    programListResponseSchema,
+    programResponseSchema,
+    programSessionsResponseSchema,
+    createPlannedSessionRequestSchema,
+    updatePlannedSessionRequestSchema,
+    completePlannedSessionRequestSchema,
+    skipCancelPlannedSessionRequestSchema,
+    plannedSessionListResponseSchema,
+    plannedSessionResponseSchema,
     createTrainingInjuryRequestSchema,
     trainingInjuryListResponseSchema,
     trainingInjuryResponseSchema,
@@ -169,6 +183,8 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
     registerEquipmentIncrementCommands(training, dependencies);
     registerGearCommands(training, dependencies);
     registerWorkoutTemplateCommands(training, dependencies);
+    registerProgramCommands(training, dependencies);
+    registerPlannedSessionCommands(training, dependencies);
     registerTrainingInjuryCommands(training, dependencies);
     const history = training.command("history").description("Inspect and restore aggregate history");
 
@@ -935,6 +951,346 @@ function registerWorkoutTemplateCommands(training: Command, dependencies: Progra
             );
 }
 
+function registerProgramCommands(training: Command, dependencies: ProgramDependencies): void {
+    const programs = training.command("programs").description("Manage training programs and nested blocks");
+
+    programs
+        .command("list")
+        .description("List programs, optionally including archived ones")
+        .option("--include-archived", "Include archived programs")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { includeArchived?: boolean; apiUrl?: string; json?: boolean }) => {
+            const query = options.includeArchived ? "?includeArchived=true" : "";
+            const result = programListResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/programs${query}`),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const program of result.items) outputProgram(dependencies.output, program, false);
+        });
+
+    programs
+        .command("show")
+        .description("Show one program with its blocks, goal links, and current warnings")
+        .argument("<program-id>", "Program UUID")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (programId: string, options: { apiUrl?: string; json?: boolean }) => {
+            const result = programResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/programs/${encodeURIComponent(programId)}`,
+                ),
+            );
+            outputProgram(dependencies.output, result, options.json);
+        });
+
+    programs
+        .command("sessions")
+        .description("List the planned sessions that belong to a program")
+        .argument("<program-id>", "Program UUID")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (programId: string, options: { apiUrl?: string; json?: boolean }) => {
+            const result = programSessionsResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/programs/${encodeURIComponent(programId)}/sessions`,
+                ),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else
+                for (const session of result.items)
+                    dependencies.output(
+                        `${session.plannedSessionId}\t${session.sequence}\t${session.status}\t${session.localDate ?? "-"}\t${session.title ?? ""}`,
+                    );
+        });
+
+    programs
+        .command("create")
+        .description("Create a program from inline JSON")
+        .requiredOption("--input <json>", "CreateProgramRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
+            const input = createProgramRequestSchema.parse(parseJsonInput(options.input));
+            const result = programResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/programs`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                ),
+            );
+            outputProgram(dependencies.output, result, options.json);
+        });
+
+    programs
+        .command("update")
+        .description("Update a program from inline JSON")
+        .argument("<program-id>", "Program UUID")
+        .requiredOption("--version <version>", "Expected program version", parsePositiveInteger)
+        .requiredOption("--input <json>", "UpdateProgramRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                programId: string,
+                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const input = updateProgramRequestSchema.parse(parseJsonInput(options.input));
+                const result = programResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/programs/${encodeURIComponent(programId)}`,
+                        mutationRequest("PATCH", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputProgram(dependencies.output, result, options.json);
+            },
+        );
+
+    programs
+        .command("activate")
+        .description("Activate a program and generate its planned sessions from inline JSON")
+        .argument("<program-id>", "Program UUID")
+        .requiredOption("--version <version>", "Expected program version", parsePositiveInteger)
+        .option("--input <json>", "ActivateProgramRequest JSON object", "{}")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                programId: string,
+                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const input = activateProgramRequestSchema.parse(parseJsonInput(options.input));
+                const result = activateProgramResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/programs/${encodeURIComponent(programId)}/activate`,
+                        mutationRequest("POST", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else {
+                    outputProgram(dependencies.output, result, false);
+                    for (const session of result.generatedSessions)
+                        outputPlannedSession(dependencies.output, session, false);
+                }
+            },
+        );
+
+    programs
+        .command("attach-session")
+        .description("Attach an existing planned session to a program from inline JSON")
+        .argument("<program-id>", "Program UUID")
+        .requiredOption("--input <json>", "AttachProgramSessionRequest JSON object")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (programId: string, options: { input: string; apiUrl?: string; json?: boolean }) => {
+            const input = attachProgramSessionRequestSchema.parse(parseJsonInput(options.input));
+            const result = programResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/programs/${encodeURIComponent(programId)}/sessions`,
+                    mutationRequest("POST", input, undefined, undefined),
+                ),
+            );
+            outputProgram(dependencies.output, result, options.json);
+        });
+
+    for (const action of ["pause", "resume", "complete", "archive", "restore"] as const)
+        programs
+            .command(action)
+            .description(`${capitalizeWord(action)} a program`)
+            .argument("<program-id>", "Program UUID")
+            .requiredOption("--version <version>", "Expected program version", parsePositiveInteger)
+            .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+            .option("--api-url <url>", "Override the Kinetix API URL")
+            .option("--json", "Emit machine-readable JSON")
+            .action(
+                async (
+                    programId: string,
+                    options: { version: number; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+                ) => {
+                    const result = programResponseSchema.parse(
+                        await responseJson(
+                            dependencies,
+                            `${resolveApiUrl(options.apiUrl)}/training/programs/${encodeURIComponent(programId)}/${action}`,
+                            mutationRequest("POST", {}, options.version, options.idempotencyKey),
+                        ),
+                    );
+                    outputProgram(dependencies.output, result, options.json);
+                },
+            );
+}
+
+function registerPlannedSessionCommands(training: Command, dependencies: ProgramDependencies): void {
+    const sessions = training.command("planned-sessions").description("Manage planned training sessions");
+
+    sessions
+        .command("list")
+        .description("List planned sessions, optionally including archived ones")
+        .option("--include-archived", "Include archived sessions")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { includeArchived?: boolean; apiUrl?: string; json?: boolean }) => {
+            const query = options.includeArchived ? "?includeArchived=true" : "";
+            const result = plannedSessionListResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/planned-sessions${query}`),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const session of result.items) outputPlannedSession(dependencies.output, session, false);
+        });
+
+    sessions
+        .command("show")
+        .description("Show one planned session with its current prescription")
+        .argument("<session-id>", "Planned session UUID")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (sessionId: string, options: { apiUrl?: string; json?: boolean }) => {
+            const result = plannedSessionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/planned-sessions/${encodeURIComponent(sessionId)}`,
+                ),
+            );
+            outputPlannedSession(dependencies.output, result, options.json);
+        });
+
+    sessions
+        .command("create")
+        .description("Create a standalone planned session from inline JSON")
+        .requiredOption("--input <json>", "CreatePlannedSessionRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
+            const input = createPlannedSessionRequestSchema.parse(parseJsonInput(options.input));
+            const result = plannedSessionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/planned-sessions`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                ),
+            );
+            outputPlannedSession(dependencies.output, result, options.json);
+        });
+
+    sessions
+        .command("update")
+        .description("Update a planned session from inline JSON, republishing its prescription when supplied")
+        .argument("<session-id>", "Planned session UUID")
+        .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
+        .requiredOption("--input <json>", "UpdatePlannedSessionRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                sessionId: string,
+                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const input = updatePlannedSessionRequestSchema.parse(parseJsonInput(options.input));
+                const result = plannedSessionResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/planned-sessions/${encodeURIComponent(sessionId)}`,
+                        mutationRequest("PATCH", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputPlannedSession(dependencies.output, result, options.json);
+            },
+        );
+
+    sessions
+        .command("complete")
+        .description("Mark a planned session completed or partially completed")
+        .argument("<session-id>", "Planned session UUID")
+        .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
+        .option("--input <json>", "CompletePlannedSessionRequest JSON object", "{}")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                sessionId: string,
+                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const input = completePlannedSessionRequestSchema.parse(parseJsonInput(options.input));
+                const result = plannedSessionResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/planned-sessions/${encodeURIComponent(sessionId)}/complete`,
+                        mutationRequest("POST", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputPlannedSession(dependencies.output, result, options.json);
+            },
+        );
+
+    for (const action of ["skip", "cancel"] as const)
+        sessions
+            .command(action)
+            .description(`${capitalizeWord(action)} a planned session with an optional structured reason`)
+            .argument("<session-id>", "Planned session UUID")
+            .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
+            .option("--input <json>", "SkipCancelPlannedSessionRequest JSON object", "{}")
+            .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+            .option("--api-url <url>", "Override the Kinetix API URL")
+            .option("--json", "Emit machine-readable JSON")
+            .action(
+                async (
+                    sessionId: string,
+                    options: {
+                        version: number;
+                        input: string;
+                        idempotencyKey?: string;
+                        apiUrl?: string;
+                        json?: boolean;
+                    },
+                ) => {
+                    const input = skipCancelPlannedSessionRequestSchema.parse(parseJsonInput(options.input));
+                    const result = plannedSessionResponseSchema.parse(
+                        await responseJson(
+                            dependencies,
+                            `${resolveApiUrl(options.apiUrl)}/training/planned-sessions/${encodeURIComponent(sessionId)}/${action}`,
+                            mutationRequest("POST", input, options.version, options.idempotencyKey),
+                        ),
+                    );
+                    outputPlannedSession(dependencies.output, result, options.json);
+                },
+            );
+
+    for (const action of ["reopen", "archive", "restore"] as const)
+        sessions
+            .command(action)
+            .description(`${capitalizeWord(action)} a planned session`)
+            .argument("<session-id>", "Planned session UUID")
+            .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
+            .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+            .option("--api-url <url>", "Override the Kinetix API URL")
+            .option("--json", "Emit machine-readable JSON")
+            .action(
+                async (
+                    sessionId: string,
+                    options: { version: number; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+                ) => {
+                    const result = plannedSessionResponseSchema.parse(
+                        await responseJson(
+                            dependencies,
+                            `${resolveApiUrl(options.apiUrl)}/training/planned-sessions/${encodeURIComponent(sessionId)}/${action}`,
+                            mutationRequest("POST", {}, options.version, options.idempotencyKey),
+                        ),
+                    );
+                    outputPlannedSession(dependencies.output, result, options.json);
+                },
+            );
+}
+
 function registerTrainingProfileCommands(training: Command, dependencies: ProgramDependencies): void {
     const profile = training.command("profile").description("Manage the training profile");
 
@@ -1566,6 +1922,42 @@ function outputWorkoutTemplate(
             "prescription" in template ? template.prescription.activities.length : template.activities.length;
         output(`${template.id}\t${template.version}\t${template.status}\t${activityCount}\t${template.name}`);
     }
+}
+
+function outputProgram(
+    output: (message: string) => void,
+    program:
+        | ReturnType<typeof programResponseSchema.parse>
+        | ReturnType<typeof activateProgramResponseSchema.parse>
+        | ReturnType<typeof programListResponseSchema.parse>["items"][number],
+    json?: boolean,
+): void {
+    if (json) output(JSON.stringify(program));
+    else {
+        const blockCount = "blocks" in program ? program.blocks.length : program.blockCount;
+        const warningCount = "warnings" in program ? program.warnings.length : 0;
+        output(
+            `${program.id}\t${program.version}\t${program.status}\t${program.scheduleMode}\t${blockCount}\t${warningCount}\t${program.name}`,
+        );
+    }
+}
+
+function outputPlannedSession(
+    output: (message: string) => void,
+    session:
+        | ReturnType<typeof plannedSessionResponseSchema.parse>
+        | ReturnType<typeof plannedSessionListResponseSchema.parse>["items"][number],
+    json?: boolean,
+): void {
+    if (json) output(JSON.stringify(session));
+    else
+        output(
+            `${session.id}\t${session.version}\t${session.status}\t${session.localDate ?? "-"}\t${session.title ?? ""}`,
+        );
+}
+
+function capitalizeWord(value: string): string {
+    return value.length > 0 ? value[0]!.toUpperCase() + value.slice(1) : value;
 }
 
 function outputInjury(
