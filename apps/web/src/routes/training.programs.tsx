@@ -2,11 +2,12 @@ import { useState } from "react";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { Archive, LoaderCircle, Pencil, Plus, RotateCcw } from "lucide-react";
+import { Archive, CalendarClock, LoaderCircle, Pencil, Play, Plus, RotateCcw } from "lucide-react";
 
 import type { ProgramStatusValue, ProgramSummary } from "@kinetix/types";
 
 import { ProgramForm } from "@/components/training/program-form";
+import { ActivateProgramPanel, ProgramSessionsPanel } from "@/components/training/program-scheduling";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -30,6 +31,8 @@ export const Route = createFileRoute("/training/programs")({ component: Programs
 
 type EditorState = { readonly mode: "create" } | { readonly mode: "edit"; readonly program: ProgramSummary };
 
+type SchedulerState = { readonly mode: "activate" | "sessions"; readonly program: ProgramSummary };
+
 type StatusAction = "pause" | "resume" | "complete" | "archive" | "restore";
 
 const statusVariant: Record<ProgramStatusValue, "success" | "info" | "warning" | "secondary" | "milestone"> = {
@@ -40,7 +43,7 @@ const statusVariant: Record<ProgramStatusValue, "success" | "info" | "warning" |
     archived: "secondary",
 };
 
-/** Contextual lifecycle actions offered per status (activation with generated sessions is API/CLI-driven). */
+/** Contextual lifecycle actions offered per status (activation and session management have their own buttons). */
 function actionsFor(status: ProgramStatusValue): readonly StatusAction[] {
     switch (status) {
         case "active":
@@ -67,10 +70,18 @@ function ProgramsPage(): React.JSX.Element {
     const queryClient = useQueryClient();
     const [includeArchived, setIncludeArchived] = useState(false);
     const [editor, setEditor] = useState<EditorState | null>(null);
+    const [scheduler, setScheduler] = useState<SchedulerState | null>(null);
     const programs = useQuery(programsQueryOptions(includeArchived));
 
     const invalidate = () =>
         queryClient.invalidateQueries({ queryKey: ["training-programs"] }).then(() => setEditor(null));
+
+    const invalidateSchedule = (programId: string) =>
+        Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["training-programs"] }),
+            queryClient.invalidateQueries({ queryKey: ["training-program", programId] }),
+            queryClient.invalidateQueries({ queryKey: ["training-program-sessions", programId] }),
+        ]);
 
     const statusMutation = useMutation({
         mutationFn: (input: { program: ProgramSummary; action: StatusAction }) =>
@@ -141,6 +152,21 @@ function ProgramsPage(): React.JSX.Element {
                                 </div>
                             </div>
                             <div className="flex shrink-0 items-center gap-1">
+                                {program.status === "draft" ? (
+                                    <Button onClick={() => setScheduler({ mode: "activate", program })} size="sm">
+                                        <Play />
+                                        Activate
+                                    </Button>
+                                ) : program.status !== "archived" ? (
+                                    <Button
+                                        onClick={() => setScheduler({ mode: "sessions", program })}
+                                        size="sm"
+                                        variant="outline"
+                                    >
+                                        <CalendarClock />
+                                        Sessions
+                                    </Button>
+                                ) : null}
                                 <Button
                                     onClick={() => setEditor({ mode: "edit", program })}
                                     size="sm"
@@ -184,6 +210,34 @@ function ProgramsPage(): React.JSX.Element {
                             <EditProgram onSaved={invalidate} program={editor.program} />
                         ) : editor?.mode === "create" ? (
                             <CreateProgram onSaved={invalidate} />
+                        ) : null}
+                    </div>
+                </SheetContent>
+            </Sheet>
+
+            <Sheet onOpenChange={open => (open ? undefined : setScheduler(null))} open={scheduler !== null}>
+                <SheetContent className="w-full gap-0 p-0 sm:max-w-2xl">
+                    <SheetHeader>
+                        <SheetTitle>
+                            {scheduler?.mode === "activate" ? "Activate program" : "Planned sessions"}
+                        </SheetTitle>
+                        <SheetDescription>
+                            {scheduler?.mode === "activate"
+                                ? "Attach templates to generate every planned session in one step."
+                                : "Reschedule, skip, or cancel sessions. Overdue sessions and collisions are flagged, never auto-shifted."}
+                        </SheetDescription>
+                    </SheetHeader>
+                    <div className="min-h-0 flex-1 overflow-y-auto p-6">
+                        {scheduler?.mode === "activate" ? (
+                            <ActivateProgramPanel
+                                onDone={() => invalidateSchedule(scheduler.program.id).then(() => setScheduler(null))}
+                                program={scheduler.program}
+                            />
+                        ) : scheduler?.mode === "sessions" ? (
+                            <ProgramSessionsPanel
+                                onChanged={() => void invalidateSchedule(scheduler.program.id)}
+                                program={scheduler.program}
+                            />
                         ) : null}
                     </div>
                 </SheetContent>

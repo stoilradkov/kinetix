@@ -31,6 +31,7 @@ import {
 } from "#src/modules/training/application/index";
 import type {
     ExerciseSnapshotV1,
+    PlannedSessionSchedule,
     PlannedSessionState,
     ProgramState,
     SessionPrescriptionState,
@@ -45,7 +46,7 @@ import {
     type RevisionStore,
     type UnitOfWork,
 } from "#src/platform/application/index";
-import type { DomainEvent, EntityId } from "#src/platform/domain/index";
+import { entityId, type DomainEvent, type EntityId } from "#src/platform/domain/index";
 
 const EXERCISE_A = "0198a4db-d8da-7000-8000-0000000000a1";
 const PROFILE = "0198a4db-d8da-7000-8000-0000000000d9";
@@ -253,6 +254,106 @@ describe("program application services", () => {
         expect(detail.warnings.some(warning => warning.code === "schedule_collision")).toBe(true);
     });
 
+    it("derives generated-session dates from relative positions on a dated program", async () => {
+        const fixture = createFixture();
+        const template = await fixture.templates.create({ name: "Upper", prescription: templateDraft(5) }, metadata);
+        const program = await fixture.programs.create(
+            { name: "Dated", scheduleMode: "dated", startDate: "2026-08-03" },
+            metadata,
+        );
+        const activated = await fixture.programs.activate(
+            program.program.id,
+            1,
+            {
+                sessions: [
+                    { templateId: template.template.id, sequence: 0, relativeWeek: 0, relativeDay: 0 },
+                    { templateId: template.template.id, sequence: 1, relativeWeek: 1, relativeDay: 2 },
+                ],
+            },
+            metadata,
+        );
+        expect(activated.generatedSessions.map(s => s.session.localDate)).toEqual(["2026-08-03", "2026-08-12"]);
+    });
+
+    it("generates ordered unscheduled sessions for an undated relative program", async () => {
+        const fixture = createFixture();
+        const template = await fixture.templates.create({ name: "Upper", prescription: templateDraft(5) }, metadata);
+        const program = await fixture.programs.create({ name: "Relative", scheduleMode: "relative" }, metadata);
+        const activated = await fixture.programs.activate(
+            program.program.id,
+            1,
+            {
+                sessions: [
+                    { templateId: template.template.id, sequence: 0, relativeWeek: 0 },
+                    { templateId: template.template.id, sequence: 1, relativeWeek: 1 },
+                ],
+            },
+            metadata,
+        );
+        expect(activated.generatedSessions.every(s => s.session.localDate === null)).toBe(true);
+    });
+
+    it("rejects re-activating an already-active program so retries never double-generate", async () => {
+        const fixture = createFixture();
+        const program = await fixture.programs.create({ name: "P" }, metadata);
+        await fixture.programs.activate(program.program.id, 1, {}, metadata);
+        await expect(fixture.programs.activate(program.program.id, 2, {}, metadata)).rejects.toThrow();
+    });
+
+    it("moves only incomplete future sessions when the start date changes", async () => {
+        const fixture = createFixture();
+        const template = await fixture.templates.create({ name: "Upper", prescription: templateDraft(5) }, metadata);
+        const program = await fixture.programs.create(
+            { name: "Dated", scheduleMode: "dated", startDate: "2026-07-27" },
+            metadata,
+        );
+        const activated = await fixture.programs.activate(
+            program.program.id,
+            1,
+            {
+                sessions: [
+                    { templateId: template.template.id, sequence: 0, localDate: "2026-07-20" }, // overdue
+                    { templateId: template.template.id, sequence: 1, localDate: "2026-08-05" }, // future
+                ],
+            },
+            metadata,
+        );
+        const [overdue, future] = activated.generatedSessions;
+        const changed = await fixture.programs.changeStartDate(
+            program.program.id,
+            2,
+            { startDate: "2026-08-01" },
+            metadata,
+        );
+        // Delta = +5 days: only the future planned session moves; the overdue one stays put.
+        expect(changed.movedSessions).toEqual([
+            { id: future!.session.id, fromDate: "2026-08-05", toDate: "2026-08-10" },
+        ]);
+        const overdueAfter = await fixture.sessions.readSession(entityId(overdue!.session.id));
+        const futureAfter = await fixture.sessions.readSession(entityId(future!.session.id));
+        expect(overdueAfter?.localDate).toBe("2026-07-20");
+        expect(futureAfter?.localDate).toBe("2026-08-10");
+    });
+
+    it("flags overdue member sessions in the sessions query", async () => {
+        const fixture = createFixture();
+        const template = await fixture.templates.create({ name: "Upper", prescription: templateDraft(5) }, metadata);
+        const program = await fixture.programs.create({ name: "P" }, metadata);
+        await fixture.programs.activate(
+            program.program.id,
+            1,
+            {
+                sessions: [
+                    { templateId: template.template.id, sequence: 0, localDate: "2026-07-20" },
+                    { templateId: template.template.id, sequence: 1, localDate: "2026-08-30" },
+                ],
+            },
+            metadata,
+        );
+        const sessions = await fixture.queries.sessions(program.program.id);
+        expect(sessions.map(s => s.overdue)).toEqual([true, false]);
+    });
+
     it("excludes archived programs from the default list", async () => {
         const fixture = createFixture();
         const created = await fixture.programs.create({ name: "P" }, metadata);
@@ -344,8 +445,8 @@ function createFixture() {
         clock,
         generateId,
     });
-    const queries = new ProgramQueries(programRepo, membership);
-    return { programs, queries, templates, membership, goals, prescriptions };
+    const queries = new ProgramQueries(programRepo, membership, clock);
+    return { programs, queries, templates, membership, goals, prescriptions, sessions: sessionRepo };
 }
 
 class FakeProgramRepository implements ProgramRepository<typeof transaction> {
@@ -479,6 +580,20 @@ class FakeMembershipRepository implements ProgramMembershipRepository<typeof tra
                 };
             })
             .sort((a, b) => a.sequence - b.sequence);
+    }
+
+    async listProfileScheduledSessions(profileId: string): Promise<readonly PlannedSessionSchedule[]> {
+        const seen = new Map<string, PlannedSessionSchedule>();
+        for (const link of this.links.values()) {
+            const session = this.sessions.values.get(link.plannedSessionId)?.state;
+            if (!session || session.profileId !== profileId || session.localDate === null) continue;
+            seen.set(link.plannedSessionId, {
+                id: link.plannedSessionId,
+                localDate: session.localDate,
+                preferredTime: session.preferredTime,
+            });
+        }
+        return [...seen.values()];
     }
 }
 

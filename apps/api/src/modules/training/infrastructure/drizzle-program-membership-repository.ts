@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNotNull } from "drizzle-orm";
 
 import { plannedSessionBlocks, plannedSessions, programPlannedSessions, type Database } from "@kinetix/db";
 
@@ -9,6 +9,7 @@ import type {
     ProgramSessionLinkInput,
     ProgramSessionMembership,
 } from "#src/modules/training/application/index";
+import type { PlannedSessionSchedule } from "#src/modules/training/domain/index";
 import { plannedSessionStatuses, type PlannedSessionStatus } from "#src/modules/training/domain/index";
 
 /**
@@ -97,6 +98,21 @@ export class DrizzleProgramMembershipRepository implements ProgramMembershipRepo
             status: checkedStatus(row.status),
             title: row.title,
         }));
+    }
+
+    async listProfileScheduledSessions(
+        profileId: string,
+        transaction?: unknown,
+    ): Promise<readonly PlannedSessionSchedule[]> {
+        const rows = await this.executor(transaction)
+            .selectDistinct({
+                id: plannedSessions.id,
+                localDate: plannedSessions.localDate,
+                preferredTime: plannedSessions.preferredTime,
+            })
+            .from(plannedSessions)
+            .where(and(eq(plannedSessions.profileId, profileId), isNotNull(plannedSessions.localDate)));
+        return rows.map(row => ({ id: row.id, localDate: row.localDate, preferredTime: row.preferredTime }));
     }
 
     private executor(transaction: unknown): Database {

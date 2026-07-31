@@ -37,12 +37,15 @@ import {
     activateProgramRequestSchema,
     activateProgramResponseSchema,
     attachProgramSessionRequestSchema,
+    changeProgramStartDateRequestSchema,
+    changeProgramStartDateResponseSchema,
     programListResponseSchema,
     programResponseSchema,
     programSessionsResponseSchema,
     createPlannedSessionRequestSchema,
     updatePlannedSessionRequestSchema,
     completePlannedSessionRequestSchema,
+    reschedulePlannedSessionRequestSchema,
     skipCancelPlannedSessionRequestSchema,
     plannedSessionListResponseSchema,
     plannedSessionResponseSchema,
@@ -1083,6 +1086,37 @@ function registerProgramCommands(training: Command, dependencies: ProgramDepende
         );
 
     programs
+        .command("change-start-date")
+        .description("Change a program's start date, sliding only incomplete future sessions")
+        .argument("<program-id>", "Program UUID")
+        .requiredOption("--version <version>", "Expected program version", parsePositiveInteger)
+        .requiredOption("--input <json>", "ChangeProgramStartDateRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                programId: string,
+                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const input = changeProgramStartDateRequestSchema.parse(parseJsonInput(options.input));
+                const result = changeProgramStartDateResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/programs/${encodeURIComponent(programId)}/change-start-date`,
+                        mutationRequest("POST", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else {
+                    outputProgram(dependencies.output, result, false);
+                    for (const moved of result.movedSessions)
+                        dependencies.output(`moved\t${moved.id}\t${moved.fromDate}\t→\t${moved.toDate}`);
+                }
+            },
+        );
+
+    programs
         .command("attach-session")
         .description("Attach an existing planned session to a program from inline JSON")
         .argument("<program-id>", "Program UUID")
@@ -1225,6 +1259,32 @@ function registerPlannedSessionCommands(training: Command, dependencies: Program
                     await responseJson(
                         dependencies,
                         `${resolveApiUrl(options.apiUrl)}/training/planned-sessions/${encodeURIComponent(sessionId)}/complete`,
+                        mutationRequest("POST", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputPlannedSession(dependencies.output, result, options.json);
+            },
+        );
+
+    sessions
+        .command("reschedule")
+        .description("Reschedule an open planned session to a new date/time from inline JSON")
+        .argument("<session-id>", "Planned session UUID")
+        .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
+        .option("--input <json>", "ReschedulePlannedSessionRequest JSON object", "{}")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                sessionId: string,
+                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const input = reschedulePlannedSessionRequestSchema.parse(parseJsonInput(options.input));
+                const result = plannedSessionResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/planned-sessions/${encodeURIComponent(sessionId)}/reschedule`,
                         mutationRequest("POST", input, options.version, options.idempotencyKey),
                     ),
                 );
@@ -1929,6 +1989,7 @@ function outputProgram(
     program:
         | ReturnType<typeof programResponseSchema.parse>
         | ReturnType<typeof activateProgramResponseSchema.parse>
+        | ReturnType<typeof changeProgramStartDateResponseSchema.parse>
         | ReturnType<typeof programListResponseSchema.parse>["items"][number],
     json?: boolean,
 ): void {

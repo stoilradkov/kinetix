@@ -193,7 +193,7 @@ describe.runIf(testDatabaseUrl)("program PostgreSQL persistence", () => {
         clock,
         generateId: randomUUID,
     });
-    const programQueries = new ProgramQueries(programRepository, membership);
+    const programQueries = new ProgramQueries(programRepository, membership, clock);
     const createdPrescriptionIds: string[] = [];
 
     beforeAll(async () => {
@@ -357,6 +357,106 @@ describe.runIf(testDatabaseUrl)("program PostgreSQL persistence", () => {
             .where(eq(plannedSessionBlocks.plannedSessionId, sessionId));
         expect(after).toHaveLength(1);
         expect(after[0]!.blockId).toBe(blockA);
+    });
+
+    it("derives generated-session dates from relative positions on a dated program", async () => {
+        const template = await templateCommands.create({ name: `Dated ${suffix}`, prescription: draft(5) }, metadata);
+        createdPrescriptionIds.push(template.template.currentPrescriptionId);
+        const program = await programCommands.create(
+            { name: `Dated program ${suffix}`, scheduleMode: "dated", startDate: "2026-08-03" },
+            metadata,
+        );
+        const activated = await programCommands.activate(
+            program.program.id,
+            1,
+            {
+                sessions: [
+                    { templateId: template.template.id, sequence: 0, relativeWeek: 0, relativeDay: 0 },
+                    { templateId: template.template.id, sequence: 1, relativeWeek: 1, relativeDay: 2 },
+                ],
+            },
+            metadata,
+        );
+        for (const generated of activated.generatedSessions)
+            createdPrescriptionIds.push(generated.session.currentPrescriptionId);
+
+        const rows = await connection.db
+            .select({ id: plannedSessions.id, localDate: plannedSessions.localDate })
+            .from(plannedSessions)
+            .where(
+                inArray(
+                    plannedSessions.id,
+                    activated.generatedSessions.map(generated => generated.session.id),
+                ),
+            );
+        const dateById = new Map(rows.map(row => [row.id, row.localDate]));
+        expect(dateById.get(activated.generatedSessions[0]!.session.id)).toBe("2026-08-03");
+        expect(dateById.get(activated.generatedSessions[1]!.session.id)).toBe("2026-08-12");
+    });
+
+    it("moves only incomplete future sessions when the start date changes, persisting the shift", async () => {
+        const template = await templateCommands.create({ name: `Shift ${suffix}`, prescription: draft(5) }, metadata);
+        createdPrescriptionIds.push(template.template.currentPrescriptionId);
+        const program = await programCommands.create(
+            { name: `Shift program ${suffix}`, scheduleMode: "dated", startDate: "2026-07-27" },
+            metadata,
+        );
+        const activated = await programCommands.activate(
+            program.program.id,
+            1,
+            {
+                sessions: [
+                    { templateId: template.template.id, sequence: 0, localDate: "2026-07-20" }, // overdue vs 2026-07-29
+                    { templateId: template.template.id, sequence: 1, localDate: "2026-08-05" }, // future
+                ],
+            },
+            metadata,
+        );
+        const [overdue, future] = activated.generatedSessions;
+        for (const generated of activated.generatedSessions)
+            createdPrescriptionIds.push(generated.session.currentPrescriptionId);
+
+        const changed = await programCommands.changeStartDate(
+            program.program.id,
+            2,
+            { startDate: "2026-08-01" },
+            metadata,
+        );
+        expect(changed.movedSessions).toEqual([
+            { id: future!.session.id, fromDate: "2026-08-05", toDate: "2026-08-10" },
+        ]);
+
+        const rows = await connection.db
+            .select({ id: plannedSessions.id, localDate: plannedSessions.localDate })
+            .from(plannedSessions)
+            .where(inArray(plannedSessions.id, [overdue!.session.id, future!.session.id]));
+        const dateById = new Map(rows.map(row => [row.id, row.localDate]));
+        expect(dateById.get(overdue!.session.id)).toBe("2026-07-20");
+        expect(dateById.get(future!.session.id)).toBe("2026-08-10");
+    });
+
+    it("surfaces cross-program schedule collisions as warnings from the get query", async () => {
+        const template = await templateCommands.create({ name: `Coll ${suffix}`, prescription: draft(5) }, metadata);
+        createdPrescriptionIds.push(template.template.currentPrescriptionId);
+        const slotDate = "2026-09-01";
+        const programA = await programCommands.create({ name: `Coll A ${suffix}` }, metadata);
+        const programB = await programCommands.create({ name: `Coll B ${suffix}` }, metadata);
+        for (const program of [programA, programB]) {
+            const activated = await programCommands.activate(
+                program.program.id,
+                1,
+                {
+                    sessions: [
+                        { templateId: template.template.id, sequence: 0, localDate: slotDate, preferredTime: "08:00" },
+                    ],
+                },
+                metadata,
+            );
+            createdPrescriptionIds.push(activated.generatedSessions[0]!.session.currentPrescriptionId);
+        }
+
+        const detail = await programQueries.get(programA.program.id);
+        expect(detail.warnings.some(warning => warning.code === "schedule_collision")).toBe(true);
     });
 
     it("rolls back a failed activation, leaving the program in its prior state", async () => {

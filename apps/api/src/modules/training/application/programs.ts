@@ -20,12 +20,17 @@ import {
 import {
     Program,
     evaluateProgramWarnings,
+    expandProgramSchedule,
+    isPlannedSessionOverdue,
+    shiftProgramSessionDates,
     type CreateProgramInput,
     type PlannedSessionSchedule,
     type PlanningWarning,
     type ProgramScheduleMode,
     type ProgramState,
     type PlannedSessionStatus,
+    type SessionDateShift,
+    type SessionScheduleInput,
     type UpdateProgramInput,
 } from "#src/modules/training/domain/index";
 import type { PlannedSessionCommands, PlannedSessionDetail } from "#src/modules/training/application/planned-sessions";
@@ -93,6 +98,11 @@ export interface ProgramSessionMembership {
     readonly title: string | null;
 }
 
+/** Membership decorated with derived read-only state (overdue) for presentation. */
+export interface ProgramSessionMembershipView extends ProgramSessionMembership {
+    readonly overdue: boolean;
+}
+
 /**
  * Capability port over the editable program root, its block tree, and goal links. Extends
  * {@link CurrentStateStore} so the shared {@link RevisionMutationService} drives versioning;
@@ -110,6 +120,15 @@ export interface ProgramMembershipRepository<Transaction = unknown> {
     linkSessionBlock(plannedSessionId: string, blockId: string, transaction?: Transaction): Promise<void>;
     unlinkSessionBlock(plannedSessionId: string, blockId: string, transaction?: Transaction): Promise<void>;
     listProgramSessions(programId: string, transaction?: Transaction): Promise<readonly ProgramSessionMembership[]>;
+    /**
+     * Every dated planned session for a profile across all its programs, deduplicated per session.
+     * Feeds cross-program schedule-collision detection (design 5.6): a session shared by two programs
+     * on the same slot is a warning, never a hidden change or hard failure.
+     */
+    listProfileScheduledSessions(
+        profileId: string,
+        transaction?: Transaction,
+    ): Promise<readonly PlannedSessionSchedule[]>;
 }
 
 /** Application port validating that linked training goals exist for the active profile. */
@@ -150,6 +169,15 @@ export interface ActivateProgramResult extends ProgramDetail {
     readonly generatedSessions: readonly PlannedSessionDetail[];
 }
 
+export interface ChangeProgramStartDateCommand {
+    readonly startDate: string | null;
+}
+
+/** Program detail plus the before/after date moves applied to incomplete future member sessions. */
+export interface ChangeProgramStartDateResult extends ProgramDetail {
+    readonly movedSessions: readonly SessionDateShift[];
+}
+
 export interface AttachSessionCommand extends Omit<ProgramSessionLinkInput, "programId"> {
     readonly blockIds?: readonly string[];
 }
@@ -181,7 +209,8 @@ interface ProgramCommandRuntime<Transaction> {
     readonly generateId?: () => string;
 }
 
-type ProgramAction = "created" | "updated" | "activated" | "paused" | "resumed" | "completed" | "archived" | "restored";
+type ProgramAction =
+    "created" | "updated" | "activated" | "rescheduled" | "paused" | "resumed" | "completed" | "archived" | "restored";
 
 export class ProgramCommands<Transaction = unknown> {
     private readonly clock: Clock;
@@ -296,9 +325,11 @@ export class ProgramCommands<Transaction = unknown> {
 
     /**
      * Activate a program and generate its owned planned sessions in one transaction (design 5.6).
-     * Each plan clones the source template's current prescription into an immutable planned tree
+     * The schedule-expansion policy turns each plan's relative position into a deterministic local
+     * date (dated programs) or leaves it unscheduled (relative/ordered or undated programs). Each
+     * plan then clones the source template's current prescription into an immutable planned tree
      * (retaining source-template logical lineage) before materializing the session and writing its
-     * program/block membership.
+     * program/block membership. Only a draft program can activate, so a retry cannot double-generate.
      */
     async activate(
         id: string,
@@ -317,7 +348,21 @@ export class ProgramCommands<Transaction = unknown> {
             );
             if (!stored) throw new ProgramNotFoundError(id);
             this.expectedVersions.verify(expectedVersion, stored.version);
+            if (stored.state.status !== "draft")
+                throw new ApplicationValidationError(`Only a draft program can be activated`, {
+                    status: [`Cannot activate a ${stored.state.status} program`],
+                });
             const blockIds = new Set(stored.state.blocks.map(block => block.id));
+            const commandSessions = command.sessions ?? [];
+            const expansion = expandProgramSchedule(
+                {
+                    scheduleMode: stored.state.scheduleMode,
+                    startDate: stored.state.startDate,
+                    blocks: stored.state.blocks,
+                },
+                commandSessions.map((plan, index) => this.scheduleInput(plan, index)),
+            );
+            const localDateByKey = new Map(expansion.sessions.map(session => [session.key, session.localDate]));
             const result = await this.runtime.mutations.mutate({
                 entityType: PROGRAM_ENTITY_TYPE,
                 entityId: programId,
@@ -333,12 +378,85 @@ export class ProgramCommands<Transaction = unknown> {
                 transaction: activeTransaction,
             });
             const generatedSessions: PlannedSessionDetail[] = [];
-            for (const plan of command.sessions ?? []) {
-                const session = await this.generateSession(id, plan, blockIds, metadata, activeTransaction);
+            for (let index = 0; index < commandSessions.length; index += 1) {
+                const localDate = localDateByKey.get(String(index)) ?? null;
+                const session = await this.generateSession(
+                    id,
+                    commandSessions[index]!,
+                    localDate,
+                    blockIds,
+                    metadata,
+                    activeTransaction,
+                );
                 generatedSessions.push(session);
             }
             const detail = await this.detail(result.state.id, activeTransaction);
-            return { ...detail, generatedSessions };
+            return { ...detail, warnings: [...detail.warnings, ...expansion.warnings], generatedSessions };
+        });
+    }
+
+    /**
+     * Change a program's start date and slide only its incomplete future member sessions by the same
+     * whole-day delta in one transaction (design PR-5). Overdue, completed, and terminal sessions are
+     * never moved — the calendar does not silently shift around a missed workout — and the result
+     * reports the before/after date of every session that did move.
+     */
+    async changeStartDate(
+        id: string,
+        expectedVersion: number | undefined,
+        command: ChangeProgramStartDateCommand,
+        metadata: ProgramMutationMetadata,
+        transaction?: Transaction,
+    ): Promise<ChangeProgramStartDateResult> {
+        const now = this.clock.now();
+        const today = this.today();
+        const programId = validEntityId(id);
+        return this.inTransaction(transaction, async activeTransaction => {
+            const stored = await this.runtime.repository.loadForUpdate(
+                PROGRAM_ENTITY_TYPE,
+                programId,
+                activeTransaction,
+            );
+            if (!stored) throw new ProgramNotFoundError(id);
+            this.expectedVersions.verify(expectedVersion, stored.version);
+            const oldStartDate = stored.state.startDate;
+            const members = await this.runtime.membership.listProgramSessions(id, activeTransaction);
+            const shifts =
+                oldStartDate !== null && command.startDate !== null
+                    ? shiftProgramSessionDates(
+                          members.map(member => ({
+                              id: member.plannedSessionId,
+                              localDate: member.localDate,
+                              status: member.status,
+                          })),
+                          oldStartDate,
+                          command.startDate,
+                          today,
+                      )
+                    : [];
+            const result = await this.runtime.mutations.mutate({
+                entityType: PROGRAM_ENTITY_TYPE,
+                entityId: programId,
+                expectedVersion: expectedVersion!,
+                change: state => {
+                    const next = Program.rehydrate(state).update({ startDate: command.startDate }, now);
+                    return {
+                        state: next.state,
+                        events: [this.event("rescheduled", next.state, expectedVersion! + 1, metadata, now)],
+                    };
+                },
+                metadata: revisionMetadata(metadata, "Changed program start date"),
+                transaction: activeTransaction,
+            });
+            for (const shift of shifts)
+                await this.runtime.plannedSessions.rescheduleWithinTransaction(
+                    shift.id,
+                    { localDate: shift.toDate },
+                    metadata,
+                    activeTransaction,
+                );
+            const detail = await this.detail(result.state.id, activeTransaction);
+            return { ...detail, movedSessions: shifts };
         });
     }
 
@@ -376,9 +494,22 @@ export class ProgramCommands<Transaction = unknown> {
         });
     }
 
+    private scheduleInput(plan: ActivateSessionPlan, index: number): SessionScheduleInput {
+        return {
+            key: String(index),
+            sequence: plan.sequence,
+            relativeWeek: plan.relativeWeek ?? null,
+            relativeDay: plan.relativeDay ?? null,
+            preferredTime: plan.preferredTime ?? null,
+            explicitLocalDate: plan.localDate ?? null,
+            blockIds: plan.blockIds ?? [],
+        };
+    }
+
     private async generateSession(
         programId: string,
         plan: ActivateSessionPlan,
+        localDate: string | null,
         blockIds: ReadonlySet<string>,
         metadata: ProgramMutationMetadata,
         transaction: Transaction,
@@ -400,7 +531,7 @@ export class ProgramCommands<Transaction = unknown> {
                 profileId: template.template.profileId,
                 currentPrescriptionId: cloned.id,
                 title: plan.title ?? template.template.name,
-                localDate: plan.localDate ?? null,
+                localDate,
                 timeZone: plan.timeZone ?? null,
                 preferredTime: plan.preferredTime ?? null,
                 expectedDurationMinutes: plan.expectedDurationMinutes ?? null,
@@ -486,6 +617,11 @@ export class ProgramCommands<Transaction = unknown> {
         return transaction === undefined ? this.runtime.unitOfWork.execute(work) : work(transaction);
     }
 
+    /** Today as a time-zone-naive local date. MVP uses the UTC calendar day for the whole profile. */
+    private today(): string {
+        return this.clock.now().toISOString().slice(0, 10);
+    }
+
     private event(
         action: ProgramAction,
         state: ProgramState,
@@ -513,10 +649,15 @@ export class ProgramCommands<Transaction = unknown> {
  * warning logic in SQL or the UI (design 5.6).
  */
 export class ProgramQueries<Transaction = unknown> {
+    private readonly clock: Clock;
+
     constructor(
         private readonly repository: ProgramRepository<Transaction>,
         private readonly membership: ProgramMembershipRepository<Transaction>,
-    ) {}
+        clock?: Clock,
+    ) {
+        this.clock = clock ?? { now: () => new Date() };
+    }
 
     list(filter?: ProgramListFilter): Promise<readonly ProgramSummary[]> {
         return this.repository.listPrograms(filter);
@@ -527,20 +668,37 @@ export class ProgramQueries<Transaction = unknown> {
         const program = await this.repository.readProgram(programId);
         if (!program) throw new ProgramNotFoundError(id);
         const sessions = await this.membership.listProgramSessions(id);
-        const schedules: PlannedSessionSchedule[] = sessions.map(session => ({
-            id: session.plannedSessionId,
-            localDate: session.localDate,
-            preferredTime: session.preferredTime,
-        }));
+        const profileSessions = await this.membership.listProfileScheduledSessions(program.profileId);
+        // Only slots this program participates in can collide with it; restricting to those keeps
+        // unrelated collisions between two other programs out of this program's warnings.
+        const programSlots = new Set(
+            sessions.filter(hasSlot).map(session => slotKey(session.localDate, session.preferredTime)),
+        );
+        const schedules = profileSessions.filter(session =>
+            programSlots.has(slotKey(session.localDate, session.preferredTime)),
+        );
         return { program, warnings: evaluateProgramWarnings(program, schedules) };
     }
 
-    async sessions(id: string): Promise<readonly ProgramSessionMembership[]> {
+    async sessions(id: string): Promise<readonly ProgramSessionMembershipView[]> {
         const programId = validEntityId(id);
         const program = await this.repository.readProgram(programId);
         if (!program) throw new ProgramNotFoundError(id);
-        return this.membership.listProgramSessions(id);
+        const today = this.clock.now().toISOString().slice(0, 10);
+        const sessions = await this.membership.listProgramSessions(id);
+        return sessions.map(session => ({
+            ...session,
+            overdue: isPlannedSessionOverdue({ localDate: session.localDate, status: session.status }, today),
+        }));
     }
+}
+
+function hasSlot(session: { readonly localDate: string | null }): boolean {
+    return session.localDate !== null;
+}
+
+function slotKey(localDate: string | null, preferredTime: string | null): string {
+    return `${localDate ?? ""}T${preferredTime ?? "*"}`;
 }
 
 const programRevisionResourceMapper: SnapshotResourceMapper<ProgramState, ProgramResource> = {

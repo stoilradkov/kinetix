@@ -120,7 +120,14 @@ export const programSessionMembershipSchema = z
         preferredTime: z.string().nullable(),
         status: plannedSessionStatusSchema,
         title: z.string().nullable(),
+        /** Derived: a still-planned session whose local date is before today (design PR-5). */
+        overdue: z.boolean(),
     })
+    .strict();
+
+/** One before/after date move produced by a start-date change. */
+export const sessionDateShiftSchema = z
+    .object({ id: z.string().uuid(), fromDate: localDateSchema, toDate: localDateSchema })
     .strict();
 
 export const programSessionsResponseSchema = z.object({ items: z.array(programSessionMembershipSchema) }).strict();
@@ -182,6 +189,18 @@ export const activateProgramResponseSchema = z
     })
     .strict();
 
+export const changeProgramStartDateRequestSchema = z.object({ startDate: localDateSchema.nullable() }).strict();
+
+export const changeProgramStartDateResponseSchema = z
+    .object({
+        ...programSummaryShape,
+        blocks: z.array(programBlockResponseSchema),
+        goalIds: z.array(z.string().uuid()),
+        warnings: z.array(planningWarningSchema),
+        movedSessions: z.array(sessionDateShiftSchema),
+    })
+    .strict();
+
 export const attachProgramSessionRequestSchema = z
     .object({
         plannedSessionId: z.string().uuid(),
@@ -202,7 +221,10 @@ export type ProgramSummary = z.infer<typeof programSummarySchema>;
 export type ProgramResponse = z.infer<typeof programResponseSchema>;
 export type ProgramListResponse = z.infer<typeof programListResponseSchema>;
 export type ProgramSessionMembership = z.infer<typeof programSessionMembershipSchema>;
+export type SessionDateShift = z.infer<typeof sessionDateShiftSchema>;
 export type ProgramSessionsResponse = z.infer<typeof programSessionsResponseSchema>;
+export type ChangeProgramStartDateRequest = z.infer<typeof changeProgramStartDateRequestSchema>;
+export type ChangeProgramStartDateResponse = z.infer<typeof changeProgramStartDateResponseSchema>;
 export type CreateProgramRequest = z.infer<typeof createProgramRequestSchema>;
 export type UpdateProgramRequest = z.infer<typeof updateProgramRequestSchema>;
 export type ActivateProgramSessionPlan = z.infer<typeof activateProgramSessionPlanSchema>;

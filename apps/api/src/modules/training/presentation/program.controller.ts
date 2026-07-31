@@ -21,12 +21,15 @@ import {
     activateProgramRequestSchema,
     activateProgramResponseSchema,
     attachProgramSessionRequestSchema,
+    changeProgramStartDateRequestSchema,
+    changeProgramStartDateResponseSchema,
     createProgramRequestSchema,
     programListResponseSchema,
     programResponseSchema,
     programSessionsResponseSchema,
     updateProgramRequestSchema,
     type ActivateProgramResponse,
+    type ChangeProgramStartDateResponse,
     type ProgramListResponse,
     type ProgramResponse,
     type ProgramSessionsResponse,
@@ -36,6 +39,7 @@ import {
     PROGRAM_COMMANDS,
     PROGRAM_QUERIES,
     type ActivateProgramResult,
+    type ChangeProgramStartDateResult,
     type ProgramCommands,
     type ProgramDetail,
     type ProgramMutationMetadata,
@@ -162,6 +166,35 @@ export class ProgramController {
             metadata,
             response,
             command: transaction => this.commands.activate(id, expectedVersion, request, metadata, transaction),
+        });
+    }
+
+    @Post(":id/change-start-date")
+    @ApiOperation({ summary: "Change a program's start date, sliding only incomplete future sessions" })
+    @ApiParam({ name: "id", format: "uuid" })
+    @ApiHeader({ name: "If-Match", required: true })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    changeStartDate(
+        @Param("id") id: string,
+        @Body() rawBody: unknown,
+        @Headers("if-match") ifMatch: string | undefined,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<ChangeProgramStartDateResponse> {
+        const request = parseContract(
+            changeProgramStartDateRequestSchema,
+            rawBody,
+            "Program start-date validation failed",
+        );
+        const expectedVersion = expectedVersionFrom(ifMatch);
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeChangeStartDate({
+            idempotencyKey,
+            request: { id, expectedVersion, body: request },
+            metadata,
+            response,
+            command: transaction => this.commands.changeStartDate(id, expectedVersion, request, metadata, transaction),
         });
     }
 
@@ -360,10 +393,44 @@ export class ProgramController {
         input.response.setHeader("ETag", formatRevisionEtag(body.version));
         return body;
     }
+
+    private async executeChangeStartDate(input: {
+        readonly idempotencyKey?: string;
+        readonly request: unknown;
+        readonly metadata: ProgramMutationMetadata;
+        readonly response: HeaderResponse;
+        readonly command: (transaction?: unknown) => Promise<ChangeProgramStartDateResult>;
+    }): Promise<ChangeProgramStartDateResponse> {
+        const perform = async (transaction?: unknown) =>
+            changeProgramStartDateResponseSchema.parse(toChangeStartDateResponse(await input.command(transaction)));
+        let body: ChangeProgramStartDateResponse;
+        if (input.idempotencyKey !== undefined) {
+            if (!this.idempotency) throw new Error("Idempotency support is not configured");
+            const result = await this.idempotency.execute(
+                {
+                    operation: "training.program.change-start-date",
+                    key: input.idempotencyKey,
+                    request: input.request,
+                    context: input.metadata,
+                },
+                async transaction => ({ status: 200, body: await perform(transaction) }),
+            );
+            body = result.body;
+            input.response.setHeader("Idempotency-Replayed", String(result.replayed));
+        } else {
+            body = await perform();
+        }
+        input.response.setHeader("ETag", formatRevisionEtag(body.version));
+        return body;
+    }
 }
 
 function toResponse(detail: ProgramDetail): unknown {
     return { ...detail.program, warnings: detail.warnings };
+}
+
+function toChangeStartDateResponse(result: ChangeProgramStartDateResult): unknown {
+    return { ...result.program, warnings: result.warnings, movedSessions: result.movedSessions };
 }
 
 function toActivationResponse(result: ActivateProgramResult): unknown {

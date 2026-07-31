@@ -15,4 +15,5 @@ export * from "#src/modules/training/domain/training-profile";
 export * from "#src/modules/training/domain/workout-template";
 export * from "#src/modules/training/domain/program";
 export * from "#src/modules/training/domain/program-planning";
+export * from "#src/modules/training/domain/schedule-expansion";
 export * from "#src/modules/training/domain/planned-session";

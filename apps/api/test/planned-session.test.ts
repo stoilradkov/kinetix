@@ -80,6 +80,20 @@ describe("PlannedSession domain", () => {
         expect(reopened).toMatchObject({ status: "planned", skipReason: null, skipNotes: null });
     });
 
+    it("reschedules an open session's date and time", () => {
+        const created = PlannedSession.create(input({ localDate: "2026-08-01" }), now);
+        const moved = PlannedSession.rehydrate(created.state).reschedule(
+            { localDate: "2026-08-08", preferredTime: "09:00" },
+            later,
+        ).state;
+        expect(moved).toMatchObject({ localDate: "2026-08-08", preferredTime: "09:00" });
+    });
+
+    it("refuses to reschedule a terminal session", () => {
+        const skipped = PlannedSession.create(input({ localDate: "2026-08-01" }), now).skip({ reason: "pain" }, later);
+        expect(() => PlannedSession.rehydrate(skipped.state).reschedule({ localDate: "2026-08-08" }, later)).toThrow();
+    });
+
     it("archives and restores independently of lifecycle status", () => {
         const completed = PlannedSession.create(input(), now).complete({}, later);
         const archived = PlannedSession.rehydrate(completed.state).archive(later).state;

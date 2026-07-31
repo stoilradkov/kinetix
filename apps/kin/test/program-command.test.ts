@@ -118,6 +118,38 @@ describe("kin training programs", () => {
         expect(output).toHaveBeenCalledWith(`0198a4db-d8da-7000-8000-000000006001\t1\tplanned\t2026-08-01\tUpper A`);
     });
 
+    it("changes a program's start date and prints the moved sessions", async () => {
+        const output = vi.fn();
+        const changed = {
+            ...response,
+            startDate: "2026-08-08",
+            version: 2,
+            movedSessions: [
+                { id: "0198a4db-d8da-7000-8000-000000006001", fromDate: "2026-08-05", toDate: "2026-08-12" },
+            ],
+        };
+        const request = vi.fn(async () => Response.json(changed));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync([
+            "node",
+            "kin",
+            "training",
+            "programs",
+            "change-start-date",
+            base.id,
+            "--version",
+            "1",
+            "--input",
+            JSON.stringify({ startDate: "2026-08-08" }),
+        ]);
+
+        const [url, init] = request.mock.calls[0]!;
+        expect(url).toContain(`/training/programs/${base.id}/change-start-date`);
+        expect((init?.headers as Headers).get("if-match")).toBe('"1"');
+        expect(output).toHaveBeenCalledWith("moved\t0198a4db-d8da-7000-8000-000000006001\t2026-08-05\t→\t2026-08-12");
+    });
+
     it("pauses a program through the lifecycle endpoint", async () => {
         const output = vi.fn();
         const request = vi.fn(async () => Response.json({ ...response, status: "paused", version: 3 }));
@@ -164,6 +196,32 @@ describe("kin training planned-sessions", () => {
 
         expect(request.mock.calls[0]?.[0]).toContain("/training/planned-sessions");
         expect(output).toHaveBeenCalledWith(`${session.id}\t1\tplanned\t2026-08-01\tUpper A`);
+    });
+
+    it("reschedules a planned session to a new date", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () =>
+            Response.json({ ...session, localDate: "2026-08-08", version: 2, prescription: prescription() }),
+        );
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync([
+            "node",
+            "kin",
+            "training",
+            "planned-sessions",
+            "reschedule",
+            session.id,
+            "--version",
+            "1",
+            "--input",
+            JSON.stringify({ localDate: "2026-08-08" }),
+        ]);
+
+        const [url, init] = request.mock.calls[0]!;
+        expect(url).toContain(`/training/planned-sessions/${session.id}/reschedule`);
+        expect((init?.headers as Headers).get("if-match")).toBe('"1"');
+        expect(output).toHaveBeenCalledWith(`${session.id}\t2\tplanned\t2026-08-08\tUpper A`);
     });
 
     it("skips a planned session with a structured reason", async () => {

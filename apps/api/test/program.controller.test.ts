@@ -128,6 +128,29 @@ describe("ProgramController", () => {
         expect(activate).toHaveBeenCalledWith(ids.program, 1, {}, expect.any(Object), undefined);
     });
 
+    it("changes the start date, echoing the moved sessions", async () => {
+        const moved = { id: "0198a4db-d8da-7000-8000-0000000060a1", fromDate: "2026-08-05", toDate: "2026-08-12" };
+        const changeStartDate = vi.fn(async () => ({ ...detail({ startDate: "2026-08-08" }), movedSessions: [moved] }));
+        const response = { setHeader: vi.fn() };
+        const result = await controller({ commands: { changeStartDate } }).changeStartDate(
+            ids.program,
+            { startDate: "2026-08-08" },
+            '"1"',
+            "r",
+            undefined,
+            response,
+        );
+        expect(result.movedSessions).toEqual([moved]);
+        expect(changeStartDate).toHaveBeenCalledWith(
+            ids.program,
+            1,
+            { startDate: "2026-08-08" },
+            expect.any(Object),
+            undefined,
+        );
+        expect(response.setHeader).toHaveBeenCalledWith("ETag", '"1"');
+    });
+
     it("pauses through the command", async () => {
         const pause = vi.fn(async () => detail({ status: "paused", version: 2 }));
         const result = await controller({ commands: { pause } }).pause(ids.program, '"1"', "r", undefined, {

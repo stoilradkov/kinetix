@@ -21,6 +21,7 @@ import {
     createPlannedSessionRequestSchema,
     plannedSessionListResponseSchema,
     plannedSessionResponseSchema,
+    reschedulePlannedSessionRequestSchema,
     skipCancelPlannedSessionRequestSchema,
     updatePlannedSessionRequestSchema,
     type PlannedSessionListResponse,
@@ -174,6 +175,36 @@ export class PlannedSessionController {
             response,
             status: 200,
             command: transaction => this.commands.complete(id, expectedVersion, request, metadata, transaction),
+        });
+    }
+
+    @Post(":id/reschedule")
+    @ApiOperation({ summary: "Reschedule an open planned session to a new date/time" })
+    @ApiParam({ name: "id", format: "uuid" })
+    @ApiHeader({ name: "If-Match", required: true })
+    reschedule(
+        @Param("id") id: string,
+        @Body() rawBody: unknown,
+        @Headers("if-match") ifMatch: string | undefined,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<PlannedSessionResponse> {
+        const request = parseContract(
+            reschedulePlannedSessionRequestSchema,
+            rawBody ?? {},
+            "Planned session reschedule validation failed",
+        );
+        const expectedVersion = expectedVersionFrom(ifMatch);
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "training.planned-session.reschedule",
+            idempotencyKey,
+            request: { id, expectedVersion, body: request },
+            metadata,
+            response,
+            status: 200,
+            command: transaction => this.commands.reschedule(id, expectedVersion, request, metadata, transaction),
         });
     }
 

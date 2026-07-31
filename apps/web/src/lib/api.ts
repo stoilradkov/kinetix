@@ -70,10 +70,21 @@ import {
     updateProgramRequestSchema,
     programListResponseSchema,
     programResponseSchema,
+    activateProgramRequestSchema,
+    activateProgramResponseSchema,
+    changeProgramStartDateRequestSchema,
+    changeProgramStartDateResponseSchema,
+    programSessionsResponseSchema,
+    plannedSessionResponseSchema,
+    reschedulePlannedSessionRequestSchema,
+    skipCancelPlannedSessionRequestSchema,
     type ExerciseCatalogItemResponse,
     type ExerciseMergeResource,
     type WorkoutTemplateResponse,
     type WorkoutTemplateSummary,
+    type ActivateProgramResponse,
+    type ChangeProgramStartDateResponse,
+    type PlannedSessionResponse,
     type ProgramResponse,
     type ProgramSummary,
 } from "@kinetix/types";
@@ -513,6 +524,84 @@ export async function changeProgramStatus(
             method: "POST",
             headers: mutationHeaders(program.version, crypto.randomUUID()),
             body: "{}",
+        }),
+    );
+}
+
+export function programSessionsQueryOptions(programId: string | null) {
+    return queryOptions({
+        queryKey: ["training-program-sessions", programId],
+        enabled: programId !== null,
+        queryFn: async () =>
+            programSessionsResponseSchema.parse(
+                await apiRequest(`/training/programs/${encodeURIComponent(programId!)}/sessions`),
+            ),
+    });
+}
+
+export function plannedSessionQueryOptions(sessionId: string | null) {
+    return queryOptions({
+        queryKey: ["training-planned-session", sessionId],
+        enabled: sessionId !== null,
+        queryFn: async () =>
+            plannedSessionResponseSchema.parse(
+                await apiRequest(`/training/planned-sessions/${encodeURIComponent(sessionId!)}`),
+            ),
+    });
+}
+
+/** Activate a draft program, generating its planned sessions from the supplied template plans. */
+export async function activateProgram(
+    program: Pick<ProgramSummary, "id" | "version">,
+    input: unknown,
+): Promise<ActivateProgramResponse> {
+    return activateProgramResponseSchema.parse(
+        await apiRequest(`/training/programs/${encodeURIComponent(program.id)}/activate`, {
+            method: "POST",
+            headers: mutationHeaders(program.version, crypto.randomUUID()),
+            body: JSON.stringify(activateProgramRequestSchema.parse(input)),
+        }),
+    );
+}
+
+/** Change a program's start date, sliding only its incomplete future sessions. */
+export async function changeProgramStartDate(
+    program: Pick<ProgramSummary, "id" | "version">,
+    input: unknown,
+): Promise<ChangeProgramStartDateResponse> {
+    return changeProgramStartDateResponseSchema.parse(
+        await apiRequest(`/training/programs/${encodeURIComponent(program.id)}/change-start-date`, {
+            method: "POST",
+            headers: mutationHeaders(program.version, crypto.randomUUID()),
+            body: JSON.stringify(changeProgramStartDateRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function reschedulePlannedSession(
+    session: Pick<PlannedSessionResponse, "id" | "version">,
+    input: unknown,
+): Promise<PlannedSessionResponse> {
+    return plannedSessionResponseSchema.parse(
+        await apiRequest(`/training/planned-sessions/${encodeURIComponent(session.id)}/reschedule`, {
+            method: "POST",
+            headers: mutationHeaders(session.version, crypto.randomUUID()),
+            body: JSON.stringify(reschedulePlannedSessionRequestSchema.parse(input)),
+        }),
+    );
+}
+
+/** Skip or cancel a planned session with an optional structured reason. */
+export async function changePlannedSessionOutcome(
+    session: Pick<PlannedSessionResponse, "id" | "version">,
+    action: "skip" | "cancel",
+    input: unknown,
+): Promise<PlannedSessionResponse> {
+    return plannedSessionResponseSchema.parse(
+        await apiRequest(`/training/planned-sessions/${encodeURIComponent(session.id)}/${action}`, {
+            method: "POST",
+            headers: mutationHeaders(session.version, crypto.randomUUID()),
+            body: JSON.stringify(skipCancelPlannedSessionRequestSchema.parse(input)),
         }),
     );
 }

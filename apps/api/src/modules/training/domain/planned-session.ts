@@ -80,6 +80,12 @@ export interface CompletePlannedSessionInput {
     readonly partial?: boolean;
 }
 
+export interface ReschedulePlannedSessionInput {
+    readonly localDate?: string | null;
+    readonly timeZone?: string | null;
+    readonly preferredTime?: string | null;
+}
+
 export interface SkipCancelInput {
     readonly reason?: SkipCancelReason | null;
     readonly notes?: string | null;
@@ -146,6 +152,22 @@ export class PlannedSession {
             ...(input.currentPrescriptionId !== undefined
                 ? { currentPrescriptionId: requiredUuid(input.currentPrescriptionId, "Current prescription ID") }
                 : {}),
+            updatedAt: isoTimestamp(now, "Planned session update time"),
+        });
+    }
+
+    /**
+     * Move an open session to a new date/time. Rescheduling is only meaningful while the session is
+     * still planned — a completed, skipped, or cancelled session keeps the schedule it was resolved
+     * against, so this rejects rather than silently editing a terminal session (design PR-5).
+     */
+    reschedule(input: ReschedulePlannedSessionInput, now: Date): this {
+        this.assertOpen("reschedule");
+        return this.replace({
+            ...this.current,
+            ...(input.localDate !== undefined ? { localDate: optionalLocalDate(input.localDate, "Local date") } : {}),
+            ...(input.timeZone !== undefined ? { timeZone: optionalText(input.timeZone, "Time zone", 80) } : {}),
+            ...(input.preferredTime !== undefined ? { preferredTime: optionalPreferredTime(input.preferredTime) } : {}),
             updatedAt: isoTimestamp(now, "Planned session update time"),
         });
     }

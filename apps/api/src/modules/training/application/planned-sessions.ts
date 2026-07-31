@@ -102,6 +102,12 @@ export interface PlannedSessionOutcomeCommand {
     readonly partial?: boolean;
 }
 
+export interface ReschedulePlannedSessionCommand {
+    readonly localDate?: string | null;
+    readonly timeZone?: string | null;
+    readonly preferredTime?: string | null;
+}
+
 /** Inputs for creating a planned session against an already-published prescription (activation). */
 export interface MaterializePlannedSessionInput extends Omit<CreatePlannedSessionInput, "id" | "profileId"> {
     readonly id?: string;
@@ -133,7 +139,15 @@ interface PlannedSessionCommandRuntime<Transaction> {
 }
 
 type PlannedSessionAction =
-    "created" | "updated" | "completed" | "skipped" | "cancelled" | "reopened" | "archived" | "restored";
+    | "created"
+    | "updated"
+    | "rescheduled"
+    | "completed"
+    | "skipped"
+    | "cancelled"
+    | "reopened"
+    | "archived"
+    | "restored";
 
 export class PlannedSessionCommands<Transaction = unknown> {
     private readonly clock: Clock;
@@ -234,6 +248,47 @@ export class PlannedSessionCommands<Transaction = unknown> {
             };
             return { apply: (session: PlannedSession) => session.update(input, now), prescription: published };
         });
+    }
+
+    /**
+     * Reschedule an open planned session to a new date/time (design PR-5). Distinct from a metadata
+     * update because it rejects terminal sessions — a missed session must be explicitly completed,
+     * skipped, cancelled, or rescheduled and is never silently moved.
+     */
+    reschedule(
+        id: string,
+        expectedVersion: number | undefined,
+        command: ReschedulePlannedSessionCommand,
+        metadata: PlannedSessionMutationMetadata,
+        transaction?: Transaction,
+    ): Promise<PlannedSessionDetail> {
+        const now = this.clock.now();
+        return this.mutate(id, expectedVersion, "rescheduled", metadata, transaction, () =>
+            Promise.resolve({
+                apply: (session: PlannedSession) => session.reschedule(command, now),
+                prescription: null,
+            }),
+        );
+    }
+
+    /**
+     * Reschedule as part of a larger orchestration (e.g. a program start-date change) where the
+     * caller does not track the session version. Runs inside the caller's transaction and discovers
+     * the current version under the write lock, so the outer command stays atomic.
+     */
+    async rescheduleWithinTransaction(
+        id: string,
+        command: ReschedulePlannedSessionCommand,
+        metadata: PlannedSessionMutationMetadata,
+        transaction: Transaction,
+    ): Promise<PlannedSessionDetail> {
+        const stored = await this.runtime.repository.loadForUpdate(
+            PLANNED_SESSION_ENTITY_TYPE,
+            entityId(id),
+            transaction,
+        );
+        if (!stored) throw new PlannedSessionNotFoundError(id);
+        return this.reschedule(id, stored.version, command, metadata, transaction);
     }
 
     complete(

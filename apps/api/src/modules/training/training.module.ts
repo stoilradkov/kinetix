@@ -654,7 +654,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         {
             provide: PROGRAM_QUERIES,
             useFactory: (repository: ProgramRepository, membership: ProgramMembershipRepository) =>
-                new ProgramQueries(repository, membership),
+                new ProgramQueries(repository, membership, { now: () => new Date() }),
             inject: [PROGRAM_REPOSITORY, PROGRAM_MEMBERSHIP_REPOSITORY],
         },
         {

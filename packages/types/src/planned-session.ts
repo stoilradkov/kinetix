@@ -102,6 +102,14 @@ export const skipCancelPlannedSessionRequestSchema = z
     .object({ reason: skipCancelReasonSchema.nullable().optional(), notes: notesSchema.nullable().optional() })
     .strict();
 
+export const reschedulePlannedSessionRequestSchema = z
+    .object({
+        localDate: localDateSchema.nullable().optional(),
+        timeZone: z.string().trim().min(1).max(80).nullable().optional(),
+        preferredTime: preferredTimeSchema.nullable().optional(),
+    })
+    .strict();
+
 export type PlannedSessionStatusValue = z.infer<typeof plannedSessionStatusSchema>;
 export type SkipCancelReasonValue = z.infer<typeof skipCancelReasonSchema>;
 export type PlannedSessionPrescriptionDraft = z.infer<typeof plannedSessionPrescriptionDraftSchema>;
@@ -112,3 +120,4 @@ export type CreatePlannedSessionRequest = z.infer<typeof createPlannedSessionReq
 export type UpdatePlannedSessionRequest = z.infer<typeof updatePlannedSessionRequestSchema>;
 export type CompletePlannedSessionRequest = z.infer<typeof completePlannedSessionRequestSchema>;
 export type SkipCancelPlannedSessionRequest = z.infer<typeof skipCancelPlannedSessionRequestSchema>;
+export type ReschedulePlannedSessionRequest = z.infer<typeof reschedulePlannedSessionRequestSchema>;
