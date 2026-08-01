@@ -53,6 +53,31 @@ function check(value: number, limit: number, label: string): void {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Upsert field-merge policy
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Merge a bulk upsert patch over an existing record (design 14.1: "Patch/upsert schemas preserve the
+ * semantic difference between omitted and explicit null"). A patch field that is **absent or
+ * `undefined`** leaves the existing value untouched; an explicit **`null`** clears an optional value;
+ * any other value **replaces** it. Pure and shape-agnostic so program- and session-level upserts
+ * share one contract. This is the authoritative merge rule; a later increment that carries per-field
+ * diffs through the dry-run drives commit through it.
+ */
+export function mergeUpsertPatch<T extends Record<string, unknown>>(
+    existing: T,
+    patch: Partial<Record<keyof T, T[keyof T]>>,
+): T {
+    const merged: T = { ...existing };
+    for (const key of Object.keys(patch) as (keyof T)[]) {
+        const value = patch[key];
+        if (value === undefined) continue; // omitted → keep existing
+        merged[key] = value; // explicit null clears; any other value replaces
+    }
+    return merged;
+}
+
+// ---------------------------------------------------------------------------------------------
 // External-id → minted-UUID tree resolution
 // ---------------------------------------------------------------------------------------------
 

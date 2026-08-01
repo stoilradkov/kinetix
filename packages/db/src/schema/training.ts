@@ -1503,6 +1503,10 @@ export const bulkDryRuns = pgTable(
         affectedVersions: jsonb("affected_versions").$type<unknown[]>().notNull().default([]),
         createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
         expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+        // Set once, on the transaction that commits the approved tree (design 14.3 step 6). A
+        // non-null value means the dry-run has been consumed and cannot be committed again.
+        consumedAt: timestamp("consumed_at", { withTimezone: true }),
+        committedProgramId: uuid("committed_program_id"),
     },
     table => [
         check("bulk_dry_runs_schema_version_valid", sql`${table.schemaVersion} = 1`),
@@ -1516,6 +1520,41 @@ export const bulkDryRuns = pgTable(
 );
 
 export type BulkDryRunRow = typeof bulkDryRuns.$inferSelect;
+
+/**
+ * Namespaced registry mapping a caller's stable external ID to the authoritative Training entity it
+ * addresses (design 14.1/14.3). Unique per `(source_namespace, entity_type, external_id)`, so a
+ * repeated bulk import cannot silently create a duplicate entity and a later upsert can resolve the
+ * existing target. Not a foreign key: entity_id spans several aggregate tables.
+ */
+export const bulkExternalIds = pgTable(
+    "bulk_external_ids",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        sourceNamespace: text("source_namespace").notNull(),
+        entityType: text("entity_type").notNull(),
+        externalId: text("external_id").notNull(),
+        entityId: uuid("entity_id").notNull(),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check(
+            "bulk_external_ids_entity_type_valid",
+            sql`${table.entityType} IN ('program', 'planned-session', 'program-block')`,
+        ),
+        check("bulk_external_ids_namespace_valid", sql`length(btrim(${table.sourceNamespace})) BETWEEN 1 AND 120`),
+        check("bulk_external_ids_value_valid", sql`length(btrim(${table.externalId})) BETWEEN 1 AND 200`),
+        uniqueIndex("bulk_external_ids_namespace_type_value_unique").on(
+            table.sourceNamespace,
+            table.entityType,
+            table.externalId,
+        ),
+        index("bulk_external_ids_entity_idx").on(table.entityId),
+    ],
+);
+
+export type BulkExternalIdRow = typeof bulkExternalIds.$inferSelect;
 
 export type WorkoutTemplateRow = typeof workoutTemplates.$inferSelect;
 export type WorkoutTemplatePrescriptionRow = typeof workoutTemplatePrescriptions.$inferSelect;

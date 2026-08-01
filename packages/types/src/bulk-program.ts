@@ -453,3 +453,59 @@ export type BulkProposedExercisePreview = z.infer<typeof bulkProposedExercisePre
 export type BulkAffectedVersion = z.infer<typeof bulkAffectedVersionSchema>;
 export type BulkNormalizedProgram = z.infer<typeof bulkNormalizedProgramSchema>;
 export type BulkDryRunResponse = z.infer<typeof bulkDryRunResponseSchema>;
+
+// ---------------------------------------------------------------------------------------------
+// Commit (design 14.3)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Commit request (design 14.3). Commit accepts only the dry-run identity plus its approval token
+ * — never a replacement program body. Retries carry an `Idempotency-Key` header. The approved
+ * normalized tree stored under `dryRunId` is what commits; a caller cannot smuggle in a modified
+ * payload here.
+ */
+export const bulkCommitRequestSchema = z
+    .object({
+        dryRunId: z.string().uuid(),
+        approvalToken: z.string().trim().min(1).max(200),
+    })
+    .strict();
+
+/** A catalog exercise created on commit because it was proposed in the dry-run (BI-5). */
+export const bulkCommittedExerciseSchema = z
+    .object({
+        exerciseId: z.string().uuid(),
+        exerciseRef: z.string(),
+        sessionExternalId: externalIdSchema,
+    })
+    .strict();
+
+/** A planned session created on commit, with its immutable prescription id. */
+export const bulkCommittedSessionSchema = z
+    .object({
+        id: z.string().uuid(),
+        externalId: externalIdSchema,
+        prescriptionId: z.string().uuid().nullable(),
+    })
+    .strict();
+
+/** Result of a successful commit: the authoritative identities that entered Training state. */
+export const bulkCommitResponseSchema = z
+    .object({
+        dryRunId: z.string().uuid(),
+        programId: z.string().uuid(),
+        programVersion: z.number().int().positive(),
+        mode: z.enum(["create", "upsert"]),
+        source: z.object({ namespace: z.string(), generatedBy: z.string().nullable() }).strict(),
+        committedAt: z.string(),
+        sessions: z.array(bulkCommittedSessionSchema),
+        createdExercises: z.array(bulkCommittedExerciseSchema),
+        affectedVersions: z.array(bulkAffectedVersionSchema),
+        warnings: z.array(planningWarningSchema),
+    })
+    .strict();
+
+export type BulkCommitRequest = z.infer<typeof bulkCommitRequestSchema>;
+export type BulkCommittedExercise = z.infer<typeof bulkCommittedExerciseSchema>;
+export type BulkCommittedSession = z.infer<typeof bulkCommittedSessionSchema>;
+export type BulkCommitResponse = z.infer<typeof bulkCommitResponseSchema>;

@@ -130,11 +130,15 @@ import {
     type TrainingCatalogSeedRepository,
     BULK_DRY_RUN_REPOSITORY,
     BULK_CATALOG_RESOLVER,
+    BULK_EXTERNAL_ID_REGISTRY,
     EXERCISE_EXTERNAL_ID_RESOLVER,
     DRY_RUN_BULK_PROGRAM,
+    COMMIT_BULK_PROGRAM,
     BulkCatalogResolver,
     DryRunBulkProgram,
+    CommitBulkProgram,
     type BulkDryRunRepository,
+    type BulkExternalIdRegistry,
     type ExerciseExternalIdResolver,
     type TrainingExerciseCatalogPort,
 } from "#src/modules/training/application/index";
@@ -152,6 +156,7 @@ import type {
 import { PROFILE_READER, ProfileModule, type ProfileReader } from "#src/modules/profile/index";
 import { DrizzleTrainingCatalogRepository } from "#src/modules/training/infrastructure/drizzle-training-catalog-repository";
 import { DrizzleBulkDryRunRepository } from "#src/modules/training/infrastructure/drizzle-bulk-dry-run-repository";
+import { DrizzleBulkExternalIdRegistry } from "#src/modules/training/infrastructure/drizzle-bulk-external-id-registry";
 import { DrizzleExerciseExternalIdResolver } from "#src/modules/training/infrastructure/drizzle-exercise-external-id-resolver";
 import { DrizzleTrainingProfileRepository } from "#src/modules/training/infrastructure/drizzle-training-profile-repository";
 import { TrainingProfileRevisionRegistrar } from "#src/modules/training/infrastructure/training-profile-revision-registrar";
@@ -678,8 +683,10 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         },
         ProgramRevisionRegistrar,
         DrizzleBulkDryRunRepository,
+        DrizzleBulkExternalIdRegistry,
         DrizzleExerciseExternalIdResolver,
         { provide: BULK_DRY_RUN_REPOSITORY, useExisting: DrizzleBulkDryRunRepository },
+        { provide: BULK_EXTERNAL_ID_REGISTRY, useExisting: DrizzleBulkExternalIdRegistry },
         { provide: EXERCISE_EXTERNAL_ID_RESOLVER, useExisting: DrizzleExerciseExternalIdResolver },
         {
             provide: BULK_CATALOG_RESOLVER,
@@ -696,6 +703,45 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                 profileReader: ProfileReader,
             ) => new DryRunBulkProgram({ unitOfWork, repository, resolver, profileReader, generateId: randomUUID }),
             inject: [UNIT_OF_WORK, BULK_DRY_RUN_REPOSITORY, BULK_CATALOG_RESOLVER, PROFILE_READER],
+        },
+        {
+            provide: COMMIT_BULK_PROGRAM,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: BulkDryRunRepository,
+                externalIds: BulkExternalIdRegistry,
+                catalog: TrainingExerciseCatalogPort,
+                exercises: ExerciseCatalogCommands,
+                programCommands: ProgramCommands,
+                plannedSessions: PlannedSessionCommands,
+                publisher: PrescriptionPublisher,
+                membership: ProgramMembershipRepository,
+                profileReader: ProfileReader,
+            ) =>
+                new CommitBulkProgram({
+                    unitOfWork,
+                    repository,
+                    externalIds,
+                    catalog,
+                    exercises,
+                    programCommands,
+                    plannedSessions,
+                    publisher,
+                    membership,
+                    profileReader,
+                }),
+            inject: [
+                UNIT_OF_WORK,
+                BULK_DRY_RUN_REPOSITORY,
+                BULK_EXTERNAL_ID_REGISTRY,
+                TRAINING_EXERCISE_CATALOG,
+                EXERCISE_CATALOG_COMMANDS,
+                PROGRAM_COMMANDS,
+                PLANNED_SESSION_COMMANDS,
+                PRESCRIPTION_PUBLISHER,
+                PROGRAM_MEMBERSHIP_REPOSITORY,
+                PROFILE_READER,
+            ],
         },
         {
             provide: TRAINING_MODULE_DEFINITION,

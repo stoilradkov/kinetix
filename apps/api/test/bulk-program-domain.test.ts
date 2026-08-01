@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
     assertWithinBulkLimits,
     assignBulkTreeIds,
+    mergeUpsertPatch,
     normalizeRunStepTargets,
     normalizeStrengthSetTargets,
     type BulkBlockRef,
@@ -106,5 +107,32 @@ describe("normalizeRunStepTargets", () => {
         expect(raw.distanceMMin).toBe("5000");
         // 5 min/km = 1000 m / 300 s = 3.333... m/s
         expect(raw.speedMpsMin?.startsWith("3.33")).toBe(true);
+    });
+});
+
+describe("mergeUpsertPatch", () => {
+    const existing = { title: "Row A", focus: "strength", notes: "keep me" };
+
+    it("keeps existing values for omitted fields", () => {
+        const merged = mergeUpsertPatch(existing, { title: "Row B" });
+        expect(merged).toEqual({ title: "Row B", focus: "strength", notes: "keep me" });
+    });
+
+    it("treats an explicit undefined the same as omitted", () => {
+        const merged = mergeUpsertPatch(existing, { focus: undefined });
+        expect(merged.focus).toBe("strength");
+    });
+
+    it("clears an optional field on explicit null", () => {
+        const merged = mergeUpsertPatch<{ title: string; focus: string | null; notes: string }>(existing, {
+            focus: null,
+        });
+        expect(merged.focus).toBeNull();
+        expect(merged.notes).toBe("keep me");
+    });
+
+    it("does not mutate the existing record", () => {
+        mergeUpsertPatch(existing, { title: "Row C" });
+        expect(existing.title).toBe("Row A");
     });
 });

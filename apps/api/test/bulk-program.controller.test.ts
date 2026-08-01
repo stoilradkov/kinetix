@@ -1,9 +1,9 @@
 import { HttpException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
-import type { DryRunBulkProgram } from "#src/modules/training/application/index";
+import type { CommitBulkProgram, DryRunBulkProgram } from "#src/modules/training/application/index";
 import { BulkProgramController } from "#src/modules/training/presentation/index";
-import type { BulkDryRunResponse } from "@kinetix/types";
+import type { BulkCommitResponse, BulkDryRunResponse } from "@kinetix/types";
 
 const dryRunId = "0198a4db-d8da-7000-8000-0000000000d1";
 const profileId = "0198a4db-d8da-7000-8000-0000000000f1";
@@ -51,13 +51,32 @@ function envelope() {
     };
 }
 
+function commitResponse(): BulkCommitResponse {
+    return {
+        dryRunId,
+        programId: "0198a4db-d8da-7000-8000-0000000000e1",
+        programVersion: 1,
+        mode: "create",
+        source: { namespace: "coach-app", generatedBy: null },
+        committedAt: "2026-08-01T10:05:00.000Z",
+        sessions: [],
+        createdExercises: [],
+        affectedVersions: [],
+        warnings: [],
+    };
+}
+
 function headers() {
     return { setHeader: vi.fn() };
 }
 
-function controller(execute = vi.fn().mockResolvedValue(response())) {
+function controller(
+    execute = vi.fn().mockResolvedValue(response()),
+    commit = vi.fn().mockResolvedValue(commitResponse()),
+) {
     const dryRun = { execute } as unknown as DryRunBulkProgram;
-    return { controller: new BulkProgramController(dryRun), execute };
+    const commitBulk = { execute: commit } as unknown as CommitBulkProgram;
+    return { controller: new BulkProgramController(dryRun, commitBulk), execute, commit };
 }
 
 describe("BulkProgramController", () => {
@@ -93,5 +112,27 @@ describe("BulkProgramController", () => {
             expect(payload.code).toBe("VALIDATION_FAILED");
             expect(Object.keys(payload.fieldErrors).some(key => key.includes("name"))).toBe(true);
         }
+    });
+
+    it("commits a dry-run and sets the program id header", async () => {
+        const { controller: subject, commit } = controller();
+        const response_ = headers();
+        const body = await subject.commit({ dryRunId, approvalToken: "tok-1" }, undefined, undefined, response_);
+
+        expect(body.programId).toBe("0198a4db-d8da-7000-8000-0000000000e1");
+        expect(commit).toHaveBeenCalledTimes(1);
+        expect(response_.setHeader).toHaveBeenCalledWith("X-Program-Id", body.programId);
+    });
+
+    it("rejects a commit body that smuggles a replacement program", async () => {
+        const { controller: subject } = controller();
+        await expect(
+            subject.commit(
+                { dryRunId, approvalToken: "tok-1", program: { name: "Sneaky" } },
+                undefined,
+                undefined,
+                headers(),
+            ),
+        ).rejects.toBeInstanceOf(HttpException);
     });
 });

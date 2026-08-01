@@ -3,9 +3,21 @@ import { randomUUID } from "node:crypto";
 import { Body, Controller, Headers, HttpException, Inject, Optional, Post, Res } from "@nestjs/common";
 import { ApiHeader, ApiOperation, ApiTags } from "@nestjs/swagger";
 
-import { bulkDryRunResponseSchema, bulkProgramEnvelopeSchema, type BulkDryRunResponse } from "@kinetix/types";
+import {
+    bulkCommitRequestSchema,
+    bulkCommitResponseSchema,
+    bulkDryRunResponseSchema,
+    bulkProgramEnvelopeSchema,
+    type BulkCommitResponse,
+    type BulkDryRunResponse,
+} from "@kinetix/types";
 
-import { DRY_RUN_BULK_PROGRAM, type DryRunBulkProgram } from "#src/modules/training/application/index";
+import {
+    COMMIT_BULK_PROGRAM,
+    DRY_RUN_BULK_PROGRAM,
+    type CommitBulkProgram,
+    type DryRunBulkProgram,
+} from "#src/modules/training/application/index";
 import {
     IDEMPOTENT_COMMAND_EXECUTOR,
     type CommandContext,
@@ -28,6 +40,8 @@ export class BulkProgramController {
     constructor(
         @Inject(DRY_RUN_BULK_PROGRAM)
         private readonly dryRun: DryRunBulkProgram,
+        @Inject(COMMIT_BULK_PROGRAM)
+        private readonly commitBulk: CommitBulkProgram,
         @Optional()
         @Inject(IDEMPOTENT_COMMAND_EXECUTOR)
         private readonly idempotency?: IdempotentCommandExecutor,
@@ -65,6 +79,40 @@ export class BulkProgramController {
         }
         response.setHeader("X-Dry-Run-Id", body.dryRunId);
         response.setHeader("X-Dry-Run-Expires-At", body.expiresAt);
+        return body;
+    }
+
+    @Post("commits")
+    @ApiOperation({ summary: "Commit an approved bulk dry-run into authoritative Training state" })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    async commit(
+        @Body() rawBody: unknown,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<BulkCommitResponse> {
+        const request = parseContract(bulkCommitRequestSchema, rawBody, "Bulk commit validation failed");
+        const metadata: CommandContext = {
+            correlationId: rawCorrelationId?.trim() || randomUUID(),
+            actorId: null,
+            source: "agent",
+        };
+        const perform = async (transaction?: unknown) =>
+            bulkCommitResponseSchema.parse(await this.commitBulk.execute(request, metadata, transaction));
+
+        let body: BulkCommitResponse;
+        if (idempotencyKey !== undefined) {
+            if (!this.idempotency) throw new Error("Idempotency support is not configured");
+            const result = await this.idempotency.execute(
+                { operation: "training.bulk.program.commit", key: idempotencyKey, request, context: metadata },
+                async transaction => ({ status: 201, body: await perform(transaction) }),
+            );
+            body = result.body;
+            response.setHeader("Idempotency-Replayed", String(result.replayed));
+        } else {
+            body = await perform();
+        }
+        response.setHeader("X-Program-Id", body.programId);
         return body;
     }
 }

@@ -110,6 +110,25 @@ export class PrescriptionPublisher<Transaction = unknown> extends PrescriptionSe
         });
     }
 
+    /**
+     * Persist an already-published prescription tree exactly as previewed — used by bulk commit,
+     * which inserts the tree approved in the dry-run rather than re-deriving it (design 14.3). The
+     * state is rehydrated to re-run every tree invariant before insert (no re-minting of ids, so the
+     * committed tree matches the preview byte-for-byte), and the same published event is emitted so
+     * downstream consumers see a single publish. Runs inside the caller's transaction.
+     */
+    async publishPreparedState(
+        state: SessionPrescriptionState,
+        metadata: CommandContext,
+        transaction: Transaction,
+    ): Promise<SessionPrescriptionResource> {
+        const now = this.clock.now();
+        const validated = SessionPrescription.rehydrate(state).state;
+        await this.runtime.repository.insertTree(validated, transaction);
+        await this.runtime.outbox.publish([this.publishedEvent(validated, now, metadata)], transaction, metadata);
+        return validated;
+    }
+
     private publishedEvent(state: SessionPrescriptionState, occurredAt: Date, metadata: CommandContext): DomainEvent {
         return new PlatformDomainEvent({
             id: this.newEventId(),

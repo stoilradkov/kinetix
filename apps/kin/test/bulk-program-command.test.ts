@@ -45,6 +45,21 @@ const envelope = JSON.stringify({
     program: { name: "Spring Strength" },
 });
 
+function commitResponse() {
+    return {
+        dryRunId,
+        programId: "0198a4db-d8da-7000-8000-0000000000e1",
+        programVersion: 1,
+        mode: "create",
+        source: { namespace: "coach-app", generatedBy: null },
+        committedAt: "2026-08-01T10:05:00.000Z",
+        sessions: [{ id: "0198a4db-d8da-7000-8000-000000000101", externalId: "sess-1", prescriptionId: null }],
+        createdExercises: [],
+        affectedVersions: [],
+        warnings: [],
+    };
+}
+
 describe("kin training programs dry-run", () => {
     it("POSTs the versioned envelope to the dry-run endpoint and prints a summary", async () => {
         const output = vi.fn();
@@ -104,5 +119,55 @@ describe("kin training programs dry-run", () => {
             ]),
         ).rejects.toThrow();
         expect(request).not.toHaveBeenCalled();
+    });
+});
+
+describe("kin training programs commit", () => {
+    it("POSTs only the dry-run id + token to the commit endpoint and prints a summary", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () => Response.json(commitResponse()));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync([
+            "node",
+            "kin",
+            "training",
+            "programs",
+            "commit",
+            "--dry-run-id",
+            dryRunId,
+            "--approval-token",
+            "tok-1",
+            "--idempotency-key",
+            "commit-123",
+        ]);
+
+        const [url, init] = request.mock.calls[0]!;
+        expect(url).toContain("/training/bulk/programs/commits");
+        expect(init?.method).toBe("POST");
+        expect(JSON.parse(init?.body as string)).toEqual({ dryRunId, approvalToken: "tok-1" });
+        expect((init?.headers as Headers).get("idempotency-key")).toBe("commit-123");
+        expect(output).toHaveBeenCalledWith("0198a4db-d8da-7000-8000-0000000000e1\tv1\tsessions=1\tmode=create");
+    });
+
+    it("emits raw JSON with --json", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () => Response.json(commitResponse()));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync([
+            "node",
+            "kin",
+            "training",
+            "programs",
+            "commit",
+            "--dry-run-id",
+            dryRunId,
+            "--approval-token",
+            "tok-1",
+            "--json",
+        ]);
+
+        expect(output).toHaveBeenCalledWith(JSON.stringify(commitResponse()));
     });
 });

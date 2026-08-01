@@ -9,6 +9,9 @@ export const applicationErrorCodes = [
     "IDEMPOTENCY_IN_PROGRESS",
     "DRY_RUN_EXPIRED",
     "DRY_RUN_STALE",
+    "DRY_RUN_CONSUMED",
+    "DRY_RUN_TOKEN_INVALID",
+    "EXTERNAL_ID_CONFLICT",
     "CATALOG_MAPPING_REQUIRED",
     "PROGRESSION_CONFLICT",
     "PROGRESSION_STALE",
@@ -79,6 +82,51 @@ export class IdempotencyInProgressError extends ApplicationError {
     ) {
         super("IDEMPOTENCY_IN_PROGRESS", "A request with this idempotency key is still in progress", undefined, {
             operation,
+        });
+    }
+}
+
+/** A dry-run's validity window elapsed before it was committed (design 14.3 step 1). */
+export class DryRunExpiredError extends ApplicationError {
+    constructor(readonly dryRunId: string) {
+        super("DRY_RUN_EXPIRED", "This dry-run has expired; re-run the dry-run", undefined, { dryRunId });
+    }
+}
+
+/** A referenced catalog/aggregate version or the normalized hash changed since the dry-run (14.3 step 2). */
+export class DryRunStaleError extends ApplicationError {
+    constructor(readonly dryRunId: string) {
+        super("DRY_RUN_STALE", "The referenced catalog changed since this dry-run; re-run the dry-run", undefined, {
+            dryRunId,
+        });
+    }
+}
+
+/** A previously approved dry-run was already committed and cannot be committed again (design 14.3). */
+export class DryRunConsumedError extends ApplicationError {
+    constructor(readonly dryRunId: string) {
+        super("DRY_RUN_CONSUMED", "This dry-run was already committed", undefined, { dryRunId });
+    }
+}
+
+/** The approval token does not match the stored dry-run (design 14.3). */
+export class DryRunTokenInvalidError extends ApplicationError {
+    constructor(readonly dryRunId: string) {
+        super("DRY_RUN_TOKEN_INVALID", "The approval token is not valid for this dry-run", undefined, { dryRunId });
+    }
+}
+
+/** A stable external ID is already registered for another entity in this namespace. */
+export class ExternalIdConflictError extends ApplicationError {
+    constructor(
+        readonly namespace: string,
+        readonly entityType: string,
+        readonly externalId: string,
+    ) {
+        super("EXTERNAL_ID_CONFLICT", "An entity with this external ID already exists in this namespace", undefined, {
+            namespace,
+            entityType,
+            externalId,
         });
     }
 }

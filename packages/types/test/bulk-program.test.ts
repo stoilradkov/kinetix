@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { bulkDryRunResponseSchema, bulkProgramEnvelopeSchema } from "#src/index";
+import {
+    bulkCommitRequestSchema,
+    bulkCommitResponseSchema,
+    bulkDryRunResponseSchema,
+    bulkProgramEnvelopeSchema,
+} from "#src/index";
 
 const EQUIPMENT_ID = "0198a4db-d8da-7000-8000-0000000000b1";
 const MOVEMENT_ID = "0198a4db-d8da-7000-8000-0000000000c1";
@@ -133,5 +138,55 @@ describe("bulkDryRunResponseSchema", () => {
             affectedVersions: [],
         };
         expect(() => bulkDryRunResponseSchema.parse(response)).not.toThrow();
+    });
+});
+
+describe("bulkCommitRequestSchema", () => {
+    it("accepts a dry-run id + approval token only", () => {
+        const parsed = bulkCommitRequestSchema.parse({
+            dryRunId: "0198a4db-d8da-7000-8000-0000000000d1",
+            approvalToken: "tok-abc",
+        });
+        expect(parsed.dryRunId).toBe("0198a4db-d8da-7000-8000-0000000000d1");
+    });
+
+    it("rejects a smuggled replacement program body", () => {
+        expect(() =>
+            bulkCommitRequestSchema.parse({
+                dryRunId: "0198a4db-d8da-7000-8000-0000000000d1",
+                approvalToken: "tok-abc",
+                program: { name: "Sneaky" },
+            }),
+        ).toThrow();
+    });
+
+    it("rejects an empty approval token", () => {
+        expect(() =>
+            bulkCommitRequestSchema.parse({ dryRunId: "0198a4db-d8da-7000-8000-0000000000d1", approvalToken: "" }),
+        ).toThrow();
+    });
+});
+
+describe("bulkCommitResponseSchema", () => {
+    it("round-trips a minimal commit response", () => {
+        const response = {
+            dryRunId: "0198a4db-d8da-7000-8000-0000000000d1",
+            programId: "0198a4db-d8da-7000-8000-0000000000e1",
+            programVersion: 1,
+            mode: "create" as const,
+            source: { namespace: "coach-app", generatedBy: null },
+            committedAt: "2026-08-01T00:05:00.000Z",
+            sessions: [
+                {
+                    id: "0198a4db-d8da-7000-8000-000000000101",
+                    externalId: "sess-1",
+                    prescriptionId: "0198a4db-d8da-7000-8000-000000000111",
+                },
+            ],
+            createdExercises: [],
+            affectedVersions: [{ entityType: "training.exercise", entityId: "ex-1", version: 3 }],
+            warnings: [],
+        };
+        expect(() => bulkCommitResponseSchema.parse(response)).not.toThrow();
     });
 });

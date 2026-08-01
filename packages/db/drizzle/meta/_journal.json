@@ -134,6 +134,13 @@
             "when": 1785592746462,
             "tag": "0018_watery_amphibian",
             "breakpoints": true
+        },
+        {
+            "idx": 19,
+            "version": "7",
+            "when": 1785595389723,
+            "tag": "0019_worried_cardiac",
+            "breakpoints": true
         }
     ]
 }

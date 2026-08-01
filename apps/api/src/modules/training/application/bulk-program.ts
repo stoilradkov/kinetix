@@ -1,6 +1,11 @@
 import type { Clock } from "#src/platform/domain/index";
 import {
+    ApplicationError,
     ApplicationValidationError,
+    DryRunConsumedError,
+    DryRunExpiredError,
+    DryRunStaleError,
+    DryRunTokenInvalidError,
     hashRequest,
     type CommandContext,
     type UnitOfWork,
@@ -42,8 +47,11 @@ import {
     type SessionPrescriptionState,
     type SubstitutionPolicy,
 } from "#src/modules/training/domain/index";
-import type { TrainingExerciseCatalogPort } from "#src/modules/training/application/exercises";
+import type { ExerciseCatalogCommands, TrainingExerciseCatalogPort } from "#src/modules/training/application/exercises";
 import { ExerciseNotFoundError } from "#src/modules/training/application/exercises";
+import type { ProgramCommands, ProgramMembershipRepository } from "#src/modules/training/application/programs";
+import type { PlannedSessionCommands } from "#src/modules/training/application/planned-sessions";
+import type { PrescriptionPublisher } from "#src/modules/training/application/session-prescriptions";
 import type { ProfileReader } from "#src/modules/profile/index";
 
 // ---------------------------------------------------------------------------------------------
@@ -332,6 +340,8 @@ export interface StoredBulkDryRun {
     readonly affectedVersions: readonly BulkAffectedVersion[];
     readonly createdAt: Date;
     readonly expiresAt: Date;
+    /** Set on the commit transaction; a non-null value means the dry-run was already consumed. */
+    readonly consumedAt: Date | null;
 }
 
 /**
@@ -342,6 +352,80 @@ export interface StoredBulkDryRun {
 export interface BulkDryRunRepository<Transaction = unknown> {
     save(record: StoredBulkDryRun, transaction: Transaction): Promise<void>;
     findById(id: string, transaction?: Transaction): Promise<StoredBulkDryRun | null>;
+    /**
+     * Lock the dry-run row for the commit transaction (SELECT … FOR UPDATE), serializing concurrent
+     * commits of the same dry-run so the consumed check below cannot race (design 14.3 step 1).
+     */
+    lockForCommit(id: string, transaction: Transaction): Promise<StoredBulkDryRun | null>;
+    /** Mark the dry-run consumed and record the committed program, in the commit transaction. */
+    markConsumed(
+        id: string,
+        input: { committedProgramId: string; consumedAt: Date },
+        transaction: Transaction,
+    ): Promise<void>;
+}
+
+export const BULK_EXTERNAL_ID_REGISTRY = Symbol("BULK_EXTERNAL_ID_REGISTRY");
+export const COMMIT_BULK_PROGRAM = Symbol("COMMIT_BULK_PROGRAM");
+
+export type BulkExternalEntityType = "program" | "planned-session" | "program-block";
+
+export interface BulkExternalIdEntry {
+    readonly entityType: BulkExternalEntityType;
+    readonly externalId: string;
+    readonly entityId: string;
+}
+
+/**
+ * Namespaced registry mapping a caller's stable external ID to the authoritative entity it addresses
+ * (design 14.1/14.3). `register` enforces `(namespace, entityType, externalId)` uniqueness at the DB
+ * level so a repeated import cannot silently duplicate an entity; `resolve` powers upsert addressing.
+ */
+export interface BulkExternalIdRegistry<Transaction = unknown> {
+    register(
+        input: { profileId: string; namespace: string; entries: readonly BulkExternalIdEntry[] },
+        transaction: Transaction,
+    ): Promise<void>;
+    resolve(
+        namespace: string,
+        entityType: BulkExternalEntityType,
+        externalId: string,
+        transaction: Transaction,
+    ): Promise<string | null>;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Commit response (design 14.3) — application-facing mirror of the wire contract
+// ---------------------------------------------------------------------------------------------
+
+export interface BulkCommitRequest {
+    readonly dryRunId: string;
+    readonly approvalToken: string;
+}
+
+export interface BulkCommittedExercise {
+    readonly exerciseId: string;
+    readonly exerciseRef: string;
+    readonly sessionExternalId: string;
+}
+
+export interface BulkCommittedSession {
+    readonly id: string;
+    readonly externalId: string;
+    readonly prescriptionId: string | null;
+}
+
+export interface BulkCommitResponse {
+    readonly dryRunId: string;
+    readonly programId: string;
+    readonly programVersion: number;
+    readonly mode: "create" | "upsert";
+    readonly source: { readonly namespace: string; readonly generatedBy: string | null };
+    readonly committedAt: string;
+    readonly sessions: readonly BulkCommittedSession[];
+    readonly createdExercises: readonly BulkCommittedExercise[];
+    readonly affectedVersions: readonly BulkAffectedVersion[];
+    readonly warnings: readonly PlanningWarning[];
 }
 
 /** Resolve a caller-provided `{ provider, externalId }` pair to a catalog exercise id (BI-3). */
@@ -612,6 +696,7 @@ export class DryRunBulkProgram<Transaction = unknown> {
             affectedVersions,
             createdAt: now,
             expiresAt: new Date(now.getTime() + this.ttlMs),
+            consumedAt: null,
         };
 
         // The single side effect: persist the preview artifact, joining the caller's transaction
@@ -918,6 +1003,258 @@ export class DryRunBulkProgram<Transaction = unknown> {
             proposedExercises: [...record.proposedExercises],
             affectedVersions: [...record.affectedVersions],
         };
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Commit use case (design 14.3)
+// ---------------------------------------------------------------------------------------------
+
+interface CommitRuntime<Transaction> {
+    readonly unitOfWork: UnitOfWork<Transaction>;
+    readonly repository: BulkDryRunRepository<Transaction>;
+    readonly externalIds: BulkExternalIdRegistry<Transaction>;
+    readonly catalog: Pick<TrainingExerciseCatalogPort, "resolveCurrentExercise">;
+    readonly exercises: ExerciseCatalogCommands<Transaction>;
+    readonly programCommands: ProgramCommands<Transaction>;
+    readonly plannedSessions: PlannedSessionCommands<Transaction>;
+    readonly publisher: PrescriptionPublisher<Transaction>;
+    readonly membership: ProgramMembershipRepository<Transaction>;
+    readonly profileReader: Pick<ProfileReader, "requireActiveProfileId">;
+    readonly clock?: Clock;
+}
+
+/**
+ * Commit an approved bulk dry-run into authoritative Training state, exactly once and all-or-nothing
+ * (design 14.3). This is where agent-generated data crosses into the system, so it re-validates the
+ * dry-run's identity, freshness, and reference hash before writing, and consumes the dry-run in the
+ * same transaction so it can never double-commit.
+ *
+ * Commit reuses the approved normalized tree stored by the dry-run — it does not re-derive anything
+ * from a request body (a caller cannot supply one). Persistence reuses the ordinary aggregate
+ * commands ({@link ProgramCommands}, {@link PlannedSessionCommands}, {@link ExerciseCatalogCommands})
+ * and the {@link PrescriptionPublisher}, so every domain invariant, revision, and outbox event fires
+ * exactly as for a hand-authored program. All work runs in one transaction (the caller's — normally
+ * the idempotency executor's — or its own UnitOfWork), so any child failure rolls the whole tree back
+ * and leaves the dry-run unconsumed.
+ *
+ * Upsert scope (MVP): namespaced external IDs are registered with DB-level uniqueness so retries and
+ * duplicate imports are rejected rather than silently duplicated. Field-level merge of a pre-existing
+ * program (the omitted-keeps / null-clears contract captured by `mergeUpsertPatch`) requires the
+ * dry-run to carry per-field diffs and is deferred to a later increment.
+ */
+export class CommitBulkProgram<Transaction = unknown> {
+    private readonly clock: Clock;
+
+    constructor(private readonly runtime: CommitRuntime<Transaction>) {
+        this.clock = runtime.clock ?? { now: () => new Date() };
+    }
+
+    execute(
+        request: BulkCommitRequest,
+        metadata: CommandContext,
+        transaction?: Transaction,
+    ): Promise<BulkCommitResponse> {
+        if (transaction === undefined)
+            return this.runtime.unitOfWork.execute(active => this.commit(request, metadata, active));
+        return this.commit(request, metadata, transaction);
+    }
+
+    private async commit(
+        request: BulkCommitRequest,
+        metadata: CommandContext,
+        transaction: Transaction,
+    ): Promise<BulkCommitResponse> {
+        const now = this.clock.now();
+        const profileId = await this.runtime.profileReader.requireActiveProfileId();
+
+        // ---- Lock + gate the dry-run (design 14.3 step 1) ------------------------------------
+        const record = await this.runtime.repository.lockForCommit(request.dryRunId, transaction);
+        if (!record || record.profileId !== profileId) throw new BulkDryRunNotFoundError(request.dryRunId);
+        if (record.approvalToken !== request.approvalToken) throw new DryRunTokenInvalidError(record.id);
+        if (record.consumedAt !== null) throw new DryRunConsumedError(record.id);
+        if (record.expiresAt.getTime() <= now.getTime()) throw new DryRunExpiredError(record.id);
+        if (record.state !== "ready" || record.errors.length > 0)
+            throw new ApplicationError(
+                "CATALOG_MAPPING_REQUIRED",
+                "This dry-run has unresolved mappings or validation errors and cannot be committed",
+                undefined,
+                { dryRunId: record.id },
+            );
+
+        // ---- Recheck referenced catalog versions + normalized hash (design 14.3 step 2) ------
+        await this.revalidateReferences(record);
+
+        const program = record.normalizedProgram;
+
+        // ---- Create approved catalog entries first (prescription rows FK exercises) ----------
+        const createdExercises: BulkCommittedExercise[] = [];
+        for (const proposed of record.proposedExercises) {
+            await this.runtime.exercises.create(
+                {
+                    id: proposed.exerciseId,
+                    slug: proposed.definition.slug ?? slugify(proposed.definition.name),
+                    name: proposed.definition.name,
+                    equipmentTypeId: proposed.definition.equipmentTypeId,
+                    movementPatternId: proposed.definition.movementPatternId,
+                    classification: proposed.definition.classification,
+                    laterality: proposed.definition.laterality,
+                    bodyPosition: proposed.definition.bodyPosition,
+                    repetitionSemantics: proposed.definition.repetitionSemantics,
+                    loadModel: proposed.definition.loadModel,
+                    supportedMeasurements: [...proposed.definition.supportedMeasurements],
+                    muscles: (proposed.definition.muscles ?? []).map(muscle => ({
+                        muscleGroupId: muscle.muscleGroupId,
+                        role: muscle.role,
+                    })),
+                },
+                metadata,
+                transaction,
+            );
+            createdExercises.push({
+                exerciseId: proposed.exerciseId,
+                exerciseRef: proposed.exerciseRef,
+                sessionExternalId: proposed.sessionExternalId,
+            });
+        }
+
+        // ---- Program root + block tree -------------------------------------------------------
+        const programDetail = await this.runtime.programCommands.create(
+            {
+                id: program.id,
+                name: program.name,
+                description: program.description,
+                scheduleMode: program.scheduleMode,
+                startDate: program.startDate,
+                endDate: program.endDate,
+                focus: program.focus,
+                goalIds: [...program.goalIds],
+                blocks: program.blocks.map(block => ({
+                    id: block.id,
+                    parentBlockId: block.parentBlockId,
+                    type: block.type,
+                    label: block.label,
+                    position: block.position,
+                    startDate: block.startDate,
+                    endDate: block.endDate,
+                    relativeStartWeek: block.relativeStartWeek,
+                    relativeEndWeek: block.relativeEndWeek,
+                    focus: block.focus,
+                    targetMuscles: [...block.targetMuscles],
+                    targetVolume: block.targetVolume,
+                    targetIntensity: block.targetIntensity,
+                    deload: block.deload,
+                    expectedAdaptations: block.expectedAdaptations,
+                    notes: block.notes,
+                    tags: [...block.tags],
+                })),
+            },
+            metadata,
+            transaction,
+        );
+
+        // ---- Each session: insert its approved prescription, materialize, wire membership ----
+        const sessions: BulkCommittedSession[] = [];
+        for (const session of program.sessions) {
+            if (!session.prescription)
+                throw new ApplicationValidationError(
+                    `Session '${session.externalId}' in a ready dry-run is missing its prescription`,
+                    { prescription: ["Prescription is missing"] },
+                    { sessionExternalId: session.externalId },
+                );
+            const published = await this.runtime.publisher.publishPreparedState(
+                session.prescription,
+                metadata,
+                transaction,
+            );
+            await this.runtime.plannedSessions.materialize(
+                {
+                    id: session.id,
+                    profileId,
+                    currentPrescriptionId: published.id,
+                    title: session.title,
+                    localDate: session.localDate,
+                    timeZone: session.timeZone,
+                    preferredTime: session.preferredTime,
+                    expectedDurationMinutes: session.expectedDurationMinutes,
+                    notes: session.notes,
+                    tags: [...session.tags],
+                    sourceTemplateId: null,
+                    sourceTemplateVersion: null,
+                },
+                published,
+                metadata,
+                transaction,
+            );
+            await this.runtime.membership.linkProgramSession(
+                {
+                    programId: program.id,
+                    plannedSessionId: session.id,
+                    relativeWeek: session.relativeWeek,
+                    relativeDay: session.relativeDay,
+                    sequence: session.sequence,
+                },
+                transaction,
+            );
+            for (const blockId of session.blockIds)
+                await this.runtime.membership.linkSessionBlock(session.id, blockId, transaction);
+            sessions.push({ id: session.id, externalId: session.externalId, prescriptionId: published.id });
+        }
+
+        // ---- Register namespaced external IDs (unique per namespace+type+externalId) ---------
+        const entries: BulkExternalIdEntry[] = [];
+        if (program.externalId)
+            entries.push({ entityType: "program", externalId: program.externalId, entityId: program.id });
+        for (const block of program.blocks)
+            entries.push({ entityType: "program-block", externalId: block.externalId, entityId: block.id });
+        for (const session of program.sessions)
+            entries.push({ entityType: "planned-session", externalId: session.externalId, entityId: session.id });
+        await this.runtime.externalIds.register({ profileId, namespace: record.sourceNamespace, entries }, transaction);
+
+        // ---- Consume the dry-run last, so a child failure above leaves it committable --------
+        await this.runtime.repository.markConsumed(
+            record.id,
+            { committedProgramId: program.id, consumedAt: now },
+            transaction,
+        );
+
+        return {
+            dryRunId: record.id,
+            programId: program.id,
+            programVersion: programDetail.program.version,
+            mode: record.mode,
+            source: { namespace: record.sourceNamespace, generatedBy: record.sourceGeneratedBy },
+            committedAt: now.toISOString(),
+            sessions,
+            createdExercises,
+            affectedVersions: record.affectedVersions,
+            warnings: record.warnings,
+        };
+    }
+
+    /**
+     * Recompute the reference fingerprint over the *current* versions of every catalog exercise the
+     * dry-run resolved, in the same order and hash the dry-run used, and compare to the stored hash.
+     * A version bump, a new merge redirect, or a deleted exercise all change the hash → the dry-run is
+     * stale and must be re-run (design 14.3 step 2). Proposed (not-yet-created) exercises are absent
+     * from `affectedVersions`, so they never trip this check.
+     */
+    private async revalidateReferences(record: StoredBulkDryRun): Promise<void> {
+        const current: BulkAffectedVersion[] = [];
+        for (const affected of record.affectedVersions) {
+            if (affected.entityType !== "training.exercise") {
+                current.push(affected);
+                continue;
+            }
+            try {
+                const resolved = await this.runtime.catalog.resolveCurrentExercise(affected.entityId);
+                current.push({ ...affected, version: resolved.exercise.version });
+            } catch (error) {
+                if (error instanceof ExerciseNotFoundError) throw new DryRunStaleError(record.id);
+                throw error;
+            }
+        }
+        if (hashRequest(current) !== record.referenceHash) throw new DryRunStaleError(record.id);
     }
 }
 

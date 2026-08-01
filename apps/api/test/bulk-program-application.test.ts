@@ -138,6 +138,13 @@ function recordingRepository(): BulkDryRunRepository<typeof transaction> & { sav
         async findById(id) {
             return saved.find(record => record.id === id) ?? null;
         },
+        async lockForCommit(id) {
+            return saved.find(record => record.id === id) ?? null;
+        },
+        async markConsumed(id, input) {
+            const index = saved.findIndex(record => record.id === id);
+            if (index >= 0) saved[index] = { ...saved[index]!, consumedAt: input.consumedAt };
+        },
     };
 }
 

@@ -105,6 +105,9 @@ function statusForCode(code: string, fallback = HttpStatus.INTERNAL_SERVER_ERROR
         case "IDEMPOTENCY_IN_PROGRESS":
         case "DRY_RUN_EXPIRED":
         case "DRY_RUN_STALE":
+        case "DRY_RUN_CONSUMED":
+        case "DRY_RUN_TOKEN_INVALID":
+        case "EXTERNAL_ID_CONFLICT":
         case "PROGRESSION_CONFLICT":
         case "PROGRESSION_STALE":
             return HttpStatus.CONFLICT;

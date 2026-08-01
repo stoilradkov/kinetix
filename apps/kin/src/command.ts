@@ -5,6 +5,8 @@ import { Command } from "commander";
 
 import { parseCliEnv } from "@kinetix/config";
 import {
+    bulkCommitRequestSchema,
+    bulkCommitResponseSchema,
     bulkDryRunResponseSchema,
     bulkProgramEnvelopeSchema,
     healthResponseSchema,
@@ -1131,6 +1133,47 @@ function registerProgramCommands(training: Command, dependencies: ProgramDepende
                     dependencies.output(`error\t${error.code}\t${error.path.join(".")}\t${error.message}`);
                 for (const proposed of result.proposedExercises)
                     dependencies.output(`proposed\t${proposed.exerciseRef}\t${proposed.definition.name}`);
+            },
+        );
+
+    programs
+        .command("commit")
+        .description("Commit an approved bulk dry-run into authoritative Training state (no replacement body)")
+        .requiredOption("--dry-run-id <id>", "The dry-run UUID returned by 'programs dry-run'")
+        .requiredOption("--approval-token <token>", "The approval token returned by 'programs dry-run'")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this commit")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: {
+                dryRunId: string;
+                approvalToken: string;
+                idempotencyKey?: string;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const request = bulkCommitRequestSchema.parse({
+                    dryRunId: options.dryRunId,
+                    approvalToken: options.approvalToken,
+                });
+                const result = bulkCommitResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/bulk/programs/commits`,
+                        mutationRequest("POST", request, undefined, options.idempotencyKey),
+                    ),
+                );
+                if (options.json) {
+                    dependencies.output(JSON.stringify(result));
+                    return;
+                }
+                dependencies.output(
+                    `${result.programId}\tv${result.programVersion}\tsessions=${result.sessions.length}\tmode=${result.mode}`,
+                );
+                for (const exercise of result.createdExercises)
+                    dependencies.output(`created-exercise\t${exercise.exerciseRef}\t${exercise.exerciseId}`);
+                for (const warning of result.warnings)
+                    dependencies.output(`warning\t${warning.code}\t${warning.message}`);
             },
         );
 

@@ -47,6 +47,7 @@ export class DrizzleBulkDryRunRepository implements BulkDryRunRepository {
                 affectedVersions: [...record.affectedVersions],
                 createdAt: record.createdAt,
                 expiresAt: record.expiresAt,
+                consumedAt: record.consumedAt,
             });
     }
 
@@ -55,6 +56,29 @@ export class DrizzleBulkDryRunRepository implements BulkDryRunRepository {
             await this.executor(transaction).select().from(bulkDryRuns).where(eq(bulkDryRuns.id, id)).limit(1)
         )[0];
         return row ? this.hydrate(row) : null;
+    }
+
+    async lockForCommit(id: string, transaction: unknown): Promise<StoredBulkDryRun | null> {
+        const row = (
+            await this.executor(transaction)
+                .select()
+                .from(bulkDryRuns)
+                .where(eq(bulkDryRuns.id, id))
+                .limit(1)
+                .for("update")
+        )[0];
+        return row ? this.hydrate(row) : null;
+    }
+
+    async markConsumed(
+        id: string,
+        input: { committedProgramId: string; consumedAt: Date },
+        transaction: unknown,
+    ): Promise<void> {
+        await this.executor(transaction)
+            .update(bulkDryRuns)
+            .set({ consumedAt: input.consumedAt, committedProgramId: input.committedProgramId })
+            .where(eq(bulkDryRuns.id, id));
     }
 
     private hydrate(row: BulkDryRunRow): StoredBulkDryRun {
@@ -76,6 +100,7 @@ export class DrizzleBulkDryRunRepository implements BulkDryRunRepository {
             affectedVersions: row.affectedVersions as BulkAffectedVersion[],
             createdAt: row.createdAt,
             expiresAt: row.expiresAt,
+            consumedAt: row.consumedAt,
         };
     }
 
