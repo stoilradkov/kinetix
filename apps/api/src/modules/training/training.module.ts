@@ -128,6 +128,15 @@ import {
     type ExerciseReferenceUpdater,
     type TrainingCatalogReader,
     type TrainingCatalogSeedRepository,
+    BULK_DRY_RUN_REPOSITORY,
+    BULK_CATALOG_RESOLVER,
+    EXERCISE_EXTERNAL_ID_RESOLVER,
+    DRY_RUN_BULK_PROGRAM,
+    BulkCatalogResolver,
+    DryRunBulkProgram,
+    type BulkDryRunRepository,
+    type ExerciseExternalIdResolver,
+    type TrainingExerciseCatalogPort,
 } from "#src/modules/training/application/index";
 import type {
     ExerciseDefinitionState,
@@ -142,6 +151,8 @@ import type {
 } from "#src/modules/training/domain/index";
 import { PROFILE_READER, ProfileModule, type ProfileReader } from "#src/modules/profile/index";
 import { DrizzleTrainingCatalogRepository } from "#src/modules/training/infrastructure/drizzle-training-catalog-repository";
+import { DrizzleBulkDryRunRepository } from "#src/modules/training/infrastructure/drizzle-bulk-dry-run-repository";
+import { DrizzleExerciseExternalIdResolver } from "#src/modules/training/infrastructure/drizzle-exercise-external-id-resolver";
 import { DrizzleTrainingProfileRepository } from "#src/modules/training/infrastructure/drizzle-training-profile-repository";
 import { TrainingProfileRevisionRegistrar } from "#src/modules/training/infrastructure/training-profile-revision-registrar";
 import { DrizzleTrainingGoalRepository } from "#src/modules/training/infrastructure/drizzle-training-goal-repository";
@@ -184,6 +195,7 @@ import {
     WorkoutTemplateController,
     ProgramController,
     PlannedSessionController,
+    BulkProgramController,
 } from "#src/modules/training/presentation/index";
 import {
     OUTBOX_WRITER,
@@ -214,6 +226,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         WorkoutTemplateController,
         ProgramController,
         PlannedSessionController,
+        BulkProgramController,
     ],
     providers: [
         DrizzleTrainingCatalogRepository,
@@ -664,6 +677,26 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
             inject: [PROGRAM_MUTATION_SERVICE, REVISION_STORE],
         },
         ProgramRevisionRegistrar,
+        DrizzleBulkDryRunRepository,
+        DrizzleExerciseExternalIdResolver,
+        { provide: BULK_DRY_RUN_REPOSITORY, useExisting: DrizzleBulkDryRunRepository },
+        { provide: EXERCISE_EXTERNAL_ID_RESOLVER, useExisting: DrizzleExerciseExternalIdResolver },
+        {
+            provide: BULK_CATALOG_RESOLVER,
+            useFactory: (catalog: TrainingExerciseCatalogPort, externalIds: ExerciseExternalIdResolver) =>
+                new BulkCatalogResolver(catalog, externalIds),
+            inject: [TRAINING_EXERCISE_CATALOG, EXERCISE_EXTERNAL_ID_RESOLVER],
+        },
+        {
+            provide: DRY_RUN_BULK_PROGRAM,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: BulkDryRunRepository,
+                resolver: BulkCatalogResolver,
+                profileReader: ProfileReader,
+            ) => new DryRunBulkProgram({ unitOfWork, repository, resolver, profileReader, generateId: randomUUID }),
+            inject: [UNIT_OF_WORK, BULK_DRY_RUN_REPOSITORY, BULK_CATALOG_RESOLVER, PROFILE_READER],
+        },
         {
             provide: TRAINING_MODULE_DEFINITION,
             useValue: trainingModuleDefinition,

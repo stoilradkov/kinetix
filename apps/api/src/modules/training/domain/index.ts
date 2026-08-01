@@ -17,3 +17,4 @@ export * from "#src/modules/training/domain/program";
 export * from "#src/modules/training/domain/program-planning";
 export * from "#src/modules/training/domain/schedule-expansion";
 export * from "#src/modules/training/domain/planned-session";
+export * from "#src/modules/training/domain/bulk-program";

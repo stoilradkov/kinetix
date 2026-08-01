@@ -1,8 +1,12 @@
+import { readFileSync } from "node:fs";
+
 import chalk from "chalk";
 import { Command } from "commander";
 
 import { parseCliEnv } from "@kinetix/config";
 import {
+    bulkDryRunResponseSchema,
+    bulkProgramEnvelopeSchema,
     healthResponseSchema,
     coreProfileResponseSchema,
     createProfileRequestSchema,
@@ -1086,6 +1090,51 @@ function registerProgramCommands(training: Command, dependencies: ProgramDepende
         );
 
     programs
+        .command("dry-run")
+        .description("Validate and preview a complete bulk program (versioned JSON) without side effects")
+        .option("--file <path>", "Path to a BulkProgramEnvelope JSON file ('-' reads stdin)")
+        .option("--input <json>", "Inline BulkProgramEnvelope JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: {
+                file?: string;
+                input?: string;
+                idempotencyKey?: string;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const envelope = bulkProgramEnvelopeSchema.parse(readEnvelopeInput(options));
+                const result = bulkDryRunResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/bulk/programs/dry-runs`,
+                        mutationRequest("POST", envelope, undefined, options.idempotencyKey),
+                    ),
+                );
+                if (options.json) {
+                    dependencies.output(JSON.stringify(result));
+                    return;
+                }
+                dependencies.output(
+                    `${result.dryRunId}\t${result.state}\tsessions=${result.generatedSessionCount}\texpires=${result.expiresAt}`,
+                );
+                dependencies.output(`token\t${result.approvalToken}\thash\t${result.referenceHash}`);
+                for (const warning of result.warnings)
+                    dependencies.output(`warning\t${warning.code}\t${warning.message}`);
+                for (const mapping of result.mappings)
+                    dependencies.output(
+                        `mapping\t${mapping.status}\t${mapping.sessionExternalId}\t${mapping.exerciseRef}`,
+                    );
+                for (const error of result.errors)
+                    dependencies.output(`error\t${error.code}\t${error.path.join(".")}\t${error.message}`);
+                for (const proposed of result.proposedExercises)
+                    dependencies.output(`proposed\t${proposed.exerciseRef}\t${proposed.definition.name}`);
+            },
+        );
+
+    programs
         .command("change-start-date")
         .description("Change a program's start date, sliding only incomplete future sessions")
         .argument("<program-id>", "Program UUID")
@@ -1886,6 +1935,14 @@ function parseJsonInput(value: string): unknown {
     } catch {
         throw new Error("Input must be a valid JSON object");
     }
+}
+
+/** Read a bulk payload from --input, a --file path, or stdin (--file -). Files support large trees. */
+function readEnvelopeInput(options: { file?: string; input?: string }): unknown {
+    if (options.input !== undefined) return parseJsonInput(options.input);
+    if (options.file === undefined) throw new Error("Provide the bulk program via --input <json> or --file <path>");
+    const raw = options.file === "-" ? readFileSync(0, "utf8") : readFileSync(options.file, "utf8");
+    return parseJsonInput(raw);
 }
 
 function outputExercise(

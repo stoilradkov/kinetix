@@ -1476,6 +1476,47 @@ export const plannedSessionBlocks = pgTable(
     ],
 );
 
+/**
+ * Bulk dry-run preview artifacts (design 14.2/14.3; PRD BI-4). A dry-run stores the complete
+ * normalized program tree, structured warnings/errors/mappings, the referenced-version fingerprint,
+ * a short-lived approval token, source namespace, and an expiry. It is the ONLY thing a dry-run
+ * writes; no program or catalog rows are touched. Commit (a later issue) locks this row, rechecks
+ * the reference hash, and marks it consumed.
+ */
+export const bulkDryRuns = pgTable(
+    "bulk_dry_runs",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        schemaVersion: smallint("schema_version").notNull().default(1),
+        sourceNamespace: text("source_namespace").notNull(),
+        sourceGeneratedBy: text("source_generated_by"),
+        mode: text("mode").notNull(),
+        state: text("state").notNull(),
+        referenceHash: text("reference_hash").notNull(),
+        approvalToken: text("approval_token").notNull(),
+        normalizedProgram: jsonb("normalized_program").$type<Record<string, unknown>>().notNull(),
+        warnings: jsonb("warnings").$type<unknown[]>().notNull().default([]),
+        errors: jsonb("errors").$type<unknown[]>().notNull().default([]),
+        mappings: jsonb("mappings").$type<unknown[]>().notNull().default([]),
+        proposedExercises: jsonb("proposed_exercises").$type<unknown[]>().notNull().default([]),
+        affectedVersions: jsonb("affected_versions").$type<unknown[]>().notNull().default([]),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    },
+    table => [
+        check("bulk_dry_runs_schema_version_valid", sql`${table.schemaVersion} = 1`),
+        check("bulk_dry_runs_mode_valid", sql`${table.mode} IN ('create', 'upsert')`),
+        check("bulk_dry_runs_state_valid", sql`${table.state} IN ('ready', 'needs_mapping')`),
+        check("bulk_dry_runs_reference_hash_valid", sql`${table.referenceHash} ~ '^[0-9a-f]{64}$'`),
+        check("bulk_dry_runs_namespace_valid", sql`length(btrim(${table.sourceNamespace})) BETWEEN 1 AND 120`),
+        index("bulk_dry_runs_profile_idx").on(table.profileId, table.createdAt),
+        index("bulk_dry_runs_expires_idx").on(table.expiresAt),
+    ],
+);
+
+export type BulkDryRunRow = typeof bulkDryRuns.$inferSelect;
+
 export type WorkoutTemplateRow = typeof workoutTemplates.$inferSelect;
 export type WorkoutTemplatePrescriptionRow = typeof workoutTemplatePrescriptions.$inferSelect;
 export type ProgramRow = typeof programs.$inferSelect;
