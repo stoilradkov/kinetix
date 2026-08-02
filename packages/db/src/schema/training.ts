@@ -1477,6 +1477,162 @@ export const plannedSessionBlocks = pgTable(
 );
 
 /**
+ * TrainingSession — the versioned, archivable write/concurrency boundary for live and retrospective
+ * workouts (design 5.8, 11.1, 11.6). It owns lifecycle state, local date + IANA time zone, optional
+ * start/end instants, an explicit duration independent of activity totals, pre-workout readiness,
+ * post-workout ratings, notes, and tags. Every child mutation bumps `version`. Soft deletion is a
+ * separate `archived_at` flag so archiving never loses lifecycle state.
+ */
+export const trainingSessions = pgTable(
+    "training_sessions",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        status: text("status").notNull().default("draft"),
+        title: text("title"),
+        localDate: date("local_date").notNull(),
+        timeZone: text("time_zone").notNull(),
+        startedAt: timestamp("started_at", { withTimezone: true }),
+        endedAt: timestamp("ended_at", { withTimezone: true }),
+        durationMinutes: integer("duration_minutes"),
+        // Pre-workout readiness (1-5), missing values stay null (design 11.1, TS-5).
+        readinessEnergy: smallint("readiness_energy"),
+        readinessMotivation: smallint("readiness_motivation"),
+        readinessFatigue: smallint("readiness_fatigue"),
+        readinessSoreness: smallint("readiness_soreness"),
+        readinessStress: smallint("readiness_stress"),
+        readinessRecovery: smallint("readiness_recovery"),
+        // Post-workout ratings (1-5) plus free-text notes (design 11.1, TS-5).
+        postEnergy: smallint("post_energy"),
+        postMotivation: smallint("post_motivation"),
+        postEnjoyment: smallint("post_enjoyment"),
+        postDifficulty: smallint("post_difficulty"),
+        postFatigue: smallint("post_fatigue"),
+        postNotes: text("post_notes"),
+        notes: text("notes"),
+        tags: jsonb("tags").$type<string[]>().notNull().default([]),
+        // Nullable link to the originating planned session. The full planned/actual mapping tree
+        // (design 11.4) is introduced by a later issue, so this is not a foreign key yet.
+        sourcePlannedSessionId: uuid("source_planned_session_id"),
+        version: integer("version").notNull().default(1),
+        archivedAt: timestamp("archived_at", { withTimezone: true }),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("training_sessions_status_valid", sql`${table.status} IN ('draft', 'in_progress', 'completed')`),
+        check("training_sessions_started_required", sql`${table.status} = 'draft' OR ${table.startedAt} IS NOT NULL`),
+        check("training_sessions_ended_required", sql`${table.status} <> 'completed' OR ${table.endedAt} IS NOT NULL`),
+        check(
+            "training_sessions_end_after_start",
+            sql`${table.endedAt} IS NULL OR (${table.startedAt} IS NOT NULL AND ${table.endedAt} >= ${table.startedAt})`,
+        ),
+        check(
+            "training_sessions_duration_nonneg",
+            sql`${table.durationMinutes} IS NULL OR ${table.durationMinutes} >= 0`,
+        ),
+        check(
+            "training_sessions_readiness_range",
+            sql`(${table.readinessEnergy} IS NULL OR ${table.readinessEnergy} BETWEEN 1 AND 5)
+                AND (${table.readinessMotivation} IS NULL OR ${table.readinessMotivation} BETWEEN 1 AND 5)
+                AND (${table.readinessFatigue} IS NULL OR ${table.readinessFatigue} BETWEEN 1 AND 5)
+                AND (${table.readinessSoreness} IS NULL OR ${table.readinessSoreness} BETWEEN 1 AND 5)
+                AND (${table.readinessStress} IS NULL OR ${table.readinessStress} BETWEEN 1 AND 5)
+                AND (${table.readinessRecovery} IS NULL OR ${table.readinessRecovery} BETWEEN 1 AND 5)`,
+        ),
+        check(
+            "training_sessions_post_range",
+            sql`(${table.postEnergy} IS NULL OR ${table.postEnergy} BETWEEN 1 AND 5)
+                AND (${table.postMotivation} IS NULL OR ${table.postMotivation} BETWEEN 1 AND 5)
+                AND (${table.postEnjoyment} IS NULL OR ${table.postEnjoyment} BETWEEN 1 AND 5)
+                AND (${table.postDifficulty} IS NULL OR ${table.postDifficulty} BETWEEN 1 AND 5)
+                AND (${table.postFatigue} IS NULL OR ${table.postFatigue} BETWEEN 1 AND 5)`,
+        ),
+        check("training_sessions_version_positive", sql`${table.version} > 0`),
+        index("training_sessions_profile_idx").on(table.profileId, table.status),
+        index("training_sessions_date_idx").on(table.profileId, table.localDate),
+        index("training_sessions_active_idx").on(table.profileId, table.archivedAt),
+    ],
+);
+
+/**
+ * Ordered typed activity placeholder within a session (design 11.1, TS-3). Strength/run detail is
+ * layered on by later issues; this holds order, timing, effort, feeling, notes, and tags. Positions
+ * are unique per session; the row cascades with its parent session.
+ */
+export const sessionActivities = pgTable(
+    "session_activities",
+    {
+        id: uuid("id").primaryKey(),
+        sessionId: uuid("session_id")
+            .notNull()
+            .references(() => trainingSessions.id, { onDelete: "cascade" }),
+        type: text("type").notNull(),
+        position: integer("position").notNull(),
+        startedAt: timestamp("started_at", { withTimezone: true }),
+        endedAt: timestamp("ended_at", { withTimezone: true }),
+        durationSeconds: integer("duration_seconds"),
+        rpe: smallint("rpe"),
+        feeling: text("feeling"),
+        notes: text("notes"),
+        tags: jsonb("tags").$type<string[]>().notNull().default([]),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("session_activities_type_valid", sql`${table.type} IN ('strength', 'running')`),
+        check("session_activities_position_nonneg", sql`${table.position} >= 0`),
+        check(
+            "session_activities_end_after_start",
+            sql`${table.endedAt} IS NULL OR (${table.startedAt} IS NOT NULL AND ${table.endedAt} >= ${table.startedAt})`,
+        ),
+        check(
+            "session_activities_duration_nonneg",
+            sql`${table.durationSeconds} IS NULL OR ${table.durationSeconds} >= 0`,
+        ),
+        check("session_activities_rpe_range", sql`${table.rpe} IS NULL OR ${table.rpe} BETWEEN 0 AND 10`),
+        uniqueIndex("session_activities_position_unique").on(table.sessionId, table.position),
+        index("session_activities_session_idx").on(table.sessionId),
+    ],
+);
+
+/**
+ * Pain/discomfort record for a session (design 11.1, TS-6). Optionally links to a session activity;
+ * exercise/set links are plain nullable IDs because the actual occurrence/set tables arrive with
+ * strength detail in a later issue.
+ */
+export const painRecords = pgTable(
+    "pain_records",
+    {
+        id: uuid("id").primaryKey(),
+        sessionId: uuid("session_id")
+            .notNull()
+            .references(() => trainingSessions.id, { onDelete: "cascade" }),
+        activityId: uuid("activity_id").references(() => sessionActivities.id, { onDelete: "set null" }),
+        exerciseOccurrenceId: uuid("exercise_occurrence_id"),
+        performedSetId: uuid("performed_set_id"),
+        bodyArea: text("body_area").notNull(),
+        side: text("side").notNull(),
+        severity: smallint("severity").notNull(),
+        painType: text("pain_type"),
+        onsetDuringSession: boolean("onset_during_session").notNull().default(false),
+        stoppedActivity: boolean("stopped_activity").notNull().default(false),
+        notes: text("notes"),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("pain_records_body_area_valid", sql`length(btrim(${table.bodyArea})) BETWEEN 1 AND 120`),
+        check("pain_records_side_valid", sql`${table.side} IN ('left', 'right', 'bilateral')`),
+        check("pain_records_severity_range", sql`${table.severity} BETWEEN 0 AND 10`),
+        index("pain_records_session_idx").on(table.sessionId),
+        index("pain_records_activity_idx").on(table.activityId),
+    ],
+);
+
+export type TrainingSessionRow = typeof trainingSessions.$inferSelect;
+export type SessionActivityRow = typeof sessionActivities.$inferSelect;
+export type PainRecordRow = typeof painRecords.$inferSelect;
+
+/**
  * Bulk dry-run preview artifacts (design 14.2/14.3; PRD BI-4). A dry-run stores the complete
  * normalized program tree, structured warnings/errors/mappings, the referenced-version fingerprint,
  * a short-lived approval token, source namespace, and an expiry. It is the ONLY thing a dry-run

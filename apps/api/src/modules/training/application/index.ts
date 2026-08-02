@@ -20,5 +20,6 @@ export * from "#src/modules/training/application/session-prescriptions";
 export * from "#src/modules/training/application/training-profile";
 export * from "#src/modules/training/application/workout-templates";
 export * from "#src/modules/training/application/planned-sessions";
+export * from "#src/modules/training/application/training-sessions";
 export * from "#src/modules/training/application/programs";
 export * from "#src/modules/training/application/bulk-program";

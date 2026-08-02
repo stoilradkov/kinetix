@@ -78,6 +78,13 @@ import {
     plannedSessionResponseSchema,
     reschedulePlannedSessionRequestSchema,
     skipCancelPlannedSessionRequestSchema,
+    createTrainingSessionRequestSchema,
+    updateTrainingSessionRequestSchema,
+    completeTrainingSessionRequestSchema,
+    trainingSessionListResponseSchema,
+    trainingSessionResponseSchema,
+    type TrainingSessionResponse,
+    type TrainingSessionSummary,
     type ExerciseCatalogItemResponse,
     type ExerciseMergeResource,
     type WorkoutTemplateResponse,
@@ -602,6 +609,88 @@ export async function changePlannedSessionOutcome(
             method: "POST",
             headers: mutationHeaders(session.version, crypto.randomUUID()),
             body: JSON.stringify(skipCancelPlannedSessionRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export function trainingSessionsQueryOptions(includeArchived: boolean) {
+    return queryOptions({
+        queryKey: ["training-sessions", includeArchived],
+        queryFn: async () =>
+            trainingSessionListResponseSchema.parse(
+                await apiRequest(`/training/sessions${includeArchived ? "?includeArchived=true" : ""}`),
+            ),
+    });
+}
+
+export function trainingSessionQueryOptions(sessionId: string | null) {
+    return queryOptions({
+        queryKey: ["training-session", sessionId],
+        enabled: sessionId !== null,
+        queryFn: async () =>
+            trainingSessionResponseSchema.parse(
+                await apiRequest(`/training/sessions/${encodeURIComponent(sessionId!)}`),
+            ),
+    });
+}
+
+export function trainingSessionRevisionHistoryQueryOptions(sessionId: string | null) {
+    return queryOptions({
+        queryKey: ["training-session-history", sessionId],
+        enabled: sessionId !== null,
+        queryFn: async () =>
+            revisionHistoryResponseSchema.parse(
+                await apiRequest(`/history/training.session/${encodeURIComponent(sessionId!)}`),
+            ),
+    });
+}
+
+export async function createTrainingSession(input: unknown): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest("/training/sessions", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(createTrainingSessionRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updateTrainingSession(
+    session: Pick<TrainingSessionSummary, "id" | "version">,
+    input: unknown,
+): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest(`/training/sessions/${encodeURIComponent(session.id)}`, {
+            method: "PATCH",
+            headers: mutationHeaders(session.version, crypto.randomUUID()),
+            body: JSON.stringify(updateTrainingSessionRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function completeTrainingSession(
+    session: Pick<TrainingSessionSummary, "id" | "version">,
+    input: unknown = {},
+): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest(`/training/sessions/${encodeURIComponent(session.id)}/complete`, {
+            method: "POST",
+            headers: mutationHeaders(session.version, crypto.randomUUID()),
+            body: JSON.stringify(completeTrainingSessionRequestSchema.parse(input)),
+        }),
+    );
+}
+
+/** Lifecycle transitions that carry no body: start, reopen, archive, restore. */
+export async function transitionTrainingSession(
+    session: Pick<TrainingSessionSummary, "id" | "version">,
+    action: "start" | "reopen" | "archive" | "restore",
+): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest(`/training/sessions/${encodeURIComponent(session.id)}/${action}`, {
+            method: "POST",
+            headers: mutationHeaders(session.version, crypto.randomUUID()),
+            body: "{}",
         }),
     );
 }

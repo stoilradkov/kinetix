@@ -11,5 +11,6 @@ export { GearItemController } from "#src/modules/training/presentation/gear-item
 export { WorkoutTemplateController } from "#src/modules/training/presentation/workout-template.controller";
 export { ProgramController } from "#src/modules/training/presentation/program.controller";
 export { PlannedSessionController } from "#src/modules/training/presentation/planned-session.controller";
+export { TrainingSessionController } from "#src/modules/training/presentation/training-session.controller";
 
 export { BulkProgramController } from "#src/modules/training/presentation/bulk-program.controller";

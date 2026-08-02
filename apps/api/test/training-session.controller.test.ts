@@ -1,0 +1,169 @@
+import { describe, expect, it, vi } from "vitest";
+
+import type {
+    TrainingSessionCommands,
+    TrainingSessionRepository,
+    TrainingSessionResource,
+    TrainingSessionSummary,
+} from "#src/modules/training/application/index";
+import { TrainingSessionNotFoundError } from "#src/modules/training/application/index";
+import { TrainingSessionController } from "#src/modules/training/presentation/index";
+import { ExpectedVersionRequiredError } from "#src/platform/application/index";
+
+const ids = {
+    session: "0198a4db-d8da-7000-8000-000000007001",
+    profile: "0198a4db-d8da-7000-8000-0000000000d9",
+    activity: "0198a4db-d8da-7000-8000-0000000070a1",
+};
+
+function resource(overrides: Partial<TrainingSessionResource> = {}): TrainingSessionResource {
+    return {
+        id: ids.session,
+        profileId: ids.profile,
+        status: "draft",
+        title: null,
+        localDate: "2026-08-02",
+        timeZone: "Europe/Sofia",
+        startedAt: null,
+        endedAt: null,
+        durationMinutes: null,
+        readiness: { energy: null, motivation: null, fatigue: null, soreness: null, stress: null, recovery: null },
+        postWorkout: { energy: null, motivation: null, enjoyment: null, difficulty: null, fatigue: null, notes: null },
+        notes: null,
+        tags: [],
+        sourcePlannedSessionId: null,
+        activities: [],
+        painRecords: [],
+        archivedAt: null,
+        version: 1,
+        createdAt: "2026-08-02T09:00:00.000Z",
+        updatedAt: "2026-08-02T09:00:00.000Z",
+        ...overrides,
+    };
+}
+
+function summary(overrides: Partial<TrainingSessionSummary> = {}): TrainingSessionSummary {
+    const { activities, painRecords, ...core } = resource();
+    void activities;
+    void painRecords;
+    return { ...core, activityCount: 2, painRecordCount: 1, ...overrides };
+}
+
+function repository(overrides: Partial<TrainingSessionRepository> = {}): TrainingSessionRepository {
+    return {
+        listSessions: async () => [summary()],
+        readSession: async () => resource(),
+        loadForUpdate: async () => null,
+        create: async () => undefined,
+        save: async () => undefined,
+        ...overrides,
+    } as unknown as TrainingSessionRepository;
+}
+
+function controller(overrides: {
+    commands?: Partial<TrainingSessionCommands>;
+    repository?: TrainingSessionRepository;
+}): TrainingSessionController {
+    return new TrainingSessionController(
+        (overrides.commands ?? {}) as TrainingSessionCommands,
+        overrides.repository ?? repository(),
+    );
+}
+
+describe("TrainingSessionController", () => {
+    it("lists session summaries with counts and no nested trees", async () => {
+        const result = await controller({}).list(undefined);
+        expect(result.items[0]).toMatchObject({ id: ids.session, activityCount: 2, painRecordCount: 1 });
+        expect(result.items[0]).not.toHaveProperty("activities");
+    });
+
+    it("gets a session with its trees and ETag", async () => {
+        const response = { setHeader: vi.fn() };
+        const result = await controller({}).get(ids.session, response);
+        expect(result).toMatchObject({ id: ids.session, activities: [], painRecords: [] });
+        expect(response.setHeader).toHaveBeenCalledWith("ETag", '"1"');
+    });
+
+    it("surfaces a missing session on get", async () => {
+        await expect(
+            controller({ repository: repository({ readSession: async () => null }) }).get(ids.session, {
+                setHeader: vi.fn(),
+            }),
+        ).rejects.toBeInstanceOf(TrainingSessionNotFoundError);
+    });
+
+    it("creates a session, returning its ETag", async () => {
+        const create = vi.fn(async () => resource());
+        const response = { setHeader: vi.fn() };
+        const result = await controller({ commands: { create } }).create({}, "request-1", undefined, response);
+        expect(result).toMatchObject({ id: ids.session, version: 1 });
+        expect(response.setHeader).toHaveBeenCalledWith("ETag", '"1"');
+    });
+
+    it("starts through the command with the If-Match version", async () => {
+        const start = vi.fn(async () =>
+            resource({ status: "in_progress", version: 2, startedAt: "2026-08-02T10:00:00.000Z" }),
+        );
+        const response = { setHeader: vi.fn() };
+        const result = await controller({ commands: { start } }).start(
+            ids.session,
+            {},
+            '"1"',
+            "r",
+            undefined,
+            response,
+        );
+        expect(result).toMatchObject({ status: "in_progress", version: 2 });
+        expect(start).toHaveBeenCalledWith(ids.session, 1, expect.any(Object), undefined);
+    });
+
+    it("completes through the command, forwarding the body", async () => {
+        const complete = vi.fn(async () =>
+            resource({
+                status: "completed",
+                version: 3,
+                startedAt: "2026-08-02T10:00:00.000Z",
+                endedAt: "2026-08-02T11:00:00.000Z",
+            }),
+        );
+        const result = await controller({ commands: { complete } }).complete(
+            ids.session,
+            { durationMinutes: 60 },
+            '"2"',
+            "r",
+            undefined,
+            { setHeader: vi.fn() },
+        );
+        expect(result).toMatchObject({ status: "completed", version: 3 });
+        expect(complete).toHaveBeenCalledWith(ids.session, 2, { durationMinutes: 60 }, expect.any(Object), undefined);
+    });
+
+    it("archives and restores through their commands", async () => {
+        const archive = vi.fn(async () => resource({ archivedAt: "2026-08-02T12:00:00.000Z", version: 2 }));
+        const restore = vi.fn(async () => resource({ version: 3 }));
+        await controller({ commands: { archive } }).archive(ids.session, '"1"', "r", undefined, { setHeader: vi.fn() });
+        await controller({ commands: { restore } }).restore(ids.session, '"2"', "r", undefined, { setHeader: vi.fn() });
+        expect(archive).toHaveBeenCalledWith(ids.session, 1, expect.any(Object), undefined);
+        expect(restore).toHaveBeenCalledWith(ids.session, 2, expect.any(Object), undefined);
+    });
+
+    it("requires If-Match on update", () => {
+        expect(() =>
+            controller({}).update(ids.session, { notes: "x" }, undefined, "r", undefined, { setHeader: vi.fn() }),
+        ).toThrow(ExpectedVersionRequiredError);
+    });
+
+    it("rejects an unknown field in the create body", () => {
+        expect(() =>
+            controller({}).create({ startedAt: "2026-08-02T10:00:00.000Z" }, "r", undefined, { setHeader: vi.fn() }),
+        ).toThrow(expect.objectContaining({ status: 422 }));
+    });
+
+    it("rejects a bad readiness value in the update body", () => {
+        expect(() =>
+            controller({}).update(ids.session, { readiness: { energy: 9 } }, '"1"', "r", undefined, {
+                setHeader: vi.fn(),
+            }),
+        ).toThrow(expect.objectContaining({ status: 422 }));
+    });
+});
