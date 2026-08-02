@@ -34,6 +34,11 @@ function resource(overrides: Partial<TrainingSessionResource> = {}): TrainingSes
         sourcePlannedSessionId: null,
         activities: [],
         painRecords: [],
+        plannedLinks: [],
+        activityMappings: [],
+        occurrenceMappings: [],
+        setMappings: [],
+        runStepMappings: [],
         archivedAt: null,
         version: 1,
         createdAt: "2026-08-02T09:00:00.000Z",
@@ -43,9 +48,23 @@ function resource(overrides: Partial<TrainingSessionResource> = {}): TrainingSes
 }
 
 function summary(overrides: Partial<TrainingSessionSummary> = {}): TrainingSessionSummary {
-    const { activities, painRecords, ...core } = resource();
+    const {
+        activities,
+        painRecords,
+        plannedLinks,
+        activityMappings,
+        occurrenceMappings,
+        setMappings,
+        runStepMappings,
+        ...core
+    } = resource();
     void activities;
     void painRecords;
+    void plannedLinks;
+    void activityMappings;
+    void occurrenceMappings;
+    void setMappings;
+    void runStepMappings;
     return { ...core, activityCount: 2, painRecordCount: 1, ...overrides };
 }
 
@@ -98,6 +117,51 @@ describe("TrainingSessionController", () => {
         const result = await controller({ commands: { create } }).create({}, "request-1", undefined, response);
         expect(result).toMatchObject({ id: ids.session, version: 1 });
         expect(response.setHeader).toHaveBeenCalledWith("ETag", '"1"');
+    });
+
+    it("starts from a planned session through the command", async () => {
+        const startPlanned = vi.fn(async () =>
+            resource({
+                status: "in_progress",
+                version: 1,
+                plannedLinks: [
+                    {
+                        plannedSessionId: ids.profile,
+                        sourcePrescriptionId: ids.session,
+                        resolvedPrescriptionId: ids.session,
+                    },
+                ],
+            }),
+        );
+        const response = { setHeader: vi.fn() };
+        const result = await controller({ commands: { startPlanned } as never }).startPlanned(
+            { plannedSessionId: ids.profile },
+            "r",
+            undefined,
+            response,
+        );
+        expect(result.plannedLinks).toHaveLength(1);
+        expect(startPlanned).toHaveBeenCalledWith({ plannedSessionId: ids.profile }, expect.any(Object), undefined);
+    });
+
+    it("records mappings through the command with the If-Match version", async () => {
+        const recordMappings = vi.fn(async () => resource({ version: 2 }));
+        const result = await controller({ commands: { recordMappings } as never }).recordMappings(
+            ids.session,
+            { setMappings: [{ id: ids.activity, performedSetId: ids.activity, relation: "added" }] },
+            '"1"',
+            "r",
+            undefined,
+            { setHeader: vi.fn() },
+        );
+        expect(result).toMatchObject({ version: 2 });
+        expect(recordMappings).toHaveBeenCalledWith(
+            ids.session,
+            1,
+            { setMappings: [{ id: ids.activity, performedSetId: ids.activity, relation: "added" }] },
+            expect.any(Object),
+            undefined,
+        );
     });
 
     it("starts through the command with the If-Match version", async () => {

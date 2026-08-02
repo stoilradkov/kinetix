@@ -1628,9 +1628,360 @@ export const painRecords = pgTable(
     ],
 );
 
+/**
+ * A performed exercise instance within a strength activity (design 5.8, 11.2; PRD ST-1). It keeps an
+ * immutable `exercise_snapshot` so historical analytics reproduce even after the catalog changes, plus
+ * technique/discomfort/pump quality ratings. Positions are unique per activity; it cascades with its
+ * parent activity/session.
+ */
+export const exerciseOccurrences = pgTable(
+    "exercise_occurrences",
+    {
+        id: uuid("id").primaryKey(),
+        activityId: uuid("activity_id")
+            .notNull()
+            .references(() => sessionActivities.id, { onDelete: "cascade" }),
+        exerciseId: uuid("exercise_id")
+            .notNull()
+            .references(() => exercises.id),
+        exerciseSnapshot: jsonb("exercise_snapshot").notNull(),
+        position: integer("position").notNull(),
+        purpose: text("purpose"),
+        technique: smallint("technique"),
+        discomfort: smallint("discomfort"),
+        pump: smallint("pump"),
+        notes: text("notes"),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("exercise_occurrences_position_nonneg", sql`${table.position} >= 0`),
+        check("exercise_occurrences_snapshot_valid", sql`${table.exerciseSnapshot} ? 'schemaVersion'`),
+        check(
+            "exercise_occurrences_quality_range",
+            sql`(${table.technique} IS NULL OR ${table.technique} BETWEEN 1 AND 5)
+                AND (${table.discomfort} IS NULL OR ${table.discomfort} BETWEEN 1 AND 5)
+                AND (${table.pump} IS NULL OR ${table.pump} BETWEEN 1 AND 5)`,
+        ),
+        uniqueIndex("exercise_occurrences_position_unique").on(table.activityId, table.position),
+        index("exercise_occurrences_activity_idx").on(table.activityId),
+        index("exercise_occurrences_exercise_idx").on(table.exerciseId),
+    ],
+);
+
+/**
+ * Hierarchical set grouping within a strength activity (design 11.2; PRD ST-2). The optional
+ * `parent_group_id` self-reference nests groups (e.g. a drop inside a superset); occurrence membership
+ * is many-to-many through {@link setGroupMembers}. Positions are unique within their parent scope.
+ */
+export const setGroups = pgTable(
+    "set_groups",
+    {
+        id: uuid("id").primaryKey(),
+        activityId: uuid("activity_id")
+            .notNull()
+            .references(() => sessionActivities.id, { onDelete: "cascade" }),
+        parentGroupId: uuid("parent_group_id").references((): AnyPgColumn => setGroups.id),
+        type: text("type").notNull(),
+        position: integer("position").notNull(),
+        rounds: integer("rounds"),
+        restMs: bigint("rest_ms", { mode: "number" }),
+    },
+    table => [
+        check(
+            "set_groups_type_valid",
+            sql`${table.type} IN ('straight', 'superset', 'circuit', 'drop', 'cluster', 'rest_pause')`,
+        ),
+        check("set_groups_position_nonneg", sql`${table.position} >= 0`),
+        check("set_groups_rounds_positive", sql`${table.rounds} IS NULL OR ${table.rounds} >= 1`),
+        check("set_groups_rest_nonneg", sql`${table.restMs} IS NULL OR ${table.restMs} >= 0`),
+        uniqueIndex("set_groups_root_position_unique")
+            .on(table.activityId, table.position)
+            .where(isNull(table.parentGroupId)),
+        uniqueIndex("set_groups_child_position_unique")
+            .on(table.parentGroupId, table.position)
+            .where(isNotNull(table.parentGroupId)),
+        index("set_groups_activity_idx").on(table.activityId),
+    ],
+);
+
+/** Many-to-many membership of an exercise occurrence in a set group (design 11.2). */
+export const setGroupMembers = pgTable(
+    "set_group_members",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        setGroupId: uuid("set_group_id")
+            .notNull()
+            .references(() => setGroups.id, { onDelete: "cascade" }),
+        occurrenceId: uuid("occurrence_id")
+            .notNull()
+            .references(() => exerciseOccurrences.id, { onDelete: "cascade" }),
+        position: integer("position").notNull(),
+    },
+    table => [
+        check("set_group_members_position_nonneg", sql`${table.position} >= 0`),
+        uniqueIndex("set_group_members_position_unique").on(table.setGroupId, table.position),
+        uniqueIndex("set_group_members_occurrence_unique").on(table.setGroupId, table.occurrenceId),
+        index("set_group_members_occurrence_idx").on(table.occurrenceId),
+    ],
+);
+
+/**
+ * A single performed set (design 11.2; PRD ST-3–5). Canonical measurement columns support querying and
+ * analytics; the original entered value/unit per field is preserved in `entered_measurements` for
+ * display/provenance and never replaces the canonical columns. `null` stays distinct from a recorded
+ * zero. Assistance is stored positive and only subtracted by a declared load model (design 7.4).
+ */
+export const performedSets = pgTable(
+    "performed_sets",
+    {
+        id: uuid("id").primaryKey(),
+        occurrenceId: uuid("occurrence_id")
+            .notNull()
+            .references(() => exerciseOccurrences.id, { onDelete: "cascade" }),
+        setGroupId: uuid("set_group_id").references(() => setGroups.id, { onDelete: "set null" }),
+        round: integer("round"),
+        position: integer("position").notNull(),
+        setType: text("set_type").notNull(),
+        status: text("status").notNull(),
+        reps: integer("reps"),
+        externalLoadKg: numeric("external_load_kg", { precision: 12, scale: 3 }),
+        bodyweightKg: numeric("bodyweight_kg", { precision: 12, scale: 3 }),
+        addedLoadKg: numeric("added_load_kg", { precision: 12, scale: 3 }),
+        assistanceLoadKg: numeric("assistance_load_kg", { precision: 12, scale: 3 }),
+        effectiveLoadKg: numeric("effective_load_kg", { precision: 12, scale: 3 }),
+        durationMs: bigint("duration_ms", { mode: "number" }),
+        distanceM: numeric("distance_m", { precision: 14, scale: 3 }),
+        powerW: numeric("power_w", { precision: 12, scale: 2 }),
+        rpe: numeric("rpe", { precision: 3, scale: 1 }),
+        rir: smallint("rir"),
+        tempoEccentricMs: bigint("tempo_eccentric_ms", { mode: "number" }),
+        tempoBottomPauseMs: bigint("tempo_bottom_pause_ms", { mode: "number" }),
+        tempoConcentricMs: bigint("tempo_concentric_ms", { mode: "number" }),
+        tempoTopPauseMs: bigint("tempo_top_pause_ms", { mode: "number" }),
+        restBeforeMs: bigint("rest_before_ms", { mode: "number" }),
+        restAfterMs: bigint("rest_after_ms", { mode: "number" }),
+        failureReason: text("failure_reason"),
+        technique: smallint("technique"),
+        discomfort: smallint("discomfort"),
+        pump: smallint("pump"),
+        enteredMeasurements: jsonb("entered_measurements").$type<Record<string, unknown>>().notNull().default({}),
+        notes: text("notes"),
+    },
+    table => [
+        check(
+            "performed_sets_type_valid",
+            sql`${table.setType} IN (
+                'warm_up', 'working', 'back_off', 'drop', 'failure_amrap',
+                'superset_circuit', 'rest_pause', 'technique', 'cluster', 'other'
+            )`,
+        ),
+        check("performed_sets_status_valid", sql`${table.status} IN ('completed', 'partial', 'skipped', 'added')`),
+        check("performed_sets_position_nonneg", sql`${table.position} >= 0`),
+        check("performed_sets_round_positive", sql`${table.round} IS NULL OR ${table.round} >= 1`),
+        check("performed_sets_reps_nonneg", sql`${table.reps} IS NULL OR ${table.reps} >= 0`),
+        check(
+            "performed_sets_loads_nonneg",
+            sql`(${table.externalLoadKg} IS NULL OR ${table.externalLoadKg} >= 0)
+                AND (${table.bodyweightKg} IS NULL OR ${table.bodyweightKg} >= 0)
+                AND (${table.addedLoadKg} IS NULL OR ${table.addedLoadKg} >= 0)
+                AND (${table.assistanceLoadKg} IS NULL OR ${table.assistanceLoadKg} >= 0)
+                AND (${table.effectiveLoadKg} IS NULL OR ${table.effectiveLoadKg} >= 0)
+                AND (${table.distanceM} IS NULL OR ${table.distanceM} >= 0)
+                AND (${table.powerW} IS NULL OR ${table.powerW} >= 0)`,
+        ),
+        check(
+            "performed_sets_durations_nonneg",
+            sql`(${table.durationMs} IS NULL OR ${table.durationMs} >= 0)
+                AND (${table.tempoEccentricMs} IS NULL OR ${table.tempoEccentricMs} >= 0)
+                AND (${table.tempoBottomPauseMs} IS NULL OR ${table.tempoBottomPauseMs} >= 0)
+                AND (${table.tempoConcentricMs} IS NULL OR ${table.tempoConcentricMs} >= 0)
+                AND (${table.tempoTopPauseMs} IS NULL OR ${table.tempoTopPauseMs} >= 0)
+                AND (${table.restBeforeMs} IS NULL OR ${table.restBeforeMs} >= 0)
+                AND (${table.restAfterMs} IS NULL OR ${table.restAfterMs} >= 0)`,
+        ),
+        check("performed_sets_rpe_range", sql`${table.rpe} IS NULL OR ${table.rpe} BETWEEN 1 AND 10`),
+        check("performed_sets_rir_range", sql`${table.rir} IS NULL OR ${table.rir} BETWEEN 0 AND 10`),
+        check(
+            "performed_sets_quality_range",
+            sql`(${table.technique} IS NULL OR ${table.technique} BETWEEN 1 AND 5)
+                AND (${table.discomfort} IS NULL OR ${table.discomfort} BETWEEN 1 AND 5)
+                AND (${table.pump} IS NULL OR ${table.pump} BETWEEN 1 AND 5)`,
+        ),
+        check(
+            "performed_sets_failure_reason_valid",
+            sql`${table.failureReason} IS NULL OR ${table.failureReason} IN (
+                'muscular', 'technical', 'cardiovascular', 'pain', 'equipment', 'time', 'other'
+            )`,
+        ),
+        uniqueIndex("performed_sets_position_unique").on(table.occurrenceId, table.position),
+        index("performed_sets_occurrence_idx").on(table.occurrenceId),
+        index("performed_sets_group_idx").on(table.setGroupId),
+    ],
+);
+
+/* --------------------------------------------------------------------------------------
+ * Planned/actual mappings (design 11.4, TS-4).
+ *
+ * FK-backed join tables connecting immutable prescribed rows to the actual rows performed in a
+ * training session. `session_mappings` freezes the planned session plus the exact source and
+ * resolved-execution prescription IDs used at start; the level tables connect prescribed
+ * activities/exercises/sets/run-steps to their actual counterparts with an explicit relation and
+ * reason. Join tables permit one-to-many (`split`) and many-to-one (`combined`); the application
+ * validates that both sides belong to the mapped session/prescription trees. Everything cascades
+ * with the owning training session.
+ * ----------------------------------------------------------------------------------- */
+
+const mappingRelationCheck = (column: AnyPgColumn, name: string) =>
+    check(name, sql`${column} IN ('matched', 'substituted', 'added', 'partial', 'combined', 'split')`);
+
+/** `added` performed work has no prescribed counterpart; every other relation must name one. */
+const addedPrescribedPairCheck = (relation: AnyPgColumn, prescribed: AnyPgColumn, name: string) =>
+    check(name, sql`(${prescribed} IS NULL) = (${relation} = 'added')`);
+
+export const sessionMappings = pgTable(
+    "session_mappings",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        sessionId: uuid("session_id")
+            .notNull()
+            .references(() => trainingSessions.id, { onDelete: "cascade" }),
+        plannedSessionId: uuid("planned_session_id")
+            .notNull()
+            .references(() => plannedSessions.id, { onDelete: "cascade" }),
+        sourcePrescriptionId: uuid("source_prescription_id")
+            .notNull()
+            .references(() => sessionPrescriptions.id),
+        resolvedPrescriptionId: uuid("resolved_prescription_id")
+            .notNull()
+            .references(() => sessionPrescriptions.id),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        uniqueIndex("session_mappings_session_planned_unique").on(table.sessionId, table.plannedSessionId),
+        index("session_mappings_planned_idx").on(table.plannedSessionId),
+        index("session_mappings_resolved_idx").on(table.resolvedPrescriptionId),
+    ],
+);
+
+export const activityMappings = pgTable(
+    "activity_mappings",
+    {
+        id: uuid("id").primaryKey(),
+        sessionId: uuid("session_id")
+            .notNull()
+            .references(() => trainingSessions.id, { onDelete: "cascade" }),
+        prescribedActivityId: uuid("prescribed_activity_id").references(() => prescribedActivities.id),
+        actualActivityId: uuid("actual_activity_id")
+            .notNull()
+            .references(() => sessionActivities.id, { onDelete: "cascade" }),
+        relation: text("relation").notNull(),
+        reason: text("reason"),
+        notes: text("notes"),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        mappingRelationCheck(table.relation, "activity_mappings_relation_valid"),
+        addedPrescribedPairCheck(table.relation, table.prescribedActivityId, "activity_mappings_added_pair"),
+        index("activity_mappings_session_idx").on(table.sessionId),
+        index("activity_mappings_prescribed_idx").on(table.prescribedActivityId),
+        index("activity_mappings_actual_idx").on(table.actualActivityId),
+    ],
+);
+
+export const exerciseOccurrenceMappings = pgTable(
+    "exercise_occurrence_mappings",
+    {
+        id: uuid("id").primaryKey(),
+        sessionId: uuid("session_id")
+            .notNull()
+            .references(() => trainingSessions.id, { onDelete: "cascade" }),
+        prescribedExerciseId: uuid("prescribed_exercise_id").references(() => prescribedExercises.id),
+        occurrenceId: uuid("occurrence_id")
+            .notNull()
+            .references(() => exerciseOccurrences.id, { onDelete: "cascade" }),
+        relation: text("relation").notNull(),
+        reason: text("reason"),
+        notes: text("notes"),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        mappingRelationCheck(table.relation, "exercise_occurrence_mappings_relation_valid"),
+        addedPrescribedPairCheck(table.relation, table.prescribedExerciseId, "exercise_occurrence_mappings_added_pair"),
+        index("exercise_occurrence_mappings_session_idx").on(table.sessionId),
+        index("exercise_occurrence_mappings_prescribed_idx").on(table.prescribedExerciseId),
+        index("exercise_occurrence_mappings_actual_idx").on(table.occurrenceId),
+    ],
+);
+
+export const setMappings = pgTable(
+    "set_mappings",
+    {
+        id: uuid("id").primaryKey(),
+        sessionId: uuid("session_id")
+            .notNull()
+            .references(() => trainingSessions.id, { onDelete: "cascade" }),
+        prescribedSetId: uuid("prescribed_set_id").references(() => prescribedSets.id),
+        performedSetId: uuid("performed_set_id")
+            .notNull()
+            .references(() => performedSets.id, { onDelete: "cascade" }),
+        relation: text("relation").notNull(),
+        portion: numeric("portion", { precision: 5, scale: 4 }),
+        reason: text("reason"),
+        notes: text("notes"),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        mappingRelationCheck(table.relation, "set_mappings_relation_valid"),
+        addedPrescribedPairCheck(table.relation, table.prescribedSetId, "set_mappings_added_pair"),
+        check(
+            "set_mappings_portion_range",
+            sql`${table.portion} IS NULL OR (${table.portion} > 0 AND ${table.portion} <= 1)`,
+        ),
+        index("set_mappings_session_idx").on(table.sessionId),
+        index("set_mappings_prescribed_idx").on(table.prescribedSetId),
+        index("set_mappings_actual_idx").on(table.performedSetId),
+    ],
+);
+
+/**
+ * Prescribed run step to performed run step. The performed side is a plain UUID (no FK) because
+ * performed running detail arrives with the running slice; the prescribed side and relation rules are
+ * enforced now so percentage/structure history is captured as soon as running actuals exist.
+ */
+export const runStepMappings = pgTable(
+    "run_step_mappings",
+    {
+        id: uuid("id").primaryKey(),
+        sessionId: uuid("session_id")
+            .notNull()
+            .references(() => trainingSessions.id, { onDelete: "cascade" }),
+        prescribedRunStepId: uuid("prescribed_run_step_id").references(() => prescribedRunSteps.id),
+        performedRunStepId: uuid("performed_run_step_id").notNull(),
+        relation: text("relation").notNull(),
+        reason: text("reason"),
+        notes: text("notes"),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        mappingRelationCheck(table.relation, "run_step_mappings_relation_valid"),
+        addedPrescribedPairCheck(table.relation, table.prescribedRunStepId, "run_step_mappings_added_pair"),
+        index("run_step_mappings_session_idx").on(table.sessionId),
+        index("run_step_mappings_prescribed_idx").on(table.prescribedRunStepId),
+    ],
+);
+
 export type TrainingSessionRow = typeof trainingSessions.$inferSelect;
 export type SessionActivityRow = typeof sessionActivities.$inferSelect;
 export type PainRecordRow = typeof painRecords.$inferSelect;
+export type ExerciseOccurrenceRow = typeof exerciseOccurrences.$inferSelect;
+export type SetGroupRow = typeof setGroups.$inferSelect;
+export type SetGroupMemberRow = typeof setGroupMembers.$inferSelect;
+export type PerformedSetRow = typeof performedSets.$inferSelect;
+export type SessionMappingRow = typeof sessionMappings.$inferSelect;
+export type ActivityMappingRow = typeof activityMappings.$inferSelect;
+export type ExerciseOccurrenceMappingRow = typeof exerciseOccurrenceMappings.$inferSelect;
+export type SetMappingRow = typeof setMappings.$inferSelect;
+export type RunStepMappingRow = typeof runStepMappings.$inferSelect;
 
 /**
  * Bulk dry-run preview artifacts (design 14.2/14.3; PRD BI-4). A dry-run stores the complete

@@ -19,6 +19,8 @@ import { ApiHeader, ApiOperation, ApiParam, ApiQuery, ApiTags } from "@nestjs/sw
 import {
     completeTrainingSessionRequestSchema,
     createTrainingSessionRequestSchema,
+    recordSessionMappingsRequestSchema,
+    startPlannedTrainingSessionRequestSchema,
     startTrainingSessionRequestSchema,
     trainingSessionListResponseSchema,
     trainingSessionResponseSchema,
@@ -96,6 +98,32 @@ export class TrainingSessionController {
         });
     }
 
+    @Post("start-planned")
+    @ApiOperation({ summary: "Start an in-progress session from a planned session, freezing its resolved targets" })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    startPlanned(
+        @Body() rawBody: unknown,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<TrainingSessionResponse> {
+        const request = parseContract(
+            startPlannedTrainingSessionRequestSchema,
+            rawBody ?? {},
+            "Start-from-planned validation failed",
+        );
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "training.session.start-planned",
+            idempotencyKey,
+            request,
+            metadata,
+            response,
+            status: 201,
+            command: transaction => this.commands.startPlanned(request, metadata, transaction),
+        });
+    }
+
     @Get(":id")
     @ApiOperation({ summary: "Get one training session with its activities and pain records" })
     @ApiParam({ name: "id", format: "uuid" })
@@ -137,6 +165,37 @@ export class TrainingSessionController {
             response,
             status: 200,
             command: transaction => this.commands.update(id, expectedVersion, request, metadata, transaction),
+        });
+    }
+
+    @Post(":id/mappings")
+    @ApiOperation({ summary: "Record planned/actual mappings for a session (substitutions, splits, combines)" })
+    @ApiParam({ name: "id", format: "uuid" })
+    @ApiHeader({ name: "If-Match", required: true })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    recordMappings(
+        @Param("id") id: string,
+        @Body() rawBody: unknown,
+        @Headers("if-match") ifMatch: string | undefined,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<TrainingSessionResponse> {
+        const request = parseContract(
+            recordSessionMappingsRequestSchema,
+            rawBody ?? {},
+            "Session mapping validation failed",
+        );
+        const expectedVersion = expectedVersionFrom(ifMatch);
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "training.session.mappings",
+            idempotencyKey,
+            request: { id, expectedVersion, body: request },
+            metadata,
+            response,
+            status: 200,
+            command: transaction => this.commands.recordMappings(id, expectedVersion, request, metadata, transaction),
         });
     }
 

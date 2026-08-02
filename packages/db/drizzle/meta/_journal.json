@@ -148,6 +148,20 @@
             "when": 1785666162878,
             "tag": "0020_fat_bloodaxe",
             "breakpoints": true
+        },
+        {
+            "idx": 21,
+            "version": "7",
+            "when": 1785669628860,
+            "tag": "0021_optimal_dark_phoenix",
+            "breakpoints": true
+        },
+        {
+            "idx": 22,
+            "version": "7",
+            "when": 1785678816381,
+            "tag": "0022_yellow_vision",
+            "breakpoints": true
         }
     ]
 }

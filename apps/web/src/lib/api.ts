@@ -81,6 +81,8 @@ import {
     createTrainingSessionRequestSchema,
     updateTrainingSessionRequestSchema,
     completeTrainingSessionRequestSchema,
+    startPlannedTrainingSessionRequestSchema,
+    recordSessionMappingsRequestSchema,
     trainingSessionListResponseSchema,
     trainingSessionResponseSchema,
     type TrainingSessionResponse,
@@ -677,6 +679,29 @@ export async function completeTrainingSession(
             method: "POST",
             headers: mutationHeaders(session.version, crypto.randomUUID()),
             body: JSON.stringify(completeTrainingSessionRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function startPlannedTrainingSession(input: unknown): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest("/training/sessions/start-planned", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(startPlannedTrainingSessionRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function recordSessionMappings(
+    session: Pick<TrainingSessionSummary, "id" | "version">,
+    input: unknown,
+): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest(`/training/sessions/${encodeURIComponent(session.id)}/mappings`, {
+            method: "POST",
+            headers: mutationHeaders(session.version, crypto.randomUUID()),
+            body: JSON.stringify(recordSessionMappingsRequestSchema.parse(input)),
         }),
     );
 }

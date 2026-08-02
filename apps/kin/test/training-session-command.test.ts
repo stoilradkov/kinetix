@@ -24,7 +24,16 @@ const base = {
 };
 
 const summary = { ...base, activityCount: 0, painRecordCount: 0 };
-const response = { ...base, activities: [], painRecords: [] };
+const response = {
+    ...base,
+    activities: [],
+    painRecords: [],
+    plannedLinks: [],
+    activityMappings: [],
+    occurrenceMappings: [],
+    setMappings: [],
+    runStepMappings: [],
+};
 
 describe("kin training sessions", () => {
     it("lists sessions, including archived when requested", async () => {

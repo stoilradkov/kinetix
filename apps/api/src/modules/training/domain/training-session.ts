@@ -1,5 +1,27 @@
 import { DomainValidationError } from "#src/platform/domain/index";
 
+import {
+    EMPTY_STRENGTH_ACTIVITY,
+    normalizeStrengthActivity,
+    validateStrengthActivity,
+    type StrengthActivityInput,
+    type StrengthActivityState,
+} from "#src/modules/training/domain/session-strength";
+import {
+    EMPTY_SESSION_MAPPINGS,
+    normalizeSessionMappings,
+    reconcileSessionMappings,
+    validateSessionMappings,
+    type ActivityMappingState,
+    type OccurrenceMappingState,
+    type RunStepMappingState,
+    type SessionActualIds,
+    type SessionMappingsInput,
+    type SessionMappingsState,
+    type SessionPlannedLink,
+    type SetMappingState,
+} from "#src/modules/training/domain/session-mapping";
+
 /**
  * TrainingSession — the versioned, archivable write/concurrency boundary for live and retrospective
  * workouts (design 5.8, 11.1, 11.6). It owns session time/state, pre-workout readiness, post-workout
@@ -56,6 +78,8 @@ export interface SessionActivityState {
     readonly feeling: string | null;
     readonly notes: string | null;
     readonly tags: readonly string[];
+    /** Structured strength detail (occurrences/groups/sets); non-null exactly when `type === "strength"`. */
+    readonly strength: StrengthActivityState | null;
 }
 
 /**
@@ -94,6 +118,12 @@ export interface TrainingSessionState {
     readonly sourcePlannedSessionId: string | null;
     readonly activities: readonly SessionActivityState[];
     readonly painRecords: readonly PainRecordState[];
+    /** Planned/actual links to immutable source + resolved-execution prescriptions (design 11.4). */
+    readonly plannedLinks: readonly SessionPlannedLink[];
+    readonly activityMappings: readonly ActivityMappingState[];
+    readonly occurrenceMappings: readonly OccurrenceMappingState[];
+    readonly setMappings: readonly SetMappingState[];
+    readonly runStepMappings: readonly RunStepMappingState[];
     readonly archivedAt: string | null;
     readonly createdAt: string;
     readonly updatedAt: string;
@@ -112,6 +142,7 @@ export interface CreateTrainingSessionInput {
     readonly postWorkout?: Partial<PostWorkoutRatings>;
     readonly activities?: readonly SessionActivityInput[];
     readonly painRecords?: readonly PainRecordInput[];
+    readonly mappings?: SessionMappingsInput;
 }
 
 export interface SessionActivityInput {
@@ -125,6 +156,7 @@ export interface SessionActivityInput {
     readonly feeling?: string | null;
     readonly notes?: string | null;
     readonly tags?: readonly string[];
+    readonly strength?: StrengthActivityInput | null;
 }
 
 export interface PainRecordInput {
@@ -154,6 +186,8 @@ export interface UpdateTrainingSessionInput {
     readonly postWorkout?: Partial<PostWorkoutRatings>;
     readonly activities?: readonly SessionActivityInput[];
     readonly painRecords?: readonly PainRecordInput[];
+    /** When present, replaces the whole mapping tree (planned links are preserved separately). */
+    readonly mappings?: SessionMappingsInput;
 }
 
 export interface CompleteTrainingSessionInput {
@@ -208,6 +242,7 @@ export class TrainingSession {
                     : requiredUuid(input.sourcePlannedSessionId, "Source planned session ID"),
             activities: normalizeActivities(input.activities ?? []),
             painRecords: [],
+            ...spreadMappings(normalizeSessionMappings(input.mappings ?? {})),
             archivedAt: null,
             createdAt: timestamp,
             updatedAt: timestamp,
@@ -222,7 +257,8 @@ export class TrainingSession {
     }
 
     static rehydrate(state: TrainingSessionState): TrainingSession {
-        const copied = immutableCopy(state);
+        // Backfill mapping fields so revision snapshots persisted before design 11.4 stay valid.
+        const copied = immutableCopy({ ...state, ...spreadMappings(mappingsOf(state)) });
         validateState(copied);
         return new TrainingSession(copied);
     }
@@ -251,6 +287,19 @@ export class TrainingSession {
             input.painRecords !== undefined
                 ? normalizePainRecords(input.painRecords, activities)
                 : reconcilePainRecords(this.current.painRecords, activities);
+        // Mapping edits replace the level maps but never the frozen planned links (design 11.6). When an
+        // edit removes actual rows without touching mappings, drop the now-dangling mappings instead of
+        // rejecting the edit — mirrors pain-record reconciliation.
+        const mappings =
+            input.mappings !== undefined
+                ? spreadMappings(
+                      normalizeSessionMappings({ ...input.mappings, plannedLinks: this.current.plannedLinks }),
+                  )
+                : input.activities !== undefined
+                  ? spreadMappings(
+                        reconcileSessionMappings(mappingsOf(this.current), actualIdsOfActivities(activities)),
+                    )
+                  : {};
         return this.replace({
             ...this.current,
             ...(input.title !== undefined ? { title: optionalText(input.title, "Title", 160) } : {}),
@@ -271,6 +320,7 @@ export class TrainingSession {
                 : {}),
             activities,
             painRecords,
+            ...mappings,
             updatedAt: isoTimestamp(now, "Training session update time"),
         });
     }
@@ -370,8 +420,54 @@ function validateState(state: TrainingSessionState): void {
         });
     validateActivities(state.activities);
     validatePainRecords(state.painRecords, state.activities);
+    validateSessionMappings(mappingsOf(state), actualIdsOf(state));
     isoTimestamp(new Date(state.createdAt), "Training session creation time");
     isoTimestamp(new Date(state.updatedAt), "Training session update time");
+}
+
+/** Flatten a mappings value object into the five state fields the aggregate stores inline. */
+function spreadMappings(
+    mappings: SessionMappingsState,
+): Pick<
+    TrainingSessionState,
+    "plannedLinks" | "activityMappings" | "occurrenceMappings" | "setMappings" | "runStepMappings"
+> {
+    return {
+        plannedLinks: mappings.plannedLinks,
+        activityMappings: mappings.activityMappings,
+        occurrenceMappings: mappings.occurrenceMappings,
+        setMappings: mappings.setMappings,
+        runStepMappings: mappings.runStepMappings,
+    };
+}
+
+function mappingsOf(state: TrainingSessionState): SessionMappingsState {
+    return {
+        plannedLinks: state.plannedLinks ?? EMPTY_SESSION_MAPPINGS.plannedLinks,
+        activityMappings: state.activityMappings ?? EMPTY_SESSION_MAPPINGS.activityMappings,
+        occurrenceMappings: state.occurrenceMappings ?? EMPTY_SESSION_MAPPINGS.occurrenceMappings,
+        setMappings: state.setMappings ?? EMPTY_SESSION_MAPPINGS.setMappings,
+        runStepMappings: state.runStepMappings ?? EMPTY_SESSION_MAPPINGS.runStepMappings,
+    };
+}
+
+/** Collect the actual activity/occurrence/performed-set IDs a mapping may legally reference. */
+function actualIdsOf(state: TrainingSessionState): SessionActualIds {
+    return actualIdsOfActivities(state.activities);
+}
+
+function actualIdsOfActivities(activities: readonly SessionActivityState[]): SessionActualIds {
+    const activityIds = new Set<string>();
+    const occurrenceIds = new Set<string>();
+    const performedSetIds = new Set<string>();
+    for (const activity of activities) {
+        activityIds.add(activity.id);
+        for (const occurrence of activity.strength?.occurrences ?? []) {
+            occurrenceIds.add(occurrence.id);
+            for (const set of occurrence.performedSets) performedSetIds.add(set.id);
+        }
+    }
+    return { activityIds, occurrenceIds, performedSetIds };
 }
 
 function normalizeStatus(value: TrainingSessionStatus): TrainingSessionStatus {
@@ -451,9 +547,10 @@ function normalizeActivities(inputs: readonly SessionActivityInput[]): readonly 
     return inputs.map(input => {
         const startedAt = optionalInstant(input.startedAt, "Activity start time");
         const endedAt = optionalInstant(input.endedAt, "Activity end time");
+        const type = normalizeActivityType(input.type);
         return {
             id: requiredUuid(input.id, "Activity ID"),
-            type: normalizeActivityType(input.type),
+            type,
             position: requiredNonNegativeInteger(input.position, "Activity position"),
             startedAt,
             endedAt,
@@ -462,8 +559,27 @@ function normalizeActivities(inputs: readonly SessionActivityInput[]): readonly 
             feeling: optionalText(input.feeling, "Activity feeling", 2_000),
             notes: optionalText(input.notes, "Activity notes", 4_000),
             tags: normalizeTags(input.tags ?? []),
+            strength: normalizeActivityStrength(type, input.strength),
         };
     });
+}
+
+/**
+ * A strength activity always carries a (possibly empty) strength tree; a running activity never does.
+ * Running activities carrying strength detail are rejected so the discriminator stays authoritative.
+ */
+function normalizeActivityStrength(
+    type: SessionActivityType,
+    input: StrengthActivityInput | null | undefined,
+): StrengthActivityState | null {
+    if (type !== "strength") {
+        if (input != null && ((input.occurrences?.length ?? 0) > 0 || (input.setGroups?.length ?? 0) > 0))
+            throw new DomainValidationError("Only strength activities can carry strength detail", {
+                activities: ["Only strength activities can carry strength detail"],
+            });
+        return null;
+    }
+    return input == null ? EMPTY_STRENGTH_ACTIVITY : normalizeStrengthActivity(input);
 }
 
 function validateActivities(activities: readonly SessionActivityState[]): void {
@@ -495,6 +611,16 @@ function validateActivities(activities: readonly SessionActivityState[]): void {
             });
         optionalInteger(activity.durationSeconds, "Activity duration");
         optionalScale(activity.rpe, "Activity RPE", 0, 10);
+        if (activity.type === "strength") {
+            if (activity.strength === null)
+                throw new DomainValidationError("A strength activity must carry a strength tree", {
+                    activities: ["A strength activity must carry a strength tree"],
+                });
+            validateStrengthActivity(activity.strength);
+        } else if (activity.strength !== null)
+            throw new DomainValidationError("Only strength activities can carry strength detail", {
+                activities: ["Only strength activities can carry strength detail"],
+            });
     }
 }
 

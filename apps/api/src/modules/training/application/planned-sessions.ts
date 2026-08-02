@@ -20,6 +20,7 @@ import {
 import {
     PlannedSession,
     type CreatePlannedSessionInput,
+    type PlannedActualOutcome,
     type PlannedSessionState,
     type PublishPrescriptionDraft,
     type SessionPrescriptionState,
@@ -147,7 +148,8 @@ type PlannedSessionAction =
     | "cancelled"
     | "reopened"
     | "archived"
-    | "restored";
+    | "restored"
+    | "recomputed";
 
 export class PlannedSessionCommands<Transaction = unknown> {
     private readonly clock: Clock;
@@ -289,6 +291,33 @@ export class PlannedSessionCommands<Transaction = unknown> {
         );
         if (!stored) throw new PlannedSessionNotFoundError(id);
         return this.reschedule(id, stored.version, command, metadata, transaction);
+    }
+
+    /**
+     * Recompute the outcome from a linked training session's actual mappings (design 11.6 steps 4–7).
+     * Runs inside the caller's transaction and discovers the version under the write lock, so the
+     * training-session complete/reopen/archive stays atomic with its dependent plan recomputations. The
+     * domain preserves explicit skip/cancel intent, so this never resurrects a skipped or cancelled plan.
+     */
+    async recomputeOutcomeWithinTransaction(
+        id: string,
+        outcome: PlannedActualOutcome,
+        metadata: PlannedSessionMutationMetadata,
+        transaction: Transaction,
+    ): Promise<PlannedSessionDetail> {
+        const now = this.clock.now();
+        const stored = await this.runtime.repository.loadForUpdate(
+            PLANNED_SESSION_ENTITY_TYPE,
+            entityId(id),
+            transaction,
+        );
+        if (!stored) throw new PlannedSessionNotFoundError(id);
+        return this.mutate(id, stored.version, "recomputed", metadata, transaction, () =>
+            Promise.resolve({
+                apply: (session: PlannedSession) => session.recomputeOutcome(outcome, now),
+                prescription: null,
+            }),
+        );
     }
 
     complete(

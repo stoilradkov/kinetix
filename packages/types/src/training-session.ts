@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { exerciseSnapshotV1Schema } from "#src/training-catalog";
+
 /**
  * Wire contracts for TrainingSession (design 5.8, 11.1, 11.5–11.6; PRD TS-1–3, TS-5–7). A training
  * session is the versioned write boundary for live and retrospective workouts: lifecycle state,
@@ -66,6 +68,212 @@ const postWorkoutRatingsResponseSchema = z
     })
     .strict();
 
+// ---------------------------------------------------------------------------------------------
+// Structured strength detail (design 11.2; PRD ST-1–7)
+// ---------------------------------------------------------------------------------------------
+
+export const setGroupTypeSchema = z.enum(["straight", "superset", "circuit", "drop", "cluster", "rest_pause"]);
+export const performedSetTypeSchema = z.enum([
+    "warm_up",
+    "working",
+    "back_off",
+    "drop",
+    "failure_amrap",
+    "superset_circuit",
+    "rest_pause",
+    "technique",
+    "cluster",
+    "other",
+]);
+export const performedSetStatusSchema = z.enum(["completed", "partial", "skipped", "added"]);
+export const setFailureReasonSchema = z.enum([
+    "muscular",
+    "technical",
+    "cardiovascular",
+    "pain",
+    "equipment",
+    "time",
+    "other",
+]);
+
+const massUnitSchema = z.enum(["kg", "lb"]);
+const distanceUnitSchema = z.enum(["m", "cm", "km", "mi"]);
+const durationUnitSchema = z.enum(["ms", "s", "min", "h"]);
+
+const massValueSchema = z.object({ value: z.number().nonnegative(), unit: massUnitSchema }).strict();
+const distanceValueSchema = z.object({ value: z.number().nonnegative(), unit: distanceUnitSchema }).strict();
+const durationValueSchema = z.object({ value: z.number().nonnegative(), unit: durationUnitSchema }).strict();
+
+/** RPE 1–10 in 0.5 increments (design 7.3). */
+const rpeSchema = z
+    .number()
+    .min(1)
+    .max(10)
+    .refine(value => Number.isInteger(value * 2), { message: "RPE must use 0.5 increments" });
+const rirSchema = z.number().int().min(0).max(10);
+
+const tempoRequestSchema = z
+    .object({
+        eccentric: durationValueSchema.nullable().optional(),
+        bottomPause: durationValueSchema.nullable().optional(),
+        concentric: durationValueSchema.nullable().optional(),
+        topPause: durationValueSchema.nullable().optional(),
+    })
+    .strict();
+
+const tempoResponseSchema = z
+    .object({
+        eccentric: durationValueSchema.nullable(),
+        bottomPause: durationValueSchema.nullable(),
+        concentric: durationValueSchema.nullable(),
+        topPause: durationValueSchema.nullable(),
+    })
+    .strict();
+
+export const performedSetMeasurementsRequestSchema = z
+    .object({
+        reps: z.number().int().nonnegative().nullable().optional(),
+        externalLoad: massValueSchema.nullable().optional(),
+        bodyweight: massValueSchema.nullable().optional(),
+        addedLoad: massValueSchema.nullable().optional(),
+        assistanceLoad: massValueSchema.nullable().optional(),
+        effectiveLoad: massValueSchema.nullable().optional(),
+        duration: durationValueSchema.nullable().optional(),
+        distance: distanceValueSchema.nullable().optional(),
+        powerWatts: z.number().nonnegative().nullable().optional(),
+        rpe: rpeSchema.nullable().optional(),
+        rir: rirSchema.nullable().optional(),
+        tempo: tempoRequestSchema.nullable().optional(),
+        restBefore: durationValueSchema.nullable().optional(),
+        restAfter: durationValueSchema.nullable().optional(),
+    })
+    .strict();
+
+const performedSetMeasurementsResponseSchema = z
+    .object({
+        reps: z.number().int().nonnegative().nullable(),
+        externalLoad: massValueSchema.nullable(),
+        bodyweight: massValueSchema.nullable(),
+        addedLoad: massValueSchema.nullable(),
+        assistanceLoad: massValueSchema.nullable(),
+        effectiveLoad: massValueSchema.nullable(),
+        duration: durationValueSchema.nullable(),
+        distance: distanceValueSchema.nullable(),
+        powerWatts: z.number().nonnegative().nullable(),
+        rpe: rpeSchema.nullable(),
+        rir: rirSchema.nullable(),
+        tempo: tempoResponseSchema.nullable(),
+        restBefore: durationValueSchema.nullable(),
+        restAfter: durationValueSchema.nullable(),
+    })
+    .strict();
+
+const setGroupMemberSchema = z
+    .object({ occurrenceId: z.string().uuid(), position: z.number().int().nonnegative() })
+    .strict();
+
+export const performedSetRequestSchema = z
+    .object({
+        id: z.string().uuid(),
+        setGroupId: z.string().uuid().nullable().optional(),
+        round: z.number().int().positive().nullable().optional(),
+        position: z.number().int().nonnegative(),
+        setType: performedSetTypeSchema,
+        status: performedSetStatusSchema,
+        measurements: performedSetMeasurementsRequestSchema.optional(),
+        failureReason: setFailureReasonSchema.nullable().optional(),
+        technique: scale1to5.nullable().optional(),
+        discomfort: scale1to5.nullable().optional(),
+        pump: scale1to5.nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+    })
+    .strict();
+
+const performedSetResponseSchema = z
+    .object({
+        id: z.string().uuid(),
+        setGroupId: z.string().uuid().nullable(),
+        round: z.number().int().positive().nullable(),
+        position: z.number().int().nonnegative(),
+        setType: performedSetTypeSchema,
+        status: performedSetStatusSchema,
+        measurements: performedSetMeasurementsResponseSchema,
+        failureReason: setFailureReasonSchema.nullable(),
+        technique: scale1to5.nullable(),
+        discomfort: scale1to5.nullable(),
+        pump: scale1to5.nullable(),
+        notes: z.string().nullable(),
+    })
+    .strict();
+
+/** Request occurrences carry only the exercise id; the server resolves the immutable snapshot. */
+export const exerciseOccurrenceRequestSchema = z
+    .object({
+        id: z.string().uuid(),
+        exerciseId: z.string().uuid(),
+        position: z.number().int().nonnegative(),
+        purpose: z.string().max(200).nullable().optional(),
+        technique: scale1to5.nullable().optional(),
+        discomfort: scale1to5.nullable().optional(),
+        pump: scale1to5.nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+        performedSets: z.array(performedSetRequestSchema).optional(),
+    })
+    .strict();
+
+const exerciseOccurrenceResponseSchema = z
+    .object({
+        id: z.string().uuid(),
+        exerciseId: z.string().uuid(),
+        snapshot: exerciseSnapshotV1Schema,
+        position: z.number().int().nonnegative(),
+        purpose: z.string().nullable(),
+        technique: scale1to5.nullable(),
+        discomfort: scale1to5.nullable(),
+        pump: scale1to5.nullable(),
+        notes: z.string().nullable(),
+        performedSets: z.array(performedSetResponseSchema),
+    })
+    .strict();
+
+export const setGroupRequestSchema = z
+    .object({
+        id: z.string().uuid(),
+        parentGroupId: z.string().uuid().nullable().optional(),
+        type: setGroupTypeSchema,
+        position: z.number().int().nonnegative(),
+        rounds: z.number().int().positive().nullable().optional(),
+        restMs: z.number().int().nonnegative().nullable().optional(),
+        members: z.array(setGroupMemberSchema).optional(),
+    })
+    .strict();
+
+const setGroupResponseSchema = z
+    .object({
+        id: z.string().uuid(),
+        parentGroupId: z.string().uuid().nullable(),
+        type: setGroupTypeSchema,
+        position: z.number().int().nonnegative(),
+        rounds: z.number().int().positive().nullable(),
+        restMs: z.number().int().nonnegative().nullable(),
+        members: z.array(setGroupMemberSchema),
+    })
+    .strict();
+
+export const strengthActivityRequestSchema = z
+    .object({
+        occurrences: z.array(exerciseOccurrenceRequestSchema).optional(),
+        setGroups: z.array(setGroupRequestSchema).optional(),
+    })
+    .strict();
+
+const strengthActivityResponseSchema = z
+    .object({
+        occurrences: z.array(exerciseOccurrenceResponseSchema),
+        setGroups: z.array(setGroupResponseSchema),
+    })
+    .strict();
+
 export const sessionActivityRequestSchema = z
     .object({
         id: z.string().uuid(),
@@ -78,6 +286,7 @@ export const sessionActivityRequestSchema = z
         feeling: z.string().max(2_000).nullable().optional(),
         notes: notesSchema.nullable().optional(),
         tags: z.array(tagSchema).optional(),
+        strength: strengthActivityRequestSchema.nullable().optional(),
     })
     .strict();
 
@@ -109,6 +318,7 @@ const sessionActivityResponseSchema = z
         feeling: z.string().nullable(),
         notes: z.string().nullable(),
         tags: z.array(z.string()),
+        strength: strengthActivityResponseSchema.nullable(),
     })
     .strict();
 
@@ -124,6 +334,61 @@ const painRecordResponseSchema = z
         painType: z.string().nullable(),
         onsetDuringSession: z.boolean(),
         stoppedActivity: z.boolean(),
+        notes: z.string().nullable(),
+    })
+    .strict();
+
+export const mappingRelationSchema = z.enum(["matched", "substituted", "added", "partial", "combined", "split"]);
+
+const sessionPlannedLinkResponseSchema = z
+    .object({
+        plannedSessionId: z.string().uuid(),
+        sourcePrescriptionId: z.string().uuid(),
+        resolvedPrescriptionId: z.string().uuid(),
+    })
+    .strict();
+
+const activityMappingResponseSchema = z
+    .object({
+        id: z.string().uuid(),
+        prescribedActivityId: z.string().uuid().nullable(),
+        actualActivityId: z.string().uuid(),
+        relation: mappingRelationSchema,
+        reason: z.string().nullable(),
+        notes: z.string().nullable(),
+    })
+    .strict();
+
+const occurrenceMappingResponseSchema = z
+    .object({
+        id: z.string().uuid(),
+        prescribedExerciseId: z.string().uuid().nullable(),
+        occurrenceId: z.string().uuid(),
+        relation: mappingRelationSchema,
+        reason: z.string().nullable(),
+        notes: z.string().nullable(),
+    })
+    .strict();
+
+const setMappingResponseSchema = z
+    .object({
+        id: z.string().uuid(),
+        prescribedSetId: z.string().uuid().nullable(),
+        performedSetId: z.string().uuid(),
+        relation: mappingRelationSchema,
+        portion: z.string().nullable(),
+        reason: z.string().nullable(),
+        notes: z.string().nullable(),
+    })
+    .strict();
+
+const runStepMappingResponseSchema = z
+    .object({
+        id: z.string().uuid(),
+        prescribedRunStepId: z.string().uuid().nullable(),
+        performedRunStepId: z.string().uuid(),
+        relation: mappingRelationSchema,
+        reason: z.string().nullable(),
         notes: z.string().nullable(),
     })
     .strict();
@@ -162,6 +427,11 @@ export const trainingSessionResponseSchema = z
         ...trainingSessionCoreShape,
         activities: z.array(sessionActivityResponseSchema),
         painRecords: z.array(painRecordResponseSchema),
+        plannedLinks: z.array(sessionPlannedLinkResponseSchema),
+        activityMappings: z.array(activityMappingResponseSchema),
+        occurrenceMappings: z.array(occurrenceMappingResponseSchema),
+        setMappings: z.array(setMappingResponseSchema),
+        runStepMappings: z.array(runStepMappingResponseSchema),
     })
     .strict();
 
@@ -199,6 +469,72 @@ export const updateTrainingSessionRequestSchema = z
 
 export const startTrainingSessionRequestSchema = z.object({}).strict();
 
+export const startPlannedTrainingSessionRequestSchema = z
+    .object({
+        plannedSessionId: z.string().uuid(),
+        localDate: localDateSchema.optional(),
+        timeZone: timeZoneSchema.optional(),
+        title: titleSchema.nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+        tags: z.array(tagSchema).optional(),
+        readiness: preWorkoutReadinessRequestSchema.optional(),
+    })
+    .strict();
+
+const activityMappingRequestSchema = z
+    .object({
+        id: z.string().uuid(),
+        prescribedActivityId: z.string().uuid().nullable().optional(),
+        actualActivityId: z.string().uuid(),
+        relation: mappingRelationSchema,
+        reason: z.string().max(500).nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+    })
+    .strict();
+
+const occurrenceMappingRequestSchema = z
+    .object({
+        id: z.string().uuid(),
+        prescribedExerciseId: z.string().uuid().nullable().optional(),
+        occurrenceId: z.string().uuid(),
+        relation: mappingRelationSchema,
+        reason: z.string().max(500).nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+    })
+    .strict();
+
+const setMappingRequestSchema = z
+    .object({
+        id: z.string().uuid(),
+        prescribedSetId: z.string().uuid().nullable().optional(),
+        performedSetId: z.string().uuid(),
+        relation: mappingRelationSchema,
+        portion: z.string().nullable().optional(),
+        reason: z.string().max(500).nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+    })
+    .strict();
+
+const runStepMappingRequestSchema = z
+    .object({
+        id: z.string().uuid(),
+        prescribedRunStepId: z.string().uuid().nullable().optional(),
+        performedRunStepId: z.string().uuid(),
+        relation: mappingRelationSchema,
+        reason: z.string().max(500).nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+    })
+    .strict();
+
+export const recordSessionMappingsRequestSchema = z
+    .object({
+        activityMappings: z.array(activityMappingRequestSchema).optional(),
+        occurrenceMappings: z.array(occurrenceMappingRequestSchema).optional(),
+        setMappings: z.array(setMappingRequestSchema).optional(),
+        runStepMappings: z.array(runStepMappingRequestSchema).optional(),
+    })
+    .strict();
+
 export const completeTrainingSessionRequestSchema = z
     .object({
         endedAt: z.string().datetime().nullable().optional(),
@@ -215,7 +551,19 @@ export type TrainingSessionResponse = z.infer<typeof trainingSessionResponseSche
 export type TrainingSessionListResponse = z.infer<typeof trainingSessionListResponseSchema>;
 export type SessionActivityResponse = z.infer<typeof sessionActivityResponseSchema>;
 export type PainRecordResponse = z.infer<typeof painRecordResponseSchema>;
+export type SetGroupTypeValue = z.infer<typeof setGroupTypeSchema>;
+export type PerformedSetTypeValue = z.infer<typeof performedSetTypeSchema>;
+export type PerformedSetStatusValue = z.infer<typeof performedSetStatusSchema>;
+export type SetFailureReasonValue = z.infer<typeof setFailureReasonSchema>;
+export type PerformedSetMeasurementsRequest = z.infer<typeof performedSetMeasurementsRequestSchema>;
+export type PerformedSetRequest = z.infer<typeof performedSetRequestSchema>;
+export type ExerciseOccurrenceRequest = z.infer<typeof exerciseOccurrenceRequestSchema>;
+export type SetGroupRequest = z.infer<typeof setGroupRequestSchema>;
+export type StrengthActivityRequest = z.infer<typeof strengthActivityRequestSchema>;
 export type CreateTrainingSessionRequest = z.infer<typeof createTrainingSessionRequestSchema>;
 export type UpdateTrainingSessionRequest = z.infer<typeof updateTrainingSessionRequestSchema>;
 export type StartTrainingSessionRequest = z.infer<typeof startTrainingSessionRequestSchema>;
+export type StartPlannedTrainingSessionRequest = z.infer<typeof startPlannedTrainingSessionRequestSchema>;
+export type RecordSessionMappingsRequest = z.infer<typeof recordSessionMappingsRequestSchema>;
+export type MappingRelationValue = z.infer<typeof mappingRelationSchema>;
 export type CompleteTrainingSessionRequest = z.infer<typeof completeTrainingSessionRequestSchema>;

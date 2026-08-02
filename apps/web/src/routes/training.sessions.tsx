@@ -7,6 +7,8 @@ import { Archive, CheckCircle2, LoaderCircle, Pencil, Play, Plus, RotateCcw, Tim
 import type { TrainingSessionStatusValue, TrainingSessionSummary } from "@kinetix/types";
 
 import { SessionForm } from "@/components/training/session-form";
+import { SessionMappingsDetail } from "@/components/training/session-mappings-detail";
+import { StrengthActivityDetail } from "@/components/training/strength-activity-detail";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -286,6 +288,8 @@ function EditSession({
                 submitError={mutation.error}
                 submitLabel="Save changes"
             />
+            <StrengthActivityDetail activities={detail.data.activities} />
+            <SessionMappingsDetail session={detail.data} />
             {history.data && history.data.items.length > 0 ? (
                 <section className="grid gap-2">
                     <h3 className="text-sm font-medium">Recent history</h3>

@@ -14,6 +14,10 @@ import { DomainValidationError } from "#src/platform/domain/index";
 export const plannedSessionStatuses = ["planned", "completed", "partially_completed", "skipped", "cancelled"] as const;
 export type PlannedSessionStatus = (typeof plannedSessionStatuses)[number];
 
+/** Outcomes a linked training session can drive a planned session to (design 11.6). */
+export const plannedActualOutcomes = ["planned", "completed", "partially_completed"] as const;
+export type PlannedActualOutcome = (typeof plannedActualOutcomes)[number];
+
 export const skipCancelReasons = [
     "illness",
     "fatigue",
@@ -183,6 +187,25 @@ export class PlannedSession {
         });
     }
 
+    /**
+     * Recompute the outcome from a linked training session's mappings (design 11.6 steps 4–7). Unlike
+     * {@link complete}, this may run on an already-terminal session (e.g. reopening a completed training
+     * session marks the plan `partially_completed`), but it never overrides an explicit skip/cancel — a
+     * user's stated intent to skip or cancel outranks any derived coverage.
+     */
+    recomputeOutcome(outcome: PlannedActualOutcome, now: Date): this {
+        if (this.current.status === "skipped" || this.current.status === "cancelled") return this;
+        const status = normalizeOutcome(outcome);
+        if (this.current.status === status) return this;
+        return this.replace({
+            ...this.current,
+            status,
+            skipReason: null,
+            skipNotes: null,
+            updatedAt: isoTimestamp(now, "Planned session update time"),
+        });
+    }
+
     skip(input: SkipCancelInput, now: Date): this {
         return this.terminateWithReason("skipped", input, now);
     }
@@ -272,6 +295,14 @@ function normalizeStatus(value: PlannedSessionStatus): PlannedSessionStatus {
     if (!plannedSessionStatuses.includes(value))
         throw new DomainValidationError(`Unknown planned session status '${value}'`, {
             status: ["Unknown planned session status"],
+        });
+    return value;
+}
+
+function normalizeOutcome(value: PlannedActualOutcome): PlannedActualOutcome {
+    if (!plannedActualOutcomes.includes(value))
+        throw new DomainValidationError(`Unknown planned outcome '${value}'`, {
+            status: ["Unknown planned outcome"],
         });
     return value;
 }

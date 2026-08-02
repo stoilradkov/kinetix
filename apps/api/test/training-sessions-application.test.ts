@@ -9,7 +9,7 @@ import {
     type TrainingSessionResource,
     type TrainingSessionSummary,
 } from "#src/modules/training/application/index";
-import type { TrainingSessionState } from "#src/modules/training/domain/index";
+import type { ExerciseSnapshotV1, TrainingSessionState } from "#src/modules/training/domain/index";
 import {
     RevisionMutationService,
     VersionConflictError,
@@ -130,13 +130,275 @@ describe("training session application services", () => {
         const created = await fixture.commands.create({}, metadata);
         expect(created.createdAt).toBe(now.toISOString());
     });
+
+    it("resolves an immutable exercise snapshot through the catalog for new strength occurrences", async () => {
+        const fixture = createFixture();
+        const created = await fixture.commands.create(
+            {
+                activities: [
+                    {
+                        id: activityId(1),
+                        type: "strength",
+                        position: 0,
+                        strength: {
+                            occurrences: [
+                                {
+                                    id: activityId(2),
+                                    exerciseId: SQUAT,
+                                    position: 0,
+                                    performedSets: [
+                                        {
+                                            id: activityId(3),
+                                            position: 0,
+                                            setType: "working",
+                                            status: "completed",
+                                            measurements: {
+                                                reps: 5,
+                                                externalLoad: { value: 100, unit: "kg" },
+                                                rpe: 8,
+                                            },
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+            metadata,
+        );
+        const occurrence = created.activities[0]!.strength!.occurrences[0]!;
+        expect(occurrence.snapshot.name).toBe("Back Squat");
+        expect(occurrence.snapshot.exerciseId).toBe(SQUAT);
+        expect(occurrence.performedSets[0]!.measurements.externalLoad).toEqual({ value: 100, unit: "kg" });
+    });
+
+    it("rejects new work against an archived exercise", async () => {
+        const fixture = createFixture();
+        await expect(
+            fixture.commands.create(
+                {
+                    activities: [
+                        {
+                            id: activityId(1),
+                            type: "strength",
+                            position: 0,
+                            strength: { occurrences: [{ id: activityId(2), exerciseId: ARCHIVED, position: 0 }] },
+                        },
+                    ],
+                },
+                metadata,
+            ),
+        ).rejects.toMatchObject({ name: "ArchivedExerciseError" });
+    });
+
+    it("rejects a measurement the exercise does not support", async () => {
+        const fixture = createFixture();
+        await expect(
+            fixture.commands.create(
+                {
+                    activities: [
+                        {
+                            id: activityId(1),
+                            type: "strength",
+                            position: 0,
+                            strength: {
+                                occurrences: [
+                                    {
+                                        id: activityId(2),
+                                        exerciseId: SQUAT,
+                                        position: 0,
+                                        performedSets: [
+                                            {
+                                                id: activityId(3),
+                                                position: 0,
+                                                setType: "working",
+                                                status: "completed",
+                                                // Squat supports external_load, not distance.
+                                                measurements: { distance: { value: 100, unit: "m" } },
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                },
+                metadata,
+            ),
+        ).rejects.toThrow(/does not support/);
+    });
+
+    it("preserves an existing occurrence snapshot across edits and reorders/removes sets", async () => {
+        const fixture = createFixture();
+        const created = await fixture.commands.create(
+            {
+                activities: [
+                    {
+                        id: activityId(1),
+                        type: "strength",
+                        position: 0,
+                        strength: {
+                            occurrences: [
+                                {
+                                    id: activityId(2),
+                                    exerciseId: SQUAT,
+                                    position: 0,
+                                    performedSets: [
+                                        { id: activityId(3), position: 0, setType: "working", status: "completed" },
+                                        { id: activityId(4), position: 1, setType: "working", status: "completed" },
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+            metadata,
+        );
+        const originalVersion = created.activities[0]!.strength!.occurrences[0]!.snapshot.exerciseVersion;
+        const started = await fixture.commands.start(created.id, created.version, metadata);
+        // Keep only the second set, moved to position 0.
+        const updated = await fixture.commands.update(
+            started.id,
+            started.version,
+            {
+                activities: [
+                    {
+                        id: activityId(1),
+                        type: "strength",
+                        position: 0,
+                        strength: {
+                            occurrences: [
+                                {
+                                    id: activityId(2),
+                                    exerciseId: SQUAT,
+                                    position: 0,
+                                    performedSets: [
+                                        { id: activityId(4), position: 0, setType: "working", status: "completed" },
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+            metadata,
+        );
+        const occurrence = updated.activities[0]!.strength!.occurrences[0]!;
+        expect(occurrence.performedSets).toHaveLength(1);
+        expect(occurrence.performedSets[0]!.id).toBe(activityId(4));
+        expect(occurrence.snapshot.exerciseVersion).toBe(originalVersion);
+    });
+
+    it("computes objective effective load only through the snapshotted load model", async () => {
+        const fixture = createFixture();
+        const created = await fixture.commands.create(
+            {
+                activities: [
+                    {
+                        id: activityId(1),
+                        type: "strength",
+                        position: 0,
+                        strength: {
+                            occurrences: [
+                                {
+                                    id: activityId(2),
+                                    exerciseId: PULLUP,
+                                    position: 0,
+                                    performedSets: [
+                                        {
+                                            id: activityId(3),
+                                            position: 0,
+                                            setType: "working",
+                                            status: "completed",
+                                            measurements: {
+                                                reps: 8,
+                                                bodyweight: { value: 80, unit: "kg" },
+                                                addedLoad: { value: 10, unit: "kg" },
+                                            },
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                ],
+            },
+            metadata,
+        );
+        const set = created.activities[0]!.strength!.occurrences[0]!.performedSets[0]!;
+        expect(set.measurements.bodyweight).toEqual({ value: 80, unit: "kg" });
+        expect(set.measurements.addedLoad).toEqual({ value: 10, unit: "kg" });
+    });
 });
 
 function activityId(index: number): string {
     return `0198a4db-d8da-7000-8000-${index.toString(16).padStart(12, "0")}`;
 }
 
-function createFixture() {
+const SQUAT = "0198a4db-d8da-7000-8000-0000000000e1";
+const PULLUP = "0198a4db-d8da-7000-8000-0000000000e2";
+const ARCHIVED = "0198a4db-d8da-7000-8000-0000000000e3";
+
+function snapshotFor(exerciseId: string, overrides: Partial<ExerciseSnapshotV1> = {}): ExerciseSnapshotV1 {
+    return {
+        schemaVersion: 1,
+        exerciseId,
+        exerciseVersion: 1,
+        name: "Exercise",
+        equipmentTypeId: PROFILE,
+        movementPatternId: PROFILE,
+        classification: "compound",
+        laterality: "bilateral",
+        bodyPosition: "standing",
+        repetitionSemantics: "total",
+        loadModel: "external_only",
+        supportedMeasurements: ["repetitions", "external_load"],
+        muscles: [],
+        tagIds: [],
+        analyticsFamilyExerciseIds: [],
+        ...overrides,
+    };
+}
+
+function defaultCatalog() {
+    const exercises = new Map<string, { status: "active" | "archived"; snapshot: ExerciseSnapshotV1 }>([
+        [SQUAT, { status: "active", snapshot: snapshotFor(SQUAT, { name: "Back Squat" }) }],
+        [
+            PULLUP,
+            {
+                status: "active",
+                snapshot: snapshotFor(PULLUP, {
+                    name: "Pull-up",
+                    loadModel: "full_bodyweight_plus_added_minus_assistance",
+                    laterality: "bilateral",
+                    supportedMeasurements: ["repetitions", "bodyweight", "added_load", "assistance"],
+                }),
+            },
+        ],
+        [ARCHIVED, { status: "archived", snapshot: snapshotFor(ARCHIVED, { name: "Retired" }) }],
+    ]);
+    return {
+        resolveCurrentExercise: async (id: string) => {
+            const found = exercises.get(id);
+            if (!found) throw new Error(`unknown exercise ${id}`);
+            return {
+                requestedExerciseId: id,
+                resolvedExerciseId: id,
+                redirected: false,
+                exercise: { id, status: found.status, version: 1 } as never,
+            };
+        },
+        currentSnapshot: async (id: string) => {
+            const found = exercises.get(id);
+            if (!found) throw new Error(`unknown exercise ${id}`);
+            return found.snapshot;
+        },
+    };
+}
+
+function createFixture(catalog: ReturnType<typeof defaultCatalog> = defaultCatalog()) {
     const revisions = new FakeRevisionStore();
     const events = new FakeEvents();
     const unitOfWork: UnitOfWork<typeof transaction> = { execute: work => work(transaction) };
@@ -168,6 +430,7 @@ function createFixture() {
         repository,
         mutations,
         profileReader,
+        catalog,
         clock,
         generateId,
     });

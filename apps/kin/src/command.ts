@@ -58,6 +58,8 @@ import {
     createTrainingSessionRequestSchema,
     updateTrainingSessionRequestSchema,
     completeTrainingSessionRequestSchema,
+    startPlannedTrainingSessionRequestSchema,
+    recordSessionMappingsRequestSchema,
     trainingSessionListResponseSchema,
     trainingSessionResponseSchema,
     createTrainingInjuryRequestSchema,
@@ -1501,6 +1503,51 @@ function registerTrainingSessionCommands(training: Command, dependencies: Progra
             );
             outputTrainingSession(dependencies.output, result, options.json);
         });
+
+    sessions
+        .command("start-planned")
+        .description("Start an in-progress session from a planned session, freezing its resolved targets")
+        .requiredOption("--input <json>", "StartPlannedTrainingSessionRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
+            const input = startPlannedTrainingSessionRequestSchema.parse(parseJsonInput(options.input));
+            const result = trainingSessionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/start-planned`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                ),
+            );
+            outputTrainingSession(dependencies.output, result, options.json);
+        });
+
+    sessions
+        .command("map")
+        .description("Record planned/actual mappings for a session (substitutions, splits, combines)")
+        .argument("<session-id>", "Training session UUID")
+        .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
+        .requiredOption("--input <json>", "RecordSessionMappingsRequest JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                sessionId: string,
+                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const input = recordSessionMappingsRequestSchema.parse(parseJsonInput(options.input));
+                const result = trainingSessionResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/mappings`,
+                        mutationRequest("POST", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputTrainingSession(dependencies.output, result, options.json);
+            },
+        );
 
     sessions
         .command("update")

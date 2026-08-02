@@ -98,9 +98,15 @@ describe("training session contracts", () => {
                     feeling: null,
                     notes: null,
                     tags: [],
+                    strength: { occurrences: [], setGroups: [] },
                 },
             ],
             painRecords: [],
+            plannedLinks: [],
+            activityMappings: [],
+            occurrenceMappings: [],
+            setMappings: [],
+            runStepMappings: [],
         };
         expect(trainingSessionResponseSchema.parse(response)).toEqual(response);
     });
