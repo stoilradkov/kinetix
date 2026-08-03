@@ -30,8 +30,11 @@ const EXCLUSIVE_ACTUAL_RELATIONS: ReadonlySet<MappingRelation> = new Set([
 ]);
 
 export interface SessionPlannedLink {
-    /** The planned session this training session fulfils (design 11.6 step 1). */
-    readonly plannedSessionId: string;
+    /**
+     * The planned session this training session fulfils (design 11.6 step 1), or `null` when the frozen
+     * prescription came from a template or a previous workout and no planned session exists to recompute.
+     */
+    readonly plannedSessionId: string | null;
     /** Immutable planned prescription frozen at start. */
     readonly sourcePrescriptionId: string;
     /** Immutable resolved-execution prescription; equals {@link sourcePrescriptionId} when nothing resolved. */
@@ -87,7 +90,7 @@ export const EMPTY_SESSION_MAPPINGS: SessionMappingsState = {
 // --- inputs --------------------------------------------------------------------------------------
 
 export interface SessionPlannedLinkInput {
-    readonly plannedSessionId: string;
+    readonly plannedSessionId?: string | null;
     readonly sourcePrescriptionId: string;
     readonly resolvedPrescriptionId: string;
 }
@@ -144,7 +147,7 @@ export function normalizeSessionMappings(input: SessionMappingsInput): SessionMa
 
 function normalizePlannedLink(input: SessionPlannedLinkInput): SessionPlannedLink {
     return {
-        plannedSessionId: requiredUuid(input.plannedSessionId, "Planned session ID"),
+        plannedSessionId: optionalUuid(input.plannedSessionId, "Planned session ID"),
         sourcePrescriptionId: requiredUuid(input.sourcePrescriptionId, "Source prescription ID"),
         resolvedPrescriptionId: requiredUuid(input.resolvedPrescriptionId, "Resolved prescription ID"),
     };
@@ -274,6 +277,8 @@ export function validateSessionMappings(mappings: SessionMappingsState, actual: 
 function validatePlannedLinks(links: readonly SessionPlannedLink[]): void {
     const seen = new Set<string>();
     for (const link of links) {
+        // Template/previous references carry no planned session, so only planned-session links are deduped.
+        if (link.plannedSessionId === null) continue;
         if (seen.has(link.plannedSessionId))
             throw new DomainValidationError(`Duplicate planned session link '${link.plannedSessionId}'`, {
                 plannedLinks: ["A training session can link a planned session only once"],
@@ -376,6 +381,11 @@ function requiredUuid(value: string, name: string): string {
     const normalized = (value ?? "").trim();
     if (!UUID_PATTERN.test(normalized)) throw new DomainValidationError(`${name} must be a UUID`);
     return normalized;
+}
+
+function optionalUuid(value: string | null | undefined, name: string): string | null {
+    if (value == null) return null;
+    return requiredUuid(value, name);
 }
 
 function optionalText(value: string | null | undefined, name: string, maximumLength: number): string | null {

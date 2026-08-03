@@ -82,7 +82,17 @@ import {
     updateTrainingSessionRequestSchema,
     completeTrainingSessionRequestSchema,
     startPlannedTrainingSessionRequestSchema,
+    startEmptyTrainingSessionRequestSchema,
+    startTemplateTrainingSessionRequestSchema,
+    startPreviousTrainingSessionRequestSchema,
+    addSessionActivityRequestSchema,
+    reorderSessionActivitiesRequestSchema,
+    substituteOccurrenceRequestSchema,
+    recordPerformedSetRequestSchema,
+    updatePerformedSetRequestSchema,
     recordSessionMappingsRequestSchema,
+    activeTrainingSessionResponseSchema,
+    completionPreviewResponseSchema,
     trainingSessionListResponseSchema,
     trainingSessionResponseSchema,
     type TrainingSessionResponse,
@@ -720,6 +730,127 @@ export async function transitionTrainingSession(
     );
 }
 
+export function activeTrainingSessionQueryOptions(sessionId: string | null) {
+    return queryOptions({
+        queryKey: ["training-session-active", sessionId],
+        enabled: sessionId !== null,
+        queryFn: async () =>
+            activeTrainingSessionResponseSchema.parse(
+                await apiRequest(`/training/sessions/${encodeURIComponent(sessionId!)}/active`),
+            ),
+    });
+}
+
+export function completionPreviewQueryOptions(sessionId: string | null, enabled = true) {
+    return queryOptions({
+        queryKey: ["training-session-completion", sessionId],
+        enabled: sessionId !== null && enabled,
+        queryFn: async () =>
+            completionPreviewResponseSchema.parse(
+                await apiRequest(`/training/sessions/${encodeURIComponent(sessionId!)}/completion-preview`),
+            ),
+    });
+}
+
+export async function startEmptyTrainingSession(input: unknown = {}): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest("/training/sessions/start-empty", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(startEmptyTrainingSessionRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function startTemplateTrainingSession(input: unknown): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest("/training/sessions/start-template", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(startTemplateTrainingSessionRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function startPreviousTrainingSession(input: unknown): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest("/training/sessions/start-previous", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(startPreviousTrainingSessionRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function addSessionActivity(
+    session: Pick<TrainingSessionSummary, "id" | "version">,
+    input: unknown,
+): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest(`/training/sessions/${encodeURIComponent(session.id)}/activities`, {
+            method: "POST",
+            headers: mutationHeaders(session.version, crypto.randomUUID()),
+            body: JSON.stringify(addSessionActivityRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function reorderSessionActivities(
+    session: Pick<TrainingSessionSummary, "id" | "version">,
+    input: unknown,
+): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest(`/training/sessions/${encodeURIComponent(session.id)}/activities/reorder`, {
+            method: "POST",
+            headers: mutationHeaders(session.version, crypto.randomUUID()),
+            body: JSON.stringify(reorderSessionActivitiesRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function substituteOccurrence(
+    session: Pick<TrainingSessionSummary, "id" | "version">,
+    input: unknown,
+): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest(`/training/sessions/${encodeURIComponent(session.id)}/occurrences/substitute`, {
+            method: "POST",
+            headers: mutationHeaders(session.version, crypto.randomUUID()),
+            body: JSON.stringify(substituteOccurrenceRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function recordPerformedSet(
+    session: Pick<TrainingSessionSummary, "id" | "version">,
+    input: unknown,
+): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest(`/training/sessions/${encodeURIComponent(session.id)}/strength/sets`, {
+            method: "POST",
+            headers: mutationHeaders(session.version, crypto.randomUUID()),
+            body: JSON.stringify(recordPerformedSetRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updatePerformedSet(
+    session: Pick<TrainingSessionSummary, "id" | "version">,
+    setId: string,
+    input: unknown,
+): Promise<TrainingSessionResponse> {
+    return trainingSessionResponseSchema.parse(
+        await apiRequest(
+            `/training/sessions/${encodeURIComponent(session.id)}/strength/sets/${encodeURIComponent(setId)}`,
+            {
+                method: "PATCH",
+                headers: mutationHeaders(session.version, crypto.randomUUID()),
+                body: JSON.stringify(updatePerformedSetRequestSchema.parse(input)),
+            },
+        ),
+    );
+}
+
 export function exerciseListQueryOptions(search: string, status: "active" | "archived" | "all") {
     return queryOptions({
         queryKey: ["training", "exercises", { search, status }],
@@ -898,14 +1029,33 @@ function mutationHeaders(version?: number, idempotencyKey?: string): Headers {
     return headers;
 }
 
+/** An API error that preserves the HTTP status so callers can react (e.g. 409 reconciliation). */
+export class ApiError extends Error {
+    constructor(
+        readonly status: number,
+        message: string,
+    ) {
+        super(message);
+        this.name = "ApiError";
+    }
+}
+
+/** Thrown on HTTP 409 (VERSION_CONFLICT): a stale write; the caller must reload and reconcile. */
+export class VersionConflictError extends ApiError {
+    constructor(message: string) {
+        super(409, message);
+        this.name = "VersionConflictError";
+    }
+}
+
 async function apiRequest(path: string, init?: RequestInit): Promise<unknown> {
     const response = await fetch(`${apiUrl}${path}`, init);
     const body: unknown = await response.json();
     if (!response.ok) {
         const parsed = apiErrorSchema.safeParse(body);
-        throw new Error(
-            parsed.success ? parsed.data.message : `Kinetix API request failed with HTTP ${response.status}`,
-        );
+        const message = parsed.success ? parsed.data.message : `Kinetix API request failed with HTTP ${response.status}`;
+        if (response.status === 409) throw new VersionConflictError(message);
+        throw new ApiError(response.status, message);
     }
     return body;
 }

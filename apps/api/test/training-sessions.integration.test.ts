@@ -627,4 +627,86 @@ describe.runIf(testDatabaseUrl)("training session PostgreSQL persistence", () =>
         expect(orphaned).toHaveLength(0);
         await connection.db.delete(activityMappings).where(eq(activityMappings.sessionId, sessionId));
     });
+
+    it("round-trips a reference link with no planned session (template/previous start)", async () => {
+        // A frozen prescription with no planned session behind it (template/previous start source).
+        const referenceRxId = randomUUID();
+        await connection.db.insert(sessionPrescriptions).values({ id: referenceRxId, kind: "planned" });
+
+        const sessionId = randomUUID();
+        const state = TrainingSession.create(
+            {
+                id: sessionId,
+                profileId,
+                localDate: "2026-08-02",
+                timeZone: "Europe/Sofia",
+                mappings: {
+                    plannedLinks: [{ sourcePrescriptionId: referenceRxId, resolvedPrescriptionId: referenceRxId }],
+                },
+            },
+            now,
+        ).state;
+        await unitOfWork.execute(tx =>
+            repository.create(TRAINING_SESSION_ENTITY_TYPE, sessionId as never, state, 1, tx),
+        );
+
+        const reloaded = await repository.readSession(sessionId as never);
+        expect(reloaded!.plannedLinks).toEqual([
+            { plannedSessionId: null, sourcePrescriptionId: referenceRxId, resolvedPrescriptionId: referenceRxId },
+        ]);
+        // The session is cleaned up by profile in afterAll; the immutable prescription row is left as-is.
+    });
+
+    it("drives the live flow: start empty → add exercise → record set → preview → complete", async () => {
+        const started = await commands.startEmpty({ title: "Live lift" }, metadata);
+        expect(started.status).toBe("in_progress");
+
+        const activityId = randomUUID();
+        const occurrenceId = randomUUID();
+        const withExercise = await commands.addActivity(
+            started.id,
+            started.version,
+            {
+                activity: {
+                    id: activityId,
+                    type: "strength",
+                    position: 0,
+                    strength: { occurrences: [{ id: occurrenceId, exerciseId: benchId, position: 0 }] },
+                },
+            },
+            metadata,
+        );
+        expect(withExercise.activities[0]?.strength?.occurrences[0]?.snapshot.name).toBe("Bench Press");
+
+        const setId = randomUUID();
+        const withSet = await commands.recordPerformedSet(
+            withExercise.id,
+            withExercise.version,
+            {
+                activityId,
+                occurrenceId,
+                set: {
+                    id: setId,
+                    position: 0,
+                    setType: "working",
+                    status: "completed",
+                    measurements: { reps: 8, externalLoad: { value: 60, unit: "kg" } },
+                },
+                mapping: { relation: "added" },
+            },
+            metadata,
+        );
+        expect(withSet.activities[0]?.strength?.occurrences[0]?.performedSets).toHaveLength(1);
+        expect(withSet.setMappings[0]).toMatchObject({ performedSetId: setId, relation: "added" });
+
+        const activeView = await commands.readActiveView(withSet.id);
+        expect(activeView?.plans).toEqual([]);
+
+        const preview = await commands.previewCompletion(withSet.id);
+        expect(preview.plannedOutcomes).toEqual([]);
+
+        const completed = await commands.complete(withSet.id, withSet.version, {}, metadata);
+        expect(completed.status).toBe("completed");
+        expect(completed.endedAt).not.toBeNull();
+    });
 });

@@ -26,6 +26,7 @@ import {
     type CreateTrainingSessionInput,
     type ExerciseOccurrenceInput,
     type IdMinter,
+    type MappingRelation,
     type MaxBasis,
     type OccurrenceMappingInput,
     type PainRecordInput,
@@ -34,7 +35,9 @@ import {
     type PostWorkoutRatings,
     type PreWorkoutReadiness,
     type RunStepMappingInput,
+    type SessionMappingsInput,
     type SessionPlannedLink,
+    type SessionPlannedLinkInput,
     type SessionPrescriptionState,
     type SessionActivityInput,
     type SetGroupInput,
@@ -45,6 +48,7 @@ import {
     type UpdateTrainingSessionInput,
 } from "#src/modules/training/domain/index";
 import type { ExerciseSnapshotV1 } from "#src/modules/training/domain/exercise-definition";
+import { sessionToPrescriptionDraft } from "#src/modules/training/application/session-to-prescription";
 import type { TrainingExerciseCatalogPort } from "#src/modules/training/application/exercises";
 import type {
     PlannedSessionCommands,
@@ -54,6 +58,7 @@ import type {
     PrescriptionPublisher,
     SessionPrescriptionRepository,
 } from "#src/modules/training/application/session-prescriptions";
+import type { WorkoutTemplateRepository } from "#src/modules/training/application/workout-templates";
 import type { TrainingTargetContextReader } from "#src/modules/training/application/training-maxes";
 import type { EquipmentIncrementQueries } from "#src/modules/training/application/equipment-increments";
 import type { ProfileReader } from "#src/modules/profile/index";
@@ -176,7 +181,8 @@ export interface TrainingSessionPlanningPorts<Transaction> {
     readonly plannedSessions: Pick<PlannedSessionRepository<Transaction>, "readSession">;
     readonly plannedCommands: Pick<PlannedSessionCommands<Transaction>, "recomputeOutcomeWithinTransaction">;
     readonly prescriptions: Pick<SessionPrescriptionRepository<Transaction>, "loadTree" | "loadTrees">;
-    readonly publisher: Pick<PrescriptionPublisher<Transaction>, "publishPreparedState">;
+    readonly publisher: Pick<PrescriptionPublisher<Transaction>, "publishPreparedState" | "publish">;
+    readonly templates: Pick<WorkoutTemplateRepository<Transaction>, "readTemplate">;
     readonly targetContext: TrainingTargetContextReader;
     readonly increments: Pick<EquipmentIncrementQueries, "resolveForExercise">;
 }
@@ -210,6 +216,119 @@ export interface RecordSessionMappingsCommand {
     readonly occurrenceMappings?: readonly OccurrenceMappingInput[];
     readonly setMappings?: readonly SetMappingInput[];
     readonly runStepMappings?: readonly RunStepMappingInput[];
+}
+
+/** Metadata overrides shared by every start-from source (design 11.6; PRD UX-3). */
+export interface StartTrainingSessionOverrides {
+    readonly id?: string;
+    readonly localDate?: string;
+    readonly timeZone?: string;
+    readonly title?: string | null;
+    readonly notes?: string | null;
+    readonly tags?: readonly string[];
+    readonly readiness?: Partial<PreWorkoutReadiness>;
+}
+
+export type StartEmptyTrainingSessionCommand = StartTrainingSessionOverrides;
+
+export interface StartTemplateTrainingSessionCommand extends StartTrainingSessionOverrides {
+    readonly templateId: string;
+}
+
+export interface StartPreviousTrainingSessionCommand extends StartTrainingSessionOverrides {
+    readonly sourceSessionId: string;
+}
+
+/** Append one activity to a session's ordered activity list (design 18.2 child command). */
+export interface AddSessionActivityCommand {
+    readonly activity: SessionActivityCommandInput;
+}
+
+/** Reorder a session's activities by supplying the complete ordered list of activity IDs. */
+export interface ReorderSessionActivitiesCommand {
+    readonly activityIds: readonly string[];
+}
+
+/** Substitute an occurrence's exercise, recording a `substituted` occurrence mapping (PRD AC-4). */
+export interface SubstituteOccurrenceCommand {
+    readonly activityId: string;
+    readonly occurrenceId: string;
+    readonly newExerciseId: string;
+    readonly prescribedExerciseId?: string | null;
+    readonly reason?: string | null;
+}
+
+/** A planned/actual set mapping attached to a recorded set; the performed set ID is filled server-side. */
+export interface PerformedSetMappingDraft {
+    readonly id?: string;
+    readonly prescribedSetId?: string | null;
+    readonly relation: MappingRelation;
+    readonly portion?: string | null;
+    readonly reason?: string | null;
+    readonly notes?: string | null;
+}
+
+/** Record (create or replace) one performed set inside an occurrence, with an optional mapping. */
+export interface RecordPerformedSetCommand {
+    readonly activityId: string;
+    readonly occurrenceId: string;
+    readonly set: PerformedSetInput;
+    readonly mapping?: PerformedSetMappingDraft | null;
+}
+
+/** Patch an existing performed set, optionally replacing its mapping. */
+export interface UpdatePerformedSetCommand extends Partial<Omit<PerformedSetInput, "id">> {
+    readonly mapping?: PerformedSetMappingDraft | null;
+}
+
+/** One frozen prescription a live session maps against (source planned/template + resolved execution). */
+export interface ActiveSessionPlan {
+    readonly referencePrescriptionId: string;
+    readonly plannedSessionId: string | null;
+    readonly prescription: SessionPrescriptionState;
+}
+
+/** The complete active-session view returned in a bounded query (session tree + frozen plan[s]). */
+export interface ActiveTrainingSessionView extends TrainingSessionResource {
+    readonly plans: readonly ActiveSessionPlan[];
+}
+
+export interface CompletionPreviewIssue {
+    readonly code: string;
+    readonly severity: "warning" | "blocker";
+    readonly message: string;
+    readonly activityId: string | null;
+    readonly occurrenceId: string | null;
+}
+
+export interface CompletionPreviewOutcome {
+    readonly plannedSessionId: string;
+    readonly currentStatus: string | null;
+    readonly projectedStatus: PlannedActualOutcome;
+    readonly prescribedSetCount: number;
+    readonly coveredSetCount: number;
+}
+
+/** A side-effect-free preview shown before completion (design 11.6; PRD UX-3 completion review). */
+export interface CompletionPreview {
+    readonly issues: readonly CompletionPreviewIssue[];
+    readonly plannedOutcomes: readonly CompletionPreviewOutcome[];
+}
+
+/** Raised when starting from a template that does not exist or has no published prescription. */
+export class TemplateUnavailableError extends ApplicationNotFoundError {
+    constructor(readonly templateId: string) {
+        super(`Workout template ${templateId} was not found`, { templateId });
+        this.name = "TemplateUnavailableError";
+    }
+}
+
+/** Raised when repeating a previous session that does not exist. */
+export class PreviousSessionUnavailableError extends ApplicationNotFoundError {
+    constructor(readonly sourceSessionId: string) {
+        super(`Previous training session ${sourceSessionId} was not found`, { sourceSessionId });
+        this.name = "PreviousSessionUnavailableError";
+    }
 }
 
 /** Raised when planned/actual mapping features are used but their collaborators were not wired. */
@@ -478,26 +597,18 @@ export class TrainingSessionCommands<Transaction = unknown> {
             if (!planned) throw new PlannedSessionUnavailableError(command.plannedSessionId);
             const plannedTree = await planning.prescriptions.loadTree(planned.currentPrescriptionId, activeTransaction);
             if (!plannedTree) throw new PlannedSessionUnavailableError(command.plannedSessionId);
-
-            const context = await this.buildResolutionContext(plannedTree, planned.profileId, at);
-            const resolution = resolveExecutionPrescription(plannedTree, context, this.minter(), now);
-            let resolvedPrescriptionId = planned.currentPrescriptionId;
-            if (resolution.prescription !== null) {
-                const persisted = await planning.publisher.publishPreparedState(
-                    resolution.prescription.state,
-                    metadata,
-                    activeTransaction,
-                );
-                resolvedPrescriptionId = persisted.id;
-            }
-
-            const link: SessionPlannedLink = {
-                plannedSessionId: planned.id,
-                sourcePrescriptionId: planned.currentPrescriptionId,
-                resolvedPrescriptionId,
-            };
+            const link = await this.freezeReferenceLink(
+                plannedTree,
+                planned.currentPrescriptionId,
+                planned.profileId,
+                planned.id,
+                at,
+                now,
+                metadata,
+                activeTransaction,
+            );
             const timeZone = command.timeZone ?? planned.timeZone ?? profile.timeZone;
-            const session = TrainingSession.create(
+            return this.createStartedSession(
                 {
                     id: command.id ?? this.generateId(),
                     profileId: planned.profileId,
@@ -511,17 +622,346 @@ export class TrainingSessionCommands<Transaction = unknown> {
                     mappings: { plannedLinks: [link] },
                 },
                 now,
-            ).start(now);
-            await this.runtime.mutations.create({
-                entityType: TRAINING_SESSION_ENTITY_TYPE,
-                entityId: entityId(session.state.id),
-                state: session.state,
-                metadata: revisionMetadata(metadata, "Started training session from plan"),
-                events: [this.event("started", session.state, 1, metadata, now)],
-                transaction: activeTransaction,
-            });
-            return this.requiredResource(session.state.id, activeTransaction);
+                metadata,
+                activeTransaction,
+                "Started training session from plan",
+            );
         });
+    }
+
+    /** Start an empty in-progress session (no plan or template) — create + start in one revision. */
+    async startEmpty(
+        command: StartEmptyTrainingSessionCommand,
+        metadata: TrainingSessionMutationMetadata,
+        transaction?: Transaction,
+    ): Promise<TrainingSessionResource> {
+        const profile = await this.runtime.profileReader.getActiveProfile();
+        const now = this.clock.now();
+        const timeZone = command.timeZone ?? profile.timeZone;
+        return this.createStartedSession(
+            {
+                id: command.id ?? this.generateId(),
+                profileId: profile.id,
+                localDate: command.localDate ?? localDateInZone(now, timeZone),
+                timeZone,
+                title: command.title ?? null,
+                notes: command.notes ?? null,
+                tags: command.tags ?? [],
+                readiness: command.readiness,
+            },
+            now,
+            metadata,
+            transaction,
+            "Started empty training session",
+        );
+    }
+
+    /**
+     * Start an in-progress session from a published workout template. The template's immutable
+     * prescription is the frozen source; percentage targets resolve into an immutable resolved-execution
+     * prescription just like {@link startPlanned}, but the reference link carries no planned session.
+     */
+    async startFromTemplate(
+        command: StartTemplateTrainingSessionCommand,
+        metadata: TrainingSessionMutationMetadata,
+        transaction?: Transaction,
+    ): Promise<TrainingSessionResource> {
+        const planning = this.requirePlanning();
+        const profile = await this.runtime.profileReader.getActiveProfile();
+        const now = this.clock.now();
+        const at = now.toISOString();
+        const templateId = validEntityId(command.templateId);
+        return this.inTransaction(transaction, async activeTransaction => {
+            const template = await planning.templates.readTemplate(templateId, activeTransaction);
+            if (!template) throw new TemplateUnavailableError(command.templateId);
+            const sourceTree = await planning.prescriptions.loadTree(
+                template.currentPrescriptionId,
+                activeTransaction,
+            );
+            if (!sourceTree) throw new TemplateUnavailableError(command.templateId);
+            const link = await this.freezeReferenceLink(
+                sourceTree,
+                template.currentPrescriptionId,
+                template.profileId,
+                null,
+                at,
+                now,
+                metadata,
+                activeTransaction,
+            );
+            const timeZone = command.timeZone ?? profile.timeZone;
+            return this.createStartedSession(
+                {
+                    id: command.id ?? this.generateId(),
+                    profileId: profile.id,
+                    localDate: command.localDate ?? localDateInZone(now, timeZone),
+                    timeZone,
+                    title: command.title ?? template.name ?? null,
+                    notes: command.notes ?? null,
+                    tags: command.tags ?? [],
+                    readiness: command.readiness,
+                    mappings: { plannedLinks: [link] },
+                },
+                now,
+                metadata,
+                activeTransaction,
+                "Started training session from template",
+            );
+        });
+    }
+
+    /**
+     * Start an in-progress session by repeating a previous session's performed strength work. The prior
+     * session's actuals are synthesized into a fresh immutable `planned` prescription that becomes the
+     * frozen reference; when there is nothing repeatable, the new session simply starts empty.
+     */
+    async startFromPrevious(
+        command: StartPreviousTrainingSessionCommand,
+        metadata: TrainingSessionMutationMetadata,
+        transaction?: Transaction,
+    ): Promise<TrainingSessionResource> {
+        const planning = this.requirePlanning();
+        const profile = await this.runtime.profileReader.getActiveProfile();
+        const now = this.clock.now();
+        const at = now.toISOString();
+        const sourceId = validEntityId(command.sourceSessionId);
+        return this.inTransaction(transaction, async activeTransaction => {
+            const previous = await this.runtime.repository.readSession(sourceId, activeTransaction);
+            if (!previous) throw new PreviousSessionUnavailableError(command.sourceSessionId);
+            const draft = sessionToPrescriptionDraft(previous.activities);
+            const plannedLinks: SessionPlannedLinkInput[] = [];
+            if (draft !== null) {
+                const published = await planning.publisher.publish({ draft }, metadata, activeTransaction);
+                plannedLinks.push(
+                    await this.freezeReferenceLink(
+                        published,
+                        published.id,
+                        profile.id,
+                        null,
+                        at,
+                        now,
+                        metadata,
+                        activeTransaction,
+                    ),
+                );
+            }
+            const timeZone = command.timeZone ?? previous.timeZone ?? profile.timeZone;
+            return this.createStartedSession(
+                {
+                    id: command.id ?? this.generateId(),
+                    profileId: profile.id,
+                    localDate: command.localDate ?? localDateInZone(now, timeZone),
+                    timeZone,
+                    title: command.title ?? previous.title ?? null,
+                    notes: command.notes ?? null,
+                    tags: command.tags ?? [],
+                    readiness: command.readiness,
+                    ...(plannedLinks.length > 0 ? { mappings: { plannedLinks } } : {}),
+                },
+                now,
+                metadata,
+                activeTransaction,
+                "Started training session from previous workout",
+            );
+        });
+    }
+
+    /** Append one activity to a session's ordered activity list (design 18.2). */
+    addActivity(
+        id: string,
+        expectedVersion: number | undefined,
+        command: AddSessionActivityCommand,
+        metadata: TrainingSessionMutationMetadata,
+        transaction?: Transaction,
+    ): Promise<TrainingSessionResource> {
+        return this.mutateTree(
+            id,
+            expectedVersion,
+            metadata,
+            transaction,
+            "Added session activity",
+            state => ({ activities: [...stateToCommandActivities(state.activities), command.activity] }),
+        );
+    }
+
+    /** Reorder a session's activities to match the supplied complete ordered list of activity IDs. */
+    reorderActivities(
+        id: string,
+        expectedVersion: number | undefined,
+        command: ReorderSessionActivitiesCommand,
+        metadata: TrainingSessionMutationMetadata,
+        transaction?: Transaction,
+    ): Promise<TrainingSessionResource> {
+        return this.mutateTree(id, expectedVersion, metadata, transaction, "Reordered session activities", state => {
+            const byId = new Map(stateToCommandActivities(state.activities).map(activity => [activity.id, activity]));
+            if (command.activityIds.length !== byId.size || command.activityIds.some(activityId => !byId.has(activityId)))
+                throw new ApplicationValidationError("The reorder list must contain every activity exactly once", {
+                    activityIds: ["The reorder list must contain every activity exactly once"],
+                });
+            const activities = command.activityIds.map((activityId, index) => ({
+                ...byId.get(activityId)!,
+                position: index,
+            }));
+            return { activities };
+        });
+    }
+
+    /** Substitute an occurrence's exercise and record a `substituted` occurrence mapping (PRD AC-4). */
+    substituteOccurrence(
+        id: string,
+        expectedVersion: number | undefined,
+        command: SubstituteOccurrenceCommand,
+        metadata: TrainingSessionMutationMetadata,
+        transaction?: Transaction,
+    ): Promise<TrainingSessionResource> {
+        return this.mutateTree(id, expectedVersion, metadata, transaction, "Substituted exercise", state => {
+            const activities = stateToCommandActivities(state.activities);
+            const activity = activities.find(candidate => candidate.id === command.activityId);
+            const occurrence = activity?.strength?.occurrences?.find(item => item.id === command.occurrenceId);
+            if (!activity || !occurrence)
+                throw new ApplicationValidationError("The occurrence to substitute was not found in this session", {
+                    occurrenceId: ["The occurrence to substitute was not found in this session"],
+                });
+            const nextOccurrences = activity.strength!.occurrences!.map(item =>
+                item.id === command.occurrenceId ? { ...item, exerciseId: command.newExerciseId } : item,
+            );
+            const nextActivities = activities.map(candidate =>
+                candidate.id === command.activityId
+                    ? { ...candidate, strength: { ...candidate.strength!, occurrences: nextOccurrences } }
+                    : candidate,
+            );
+            // A `substituted` mapping needs the prescribed exercise it replaces. Use the explicit id or the
+            // one an existing occurrence mapping already carries; a free swap with no plan records no mapping.
+            const existing = state.occurrenceMappings.find(mapping => mapping.occurrenceId === command.occurrenceId);
+            const prescribedExerciseId = command.prescribedExerciseId ?? existing?.prescribedExerciseId ?? null;
+            const mappings =
+                prescribedExerciseId !== null
+                    ? replaceOccurrenceMapping(state, command.occurrenceId, {
+                          id: this.generateId(),
+                          occurrenceId: command.occurrenceId,
+                          prescribedExerciseId,
+                          relation: "substituted",
+                          reason: command.reason ?? null,
+                      })
+                    : undefined;
+            return { activities: nextActivities, mappings };
+        });
+    }
+
+    /** Record (create or replace) one performed set inside an occurrence, with an optional mapping. */
+    recordPerformedSet(
+        id: string,
+        expectedVersion: number | undefined,
+        command: RecordPerformedSetCommand,
+        metadata: TrainingSessionMutationMetadata,
+        transaction?: Transaction,
+    ): Promise<TrainingSessionResource> {
+        return this.mutateTree(id, expectedVersion, metadata, transaction, "Recorded performed set", state => {
+            const activities = stateToCommandActivities(state.activities);
+            const activity = activities.find(candidate => candidate.id === command.activityId);
+            const occurrence = activity?.strength?.occurrences?.find(item => item.id === command.occurrenceId);
+            if (!activity || !occurrence)
+                throw new ApplicationValidationError("The occurrence for this set was not found in this session", {
+                    occurrenceId: ["The occurrence for this set was not found in this session"],
+                });
+            const performedSets = upsertById(occurrence.performedSets ?? [], command.set);
+            const nextActivities = activities.map(candidate =>
+                candidate.id === command.activityId
+                    ? {
+                          ...candidate,
+                          strength: {
+                              ...candidate.strength!,
+                              occurrences: candidate.strength!.occurrences!.map(item =>
+                                  item.id === command.occurrenceId ? { ...item, performedSets } : item,
+                              ),
+                          },
+                      }
+                    : candidate,
+            );
+            const mappings =
+                command.mapping != null
+                    ? replaceSetMapping(state, command.set.id, {
+                          id: command.mapping.id ?? this.generateId(),
+                          performedSetId: command.set.id,
+                          prescribedSetId: command.mapping.prescribedSetId ?? null,
+                          relation: command.mapping.relation,
+                          portion: command.mapping.portion ?? null,
+                          reason: command.mapping.reason ?? null,
+                          notes: command.mapping.notes ?? null,
+                      })
+                    : undefined;
+            return { activities: nextActivities, mappings };
+        });
+    }
+
+    /** Patch an existing performed set (found by ID across occurrences), optionally updating its mapping. */
+    updatePerformedSet(
+        id: string,
+        expectedVersion: number | undefined,
+        setId: string,
+        command: UpdatePerformedSetCommand,
+        metadata: TrainingSessionMutationMetadata,
+        transaction?: Transaction,
+    ): Promise<TrainingSessionResource> {
+        const { mapping, ...patch } = command;
+        return this.mutateTree(id, expectedVersion, metadata, transaction, "Updated performed set", state => {
+            let found = false;
+            const activities = stateToCommandActivities(state.activities).map(activity => {
+                if (activity.strength == null) return activity;
+                const occurrences = activity.strength.occurrences?.map(occurrence => ({
+                    ...occurrence,
+                    performedSets: (occurrence.performedSets ?? []).map(set => {
+                        if (set.id !== setId) return set;
+                        found = true;
+                        return { ...set, ...patch };
+                    }),
+                }));
+                return { ...activity, strength: { ...activity.strength, occurrences } };
+            });
+            if (!found)
+                throw new ApplicationValidationError("The performed set to update was not found in this session", {
+                    setId: ["The performed set to update was not found in this session"],
+                });
+            const mappings =
+                mapping != null
+                    ? replaceSetMapping(state, setId, {
+                          id: mapping.id ?? this.generateId(),
+                          performedSetId: setId,
+                          prescribedSetId: mapping.prescribedSetId ?? null,
+                          relation: mapping.relation,
+                          portion: mapping.portion ?? null,
+                          reason: mapping.reason ?? null,
+                          notes: mapping.notes ?? null,
+                      })
+                    : undefined;
+            return { activities, mappings };
+        });
+    }
+
+    /**
+     * Load the complete active-session view in a bounded query: the session tree plus every frozen
+     * prescription it maps against (source planned/template + resolved execution), so the live UI can
+     * render planned-versus-actual without extra round trips (design 18.3; PRD UX-3).
+     */
+    async readActiveView(id: string, transaction?: Transaction): Promise<ActiveTrainingSessionView | null> {
+        const sessionId = validEntityId(id);
+        const resource = await this.runtime.repository.readSession(sessionId, transaction);
+        if (!resource) return null;
+        const plans = await this.loadReferencePlans(resource, transaction);
+        return { ...resource, plans };
+    }
+
+    /**
+     * Preview a completion without mutating: surface advisory issues (empty activities, skipped/partial
+     * sets, uncovered prescribed sets) and the planned-session outcome each linked plan would receive
+     * (design 11.6). The UI shows this before the user leaves the active flow (PRD UX-3).
+     */
+    async previewCompletion(id: string, transaction?: Transaction): Promise<CompletionPreview> {
+        const sessionId = validEntityId(id);
+        const resource = await this.runtime.repository.readSession(sessionId, transaction);
+        if (!resource) throw new TrainingSessionNotFoundError(id);
+        const plans = await this.loadReferencePlans(resource, transaction);
+        return { issues: completionIssues(resource, plans), plannedOutcomes: this.projectedOutcomes(resource, plans) };
     }
 
     /**
@@ -615,6 +1055,163 @@ export class TrainingSessionCommands<Transaction = unknown> {
         });
     }
 
+    /** Create a fresh session already moved to `in_progress`, persisting one revision. */
+    private createStartedSession(
+        input: CreateTrainingSessionInput,
+        now: Date,
+        metadata: TrainingSessionMutationMetadata,
+        transaction: Transaction | undefined,
+        summary: string,
+    ): Promise<TrainingSessionResource> {
+        return this.inTransaction(transaction, async activeTransaction => {
+            const session = TrainingSession.create(input, now).start(now);
+            await this.runtime.mutations.create({
+                entityType: TRAINING_SESSION_ENTITY_TYPE,
+                entityId: entityId(session.state.id),
+                state: session.state,
+                metadata: revisionMetadata(metadata, summary),
+                events: [this.event("started", session.state, 1, metadata, now)],
+                transaction: activeTransaction,
+            });
+            return this.requiredResource(session.state.id, activeTransaction);
+        });
+    }
+
+    /**
+     * Freeze a prescription reference for a starting session: resolve percentage targets into an
+     * immutable resolved-execution prescription when needed, and return the link binding the frozen
+     * source + resolved IDs to an optional planned session.
+     */
+    private async freezeReferenceLink(
+        sourceTree: SessionPrescriptionState,
+        sourcePrescriptionId: string,
+        profileId: string,
+        plannedSessionId: string | null,
+        at: string,
+        now: Date,
+        metadata: TrainingSessionMutationMetadata,
+        transaction: Transaction,
+    ): Promise<SessionPlannedLinkInput> {
+        const planning = this.requirePlanning();
+        const context = await this.buildResolutionContext(sourceTree, profileId, at);
+        const resolution = resolveExecutionPrescription(sourceTree, context, this.minter(), now);
+        let resolvedPrescriptionId = sourcePrescriptionId;
+        if (resolution.prescription !== null) {
+            const persisted = await planning.publisher.publishPreparedState(
+                resolution.prescription.state,
+                metadata,
+                transaction,
+            );
+            resolvedPrescriptionId = persisted.id;
+        }
+        return { plannedSessionId, sourcePrescriptionId, resolvedPrescriptionId };
+    }
+
+    /**
+     * Shared granular-mutation flow: load under the expected version, let a pure transform produce the
+     * next activity tree and/or mapping tree, re-resolve occurrence snapshots, validate any prescribed
+     * mapping references, then save through the aggregate's whole-tree update so the root version advances.
+     */
+    private mutateTree(
+        id: string,
+        expectedVersion: number | undefined,
+        metadata: TrainingSessionMutationMetadata,
+        transaction: Transaction | undefined,
+        summary: string,
+        transform: (state: TrainingSessionState) => {
+            activities?: readonly SessionActivityCommandInput[];
+            mappings?: SessionMappingsInput;
+        },
+    ): Promise<TrainingSessionResource> {
+        const sessionId = validEntityId(id);
+        const now = this.clock.now();
+        return this.inTransaction(transaction, async activeTransaction => {
+            const stored = await this.runtime.repository.loadForUpdate(
+                TRAINING_SESSION_ENTITY_TYPE,
+                sessionId,
+                activeTransaction,
+            );
+            if (!stored) throw new TrainingSessionNotFoundError(id);
+            this.expectedVersions.verify(expectedVersion, stored.version);
+            const change = transform(stored.state);
+            const activities =
+                change.activities !== undefined
+                    ? await this.enrichActivities(change.activities, existingSnapshots(stored.state))
+                    : undefined;
+            if (change.mappings !== undefined && mappingsHavePrescribedRefs(change.mappings))
+                await this.assertPrescribedOwnership(
+                    stored.state.plannedLinks,
+                    change.mappings,
+                    this.requirePlanning(),
+                    activeTransaction,
+                );
+            const input: UpdateTrainingSessionInput = {
+                ...(activities !== undefined ? { activities } : {}),
+                ...(change.mappings !== undefined ? { mappings: change.mappings } : {}),
+            };
+            const result = await this.runtime.mutations.mutate({
+                entityType: TRAINING_SESSION_ENTITY_TYPE,
+                entityId: sessionId,
+                expectedVersion: expectedVersion!,
+                change: state => {
+                    const next = TrainingSession.rehydrate(state).update(input, now);
+                    return {
+                        state: next.state,
+                        events: [this.event("updated", next.state, expectedVersion! + 1, metadata, now)],
+                    };
+                },
+                metadata: revisionMetadata(metadata, summary),
+                transaction: activeTransaction,
+            });
+            return this.requiredResource(result.state.id, activeTransaction);
+        });
+    }
+
+    /** Load every frozen prescription this session references, batched, for the active/preview views. */
+    private async loadReferencePlans(
+        resource: TrainingSessionResource,
+        transaction?: Transaction,
+    ): Promise<readonly ActiveSessionPlan[]> {
+        if (!this.runtime.planning || resource.plannedLinks.length === 0) return [];
+        const ids = [...new Set(resource.plannedLinks.map(link => link.resolvedPrescriptionId))];
+        const trees = await this.runtime.planning.prescriptions.loadTrees(ids, transaction);
+        const byId = new Map(trees.map(tree => [tree.id, tree]));
+        const plans: ActiveSessionPlan[] = [];
+        for (const link of resource.plannedLinks) {
+            const prescription = byId.get(link.resolvedPrescriptionId);
+            if (prescription)
+                plans.push({
+                    referencePrescriptionId: link.resolvedPrescriptionId,
+                    plannedSessionId: link.plannedSessionId,
+                    prescription,
+                });
+        }
+        return plans;
+    }
+
+    /** Project the outcome each linked planned session would receive if the session completed now. */
+    private projectedOutcomes(
+        resource: TrainingSessionResource,
+        plans: readonly ActiveSessionPlan[],
+    ): readonly CompletionPreviewOutcome[] {
+        const byResolved = new Map(plans.map(plan => [plan.referencePrescriptionId, plan.prescription]));
+        const outcomes: CompletionPreviewOutcome[] = [];
+        for (const link of resource.plannedLinks) {
+            if (link.plannedSessionId === null) continue;
+            const prescription = byResolved.get(link.resolvedPrescriptionId);
+            const prescribedSetIds = prescribedSetIdsOf(prescription);
+            const coverage = computeCoverage(resource, prescribedSetIds);
+            outcomes.push({
+                plannedSessionId: link.plannedSessionId,
+                currentStatus: null,
+                projectedStatus: outcomeFromCoverage(prescribedSetIds.size, coverage),
+                prescribedSetCount: prescribedSetIds.size,
+                coveredSetCount: coverage.coveredSetIds.size,
+            });
+        }
+        return outcomes;
+    }
+
     /** Freeze a sync resolution context by prefetching every max + increment the tree could need. */
     private async buildResolutionContext(
         planned: SessionPrescriptionState,
@@ -698,7 +1295,7 @@ export class TrainingSessionCommands<Transaction = unknown> {
     /** Validate every prescribed-side reference against the session's linked immutable prescriptions. */
     private async assertPrescribedOwnership(
         links: readonly SessionPlannedLink[],
-        command: RecordSessionMappingsCommand,
+        command: SessionMappingsInput,
         planning: TrainingSessionPlanningPorts<Transaction>,
         transaction: Transaction,
     ): Promise<void> {
@@ -742,10 +1339,13 @@ export class TrainingSessionCommands<Transaction = unknown> {
         const planning = this.runtime.planning;
         if (!planning || state.plannedLinks.length === 0) return;
         for (const link of state.plannedLinks) {
+            // Template/previous references carry no planned session to recompute.
+            if (link.plannedSessionId === null) continue;
+            const plannedSessionId = link.plannedSessionId;
             const outcome =
                 mode === "archive" ? "planned" : await this.deriveOutcome(state, link, mode, planning, transaction);
             await planning.plannedCommands.recomputeOutcomeWithinTransaction(
-                link.plannedSessionId,
+                plannedSessionId,
                 outcome,
                 metadata,
                 transaction,
@@ -761,24 +1361,10 @@ export class TrainingSessionCommands<Transaction = unknown> {
         transaction: Transaction,
     ): Promise<PlannedActualOutcome> {
         const resolved = await planning.prescriptions.loadTree(link.resolvedPrescriptionId, transaction);
-        const prescribedSetIds = new Set<string>();
-        for (const activity of resolved?.activities ?? [])
-            for (const exercise of activity.strength?.exercises ?? [])
-                for (const set of exercise.sets) prescribedSetIds.add(set.id);
-        const fullyCovered = new Set<string>();
-        let anyCovered = false;
-        for (const mapping of state.setMappings) {
-            if (mapping.prescribedSetId === null) {
-                anyCovered = true;
-                continue;
-            }
-            if (!prescribedSetIds.has(mapping.prescribedSetId)) continue;
-            anyCovered = true;
-            if (mapping.relation !== "partial") fullyCovered.add(mapping.prescribedSetId);
-        }
-        if (mode === "reopen") return anyCovered ? "partially_completed" : "planned";
-        if (prescribedSetIds.size > 0 && fullyCovered.size === prescribedSetIds.size) return "completed";
-        return anyCovered ? "partially_completed" : "planned";
+        const prescribedSetIds = prescribedSetIdsOf(resolved ?? undefined);
+        const coverage = computeCoverage(state, prescribedSetIds);
+        if (mode === "reopen") return coverage.anyCovered ? "partially_completed" : "planned";
+        return outcomeFromCoverage(prescribedSetIds.size, coverage);
     }
 
     private requirePlanning(): TrainingSessionPlanningPorts<Transaction> {
@@ -906,6 +1492,176 @@ export class TrainingSessionRevisionHandler<
             }),
         };
     }
+}
+
+/** Project the persisted activity tree back into snapshot-free command inputs for a granular edit. */
+function stateToCommandActivities(activities: TrainingSessionState["activities"]): SessionActivityCommandInput[] {
+    return activities.map(activity => ({
+        id: activity.id,
+        type: activity.type,
+        position: activity.position,
+        startedAt: activity.startedAt,
+        endedAt: activity.endedAt,
+        durationSeconds: activity.durationSeconds,
+        rpe: activity.rpe,
+        feeling: activity.feeling,
+        notes: activity.notes,
+        tags: activity.tags,
+        strength: activity.strength
+            ? {
+                  occurrences: activity.strength.occurrences.map(occurrence => ({
+                      id: occurrence.id,
+                      exerciseId: occurrence.exerciseId,
+                      position: occurrence.position,
+                      purpose: occurrence.purpose,
+                      technique: occurrence.technique,
+                      discomfort: occurrence.discomfort,
+                      pump: occurrence.pump,
+                      notes: occurrence.notes,
+                      performedSets: occurrence.performedSets,
+                  })),
+                  setGroups: activity.strength.setGroups,
+              }
+            : null,
+    }));
+}
+
+/** Insert or replace an item (matched by `id`) in a list, preserving order. */
+function upsertById<T extends { readonly id: string }>(items: readonly T[], next: T): T[] {
+    const index = items.findIndex(item => item.id === next.id);
+    if (index === -1) return [...items, next];
+    return items.map((item, position) => (position === index ? next : item));
+}
+
+/** Build the full mapping input from current state, replacing any occurrence mapping for one occurrence. */
+function replaceOccurrenceMapping(
+    state: TrainingSessionState,
+    occurrenceId: string,
+    mapping: OccurrenceMappingInput,
+): SessionMappingsInput {
+    return {
+        activityMappings: [...state.activityMappings],
+        occurrenceMappings: upsertMapping(
+            state.occurrenceMappings.filter(existing => existing.occurrenceId !== occurrenceId),
+            mapping,
+        ),
+        setMappings: [...state.setMappings],
+        runStepMappings: [...state.runStepMappings],
+    };
+}
+
+/** Build the full mapping input from current state, replacing any set mapping for one performed set. */
+function replaceSetMapping(
+    state: TrainingSessionState,
+    performedSetId: string,
+    mapping: SetMappingInput,
+): SessionMappingsInput {
+    return {
+        activityMappings: [...state.activityMappings],
+        occurrenceMappings: [...state.occurrenceMappings],
+        setMappings: upsertMapping(
+            state.setMappings.filter(existing => existing.performedSetId !== performedSetId),
+            mapping,
+        ),
+        runStepMappings: [...state.runStepMappings],
+    };
+}
+
+function upsertMapping<T>(existing: readonly T[], next: T): T[] {
+    return [...existing, next];
+}
+
+/** True when any level mapping carries a prescribed-side reference that must be validated for ownership. */
+function mappingsHavePrescribedRefs(mappings: SessionMappingsInput): boolean {
+    return (
+        (mappings.activityMappings ?? []).some(mapping => mapping.prescribedActivityId != null) ||
+        (mappings.occurrenceMappings ?? []).some(mapping => mapping.prescribedExerciseId != null) ||
+        (mappings.setMappings ?? []).some(mapping => mapping.prescribedSetId != null) ||
+        (mappings.runStepMappings ?? []).some(mapping => mapping.prescribedRunStepId != null)
+    );
+}
+
+/** Collect every prescribed strength set ID in a frozen prescription tree. */
+function prescribedSetIdsOf(prescription?: SessionPrescriptionState): Set<string> {
+    const ids = new Set<string>();
+    for (const activity of prescription?.activities ?? [])
+        for (const exercise of activity.strength?.exercises ?? []) for (const set of exercise.sets) ids.add(set.id);
+    return ids;
+}
+
+interface SetCoverage {
+    readonly coveredSetIds: ReadonlySet<string>;
+    readonly anyCovered: boolean;
+}
+
+/** Determine which prescribed sets a session's set mappings cover (partial counts as touched, not full). */
+function computeCoverage(state: TrainingSessionState, prescribedSetIds: ReadonlySet<string>): SetCoverage {
+    const coveredSetIds = new Set<string>();
+    let anyCovered = false;
+    for (const mapping of state.setMappings) {
+        if (mapping.prescribedSetId === null) {
+            anyCovered = true;
+            continue;
+        }
+        if (!prescribedSetIds.has(mapping.prescribedSetId)) continue;
+        anyCovered = true;
+        if (mapping.relation !== "partial") coveredSetIds.add(mapping.prescribedSetId);
+    }
+    return { coveredSetIds, anyCovered };
+}
+
+function outcomeFromCoverage(prescribedCount: number, coverage: SetCoverage): PlannedActualOutcome {
+    if (prescribedCount > 0 && coverage.coveredSetIds.size === prescribedCount) return "completed";
+    return coverage.anyCovered ? "partially_completed" : "planned";
+}
+
+/** Advisory completion issues: empty activities, unfinished sets, and uncovered prescribed sets. */
+function completionIssues(
+    resource: TrainingSessionResource,
+    plans: readonly ActiveSessionPlan[],
+): CompletionPreviewIssue[] {
+    const issues: CompletionPreviewIssue[] = [];
+    for (const activity of resource.activities) {
+        const occurrences = activity.strength?.occurrences ?? [];
+        const totalSets = occurrences.reduce((sum, occurrence) => sum + occurrence.performedSets.length, 0);
+        if (activity.type === "strength" && totalSets === 0)
+            issues.push({
+                code: "empty_activity",
+                severity: "warning",
+                message: "This activity has no logged sets.",
+                activityId: activity.id,
+                occurrenceId: null,
+            });
+        for (const occurrence of occurrences)
+            for (const set of occurrence.performedSets)
+                if (set.status === "skipped" || set.status === "partial")
+                    issues.push({
+                        code: `set_${set.status}`,
+                        severity: "warning",
+                        message:
+                            set.status === "skipped"
+                                ? "A set was skipped."
+                                : "A set was recorded as partially completed.",
+                        activityId: activity.id,
+                        occurrenceId: occurrence.id,
+                    });
+    }
+    const coveredPrescribedSetIds = new Set(
+        resource.setMappings
+            .filter(mapping => mapping.prescribedSetId !== null && mapping.relation !== "partial")
+            .map(mapping => mapping.prescribedSetId as string),
+    );
+    for (const plan of plans)
+        for (const setId of prescribedSetIdsOf(plan.prescription))
+            if (!coveredPrescribedSetIds.has(setId))
+                issues.push({
+                    code: "prescribed_set_uncovered",
+                    severity: "warning",
+                    message: "A prescribed set has no matching performed set.",
+                    activityId: null,
+                    occurrenceId: null,
+                });
+    return issues;
 }
 
 /** Index the immutable snapshots of the occurrences currently persisted so edits can preserve them. */

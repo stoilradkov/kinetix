@@ -1,13 +1,14 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
-import { Archive, CheckCircle2, LoaderCircle, Pencil, Play, Plus, RotateCcw, Timer } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { Archive, CheckCircle2, Dumbbell, LoaderCircle, Pencil, Play, Plus, RotateCcw } from "lucide-react";
 
 import type { TrainingSessionStatusValue, TrainingSessionSummary } from "@kinetix/types";
 
 import { SessionForm } from "@/components/training/session-form";
 import { SessionMappingsDetail } from "@/components/training/session-mappings-detail";
+import { ElapsedTimer } from "@/components/training/session-timers";
 import { StrengthActivityDetail } from "@/components/training/strength-activity-detail";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import {
     completeTrainingSession,
     createTrainingSession,
+    startEmptyTrainingSession,
     trainingSessionQueryOptions,
     trainingSessionRevisionHistoryQueryOptions,
     trainingSessionsQueryOptions,
@@ -70,9 +72,18 @@ function actionsFor(session: TrainingSessionSummary): readonly LifecycleAction[]
 
 function SessionsPage(): React.JSX.Element {
     const queryClient = useQueryClient();
+    const navigate = useNavigate();
     const [includeArchived, setIncludeArchived] = useState(false);
     const [editor, setEditor] = useState<EditorState | null>(null);
     const sessions = useQuery(trainingSessionsQueryOptions(includeArchived));
+
+    const startEmpty = useMutation({
+        mutationFn: () => startEmptyTrainingSession(),
+        onSuccess: async session => {
+            await queryClient.invalidateQueries({ queryKey: ["training-sessions"] });
+            await navigate({ to: "/training/sessions/$id", params: { id: session.id } });
+        },
+    });
 
     const invalidate = () =>
         queryClient.invalidateQueries({ queryKey: ["training-sessions"] }).then(() => setEditor(null));
@@ -102,6 +113,15 @@ function SessionsPage(): React.JSX.Element {
                         variant={includeArchived ? "default" : "outline"}
                     >
                         {includeArchived ? "Showing archived" : "Show archived"}
+                    </Button>
+                    <Button
+                        disabled={startEmpty.isPending}
+                        onClick={() => startEmpty.mutate()}
+                        size="sm"
+                        variant="outline"
+                    >
+                        <Dumbbell />
+                        Start empty
                     </Button>
                     <Button onClick={() => setEditor({ mode: "create" })} size="sm">
                         <Plus />
@@ -161,6 +181,14 @@ function SessionsPage(): React.JSX.Element {
                                 </div>
                             </div>
                             <div className="flex shrink-0 items-center gap-1">
+                                {session.archivedAt === null && session.status === "in_progress" ? (
+                                    <Button asChild size="sm">
+                                        <Link params={{ id: session.id }} to="/training/sessions/$id">
+                                            <Play />
+                                            Open
+                                        </Link>
+                                    </Button>
+                                ) : null}
                                 {session.archivedAt === null && session.status !== "completed" ? (
                                     <Button
                                         onClick={() => setEditor({ mode: "edit", session })}
@@ -216,31 +244,6 @@ function SessionsPage(): React.JSX.Element {
             </Sheet>
         </main>
     );
-}
-
-/** Server-timestamp-anchored elapsed timer: recomputes from `startedAt` each second, survives reload. */
-function ElapsedTimer({ startedAt }: { readonly startedAt: string }): React.JSX.Element {
-    const [elapsedMs, setElapsedMs] = useState(() => Date.now() - Date.parse(startedAt));
-    useEffect(() => {
-        const tick = () => setElapsedMs(Date.now() - Date.parse(startedAt));
-        tick();
-        const handle = setInterval(tick, 1_000);
-        return () => clearInterval(handle);
-    }, [startedAt]);
-    return (
-        <Badge variant="info">
-            <Timer className="size-3" />
-            <span className="font-mono tabular-nums">{formatElapsed(elapsedMs)}</span>
-        </Badge>
-    );
-}
-
-function formatElapsed(milliseconds: number): string {
-    const total = Math.max(0, Math.floor(milliseconds / 1_000));
-    const hours = Math.floor(total / 3_600);
-    const minutes = Math.floor((total % 3_600) / 60);
-    const seconds = total % 60;
-    return [hours, minutes, seconds].map(part => String(part).padStart(2, "0")).join(":");
 }
 
 function CreateSession({ onSaved }: { readonly onSaved: () => void }): React.JSX.Element {

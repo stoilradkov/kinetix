@@ -230,4 +230,106 @@ describe("TrainingSessionController", () => {
             }),
         ).toThrow(expect.objectContaining({ status: 422 }));
     });
+
+    it("starts empty and start-from-template through the commands", async () => {
+        const startEmpty = vi.fn(async () => resource({ status: "in_progress", version: 1 }));
+        const startFromTemplate = vi.fn(async () => resource({ status: "in_progress", version: 1 }));
+        await controller({ commands: { startEmpty } as never }).startEmpty({}, "r", undefined, { setHeader: vi.fn() });
+        await controller({ commands: { startFromTemplate } as never }).startTemplate(
+            { templateId: ids.session },
+            "r",
+            undefined,
+            { setHeader: vi.fn() },
+        );
+        expect(startEmpty).toHaveBeenCalled();
+        expect(startFromTemplate).toHaveBeenCalledWith({ templateId: ids.session }, expect.any(Object), undefined);
+    });
+
+    it("returns the active view with its ETag", async () => {
+        const readActiveView = vi.fn(async () => ({ ...resource({ version: 4 }), plans: [] }));
+        const response = { setHeader: vi.fn() };
+        const result = await controller({ commands: { readActiveView } as never }).active(ids.session, response);
+        expect(result).toMatchObject({ id: ids.session, plans: [] });
+        expect(response.setHeader).toHaveBeenCalledWith("ETag", '"4"');
+    });
+
+    it("surfaces a missing session on the active view", async () => {
+        const readActiveView = vi.fn(async () => null);
+        await expect(
+            controller({ commands: { readActiveView } as never }).active(ids.session, { setHeader: vi.fn() }),
+        ).rejects.toBeInstanceOf(TrainingSessionNotFoundError);
+    });
+
+    it("returns a completion preview", async () => {
+        const previewCompletion = vi.fn(async () => ({
+            issues: [
+                {
+                    code: "empty_activity",
+                    severity: "warning" as const,
+                    message: "No sets",
+                    activityId: ids.activity,
+                    occurrenceId: null,
+                },
+            ],
+            plannedOutcomes: [],
+        }));
+        const result = await controller({ commands: { previewCompletion } as never }).completionPreview(ids.session);
+        expect(result.issues[0]).toMatchObject({ code: "empty_activity", severity: "warning" });
+    });
+
+    it("records a set through the command with the If-Match version", async () => {
+        const recordPerformedSet = vi.fn(async () => resource({ version: 5 }));
+        const result = await controller({ commands: { recordPerformedSet } as never }).recordSet(
+            ids.session,
+            {
+                activityId: ids.activity,
+                occurrenceId: ids.activity,
+                set: { id: ids.activity, position: 0, setType: "working", status: "completed" },
+            },
+            '"4"',
+            "r",
+            undefined,
+            { setHeader: vi.fn() },
+        );
+        expect(result).toMatchObject({ version: 5 });
+        expect(recordPerformedSet).toHaveBeenCalledWith(ids.session, 4, expect.any(Object), expect.any(Object), undefined);
+    });
+
+    it("patches a set through the command with the set ID and If-Match version", async () => {
+        const updatePerformedSet = vi.fn(async () => resource({ version: 6 }));
+        await controller({ commands: { updatePerformedSet } as never }).updateSet(
+            ids.session,
+            ids.activity,
+            { status: "skipped" },
+            '"5"',
+            "r",
+            undefined,
+            { setHeader: vi.fn() },
+        );
+        expect(updatePerformedSet).toHaveBeenCalledWith(
+            ids.session,
+            5,
+            ids.activity,
+            { status: "skipped" },
+            expect.any(Object),
+            undefined,
+        );
+    });
+
+    it("requires If-Match on record-set", () => {
+        expect(() =>
+            controller({}).recordSet(
+                ids.session,
+                {
+                    activityId: ids.activity,
+                    occurrenceId: ids.activity,
+                    set: { id: ids.activity, position: 0, setType: "working", status: "completed" },
+                },
+                undefined,
+                "r",
+                undefined,
+                { setHeader: vi.fn() },
+            ),
+        ).toThrow(ExpectedVersionRequiredError);
+    });
 });

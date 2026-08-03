@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+    addSessionActivityRequestSchema,
     completeTrainingSessionRequestSchema,
+    completionPreviewResponseSchema,
     createTrainingSessionRequestSchema,
     painRecordRequestSchema,
+    recordPerformedSetRequestSchema,
+    reorderSessionActivitiesRequestSchema,
+    startTemplateTrainingSessionRequestSchema,
+    substituteOccurrenceRequestSchema,
     trainingSessionResponseSchema,
+    updatePerformedSetRequestSchema,
     updateTrainingSessionRequestSchema,
 } from "#src/index";
 
@@ -109,5 +116,69 @@ describe("training session contracts", () => {
             runStepMappings: [],
         };
         expect(trainingSessionResponseSchema.parse(response)).toEqual(response);
+    });
+
+    it("accepts start-from-template with metadata overrides", () => {
+        const parsed = startTemplateTrainingSessionRequestSchema.parse({
+            templateId: uuid,
+            title: "Upper A",
+            readiness: { energy: 4 },
+        });
+        expect(parsed.templateId).toBe(uuid);
+    });
+
+    it("accepts an add-activity request", () => {
+        const parsed = addSessionActivityRequestSchema.parse({
+            activity: { id: activityId, type: "strength", position: 2 },
+        });
+        expect(parsed.activity.position).toBe(2);
+    });
+
+    it("accepts a reorder request and rejects an empty list", () => {
+        expect(reorderSessionActivitiesRequestSchema.parse({ activityIds: [activityId] }).activityIds).toHaveLength(1);
+        expect(reorderSessionActivitiesRequestSchema.safeParse({ activityIds: [] }).success).toBe(false);
+    });
+
+    it("accepts a substitution request with a reason", () => {
+        const parsed = substituteOccurrenceRequestSchema.parse({
+            activityId,
+            occurrenceId: uuid,
+            newExerciseId: activityId,
+            reason: "Left knee pain",
+        });
+        expect(parsed.reason).toBe("Left knee pain");
+    });
+
+    it("accepts a record-set request with an inline mapping", () => {
+        const parsed = recordPerformedSetRequestSchema.parse({
+            activityId,
+            occurrenceId: uuid,
+            set: { id: activityId, position: 0, setType: "working", status: "completed", measurements: { reps: 5 } },
+            mapping: { prescribedSetId: uuid, relation: "partial", portion: "0.6" },
+        });
+        expect(parsed.mapping?.relation).toBe("partial");
+    });
+
+    it("accepts a partial update-set request", () => {
+        const parsed = updatePerformedSetRequestSchema.parse({ status: "skipped" });
+        expect(parsed.status).toBe("skipped");
+    });
+
+    it("accepts a completion-preview response", () => {
+        const preview = {
+            issues: [
+                { code: "empty_activity", severity: "warning", message: "No sets logged", activityId, occurrenceId: null },
+            ],
+            plannedOutcomes: [
+                {
+                    plannedSessionId: uuid,
+                    currentStatus: "planned",
+                    projectedStatus: "partially_completed",
+                    prescribedSetCount: 3,
+                    coveredSetCount: 2,
+                },
+            ],
+        };
+        expect(completionPreviewResponseSchema.parse(preview)).toEqual(preview);
     });
 });

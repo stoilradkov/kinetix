@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { exerciseSnapshotV1Schema } from "#src/training-catalog";
+import { sessionPrescriptionResponseSchema } from "#src/session-prescription";
 
 /**
  * Wire contracts for TrainingSession (design 5.8, 11.1, 11.5–11.6; PRD TS-1–3, TS-5–7). A training
@@ -342,7 +343,7 @@ export const mappingRelationSchema = z.enum(["matched", "substituted", "added", 
 
 const sessionPlannedLinkResponseSchema = z
     .object({
-        plannedSessionId: z.string().uuid(),
+        plannedSessionId: z.string().uuid().nullable(),
         sourcePrescriptionId: z.string().uuid(),
         resolvedPrescriptionId: z.string().uuid(),
     })
@@ -436,6 +437,55 @@ export const trainingSessionResponseSchema = z
     .strict();
 
 export const trainingSessionListResponseSchema = z.object({ items: z.array(trainingSessionSummarySchema) }).strict();
+
+// ---------------------------------------------------------------------------------------------
+// Active-workout read projection (design 18.3; PRD UX-3) — the session tree plus the frozen
+// prescription(s) it maps against, so the live UI can render planned-versus-actual in one query.
+// ---------------------------------------------------------------------------------------------
+
+const activeSessionPlanSchema = z
+    .object({
+        referencePrescriptionId: z.string().uuid(),
+        plannedSessionId: z.string().uuid().nullable(),
+        prescription: sessionPrescriptionResponseSchema,
+    })
+    .strict();
+
+export const activeTrainingSessionResponseSchema = trainingSessionResponseSchema
+    .extend({ plans: z.array(activeSessionPlanSchema) })
+    .strict();
+
+/** Projected planned-session outcome once this session's mappings are applied (design 11.6). */
+export const plannedActualOutcomeSchema = z.enum(["planned", "completed", "partially_completed"]);
+
+const completionIssueSeveritySchema = z.enum(["warning", "blocker"]);
+
+const completionPreviewIssueSchema = z
+    .object({
+        code: z.string(),
+        severity: completionIssueSeveritySchema,
+        message: z.string(),
+        activityId: z.string().uuid().nullable(),
+        occurrenceId: z.string().uuid().nullable(),
+    })
+    .strict();
+
+const completionPreviewOutcomeSchema = z
+    .object({
+        plannedSessionId: z.string().uuid(),
+        currentStatus: z.string().nullable(),
+        projectedStatus: plannedActualOutcomeSchema,
+        prescribedSetCount: z.number().int().nonnegative(),
+        coveredSetCount: z.number().int().nonnegative(),
+    })
+    .strict();
+
+export const completionPreviewResponseSchema = z
+    .object({
+        issues: z.array(completionPreviewIssueSchema),
+        plannedOutcomes: z.array(completionPreviewOutcomeSchema),
+    })
+    .strict();
 
 const sessionContentShape = {
     title: titleSchema.nullable().optional(),
@@ -543,6 +593,93 @@ export const completeTrainingSessionRequestSchema = z
     })
     .strict();
 
+// ---------------------------------------------------------------------------------------------
+// Live-entry start sources (PRD UX-3) and granular child mutations (design 18.2). Each granular
+// endpoint is a convenience over the aggregate: it still requires the session If-Match and bumps
+// the session root version.
+// ---------------------------------------------------------------------------------------------
+
+/** Metadata overrides shared by every start-from source. */
+const sessionStartOverridesShape = {
+    localDate: localDateSchema.optional(),
+    timeZone: timeZoneSchema.optional(),
+    title: titleSchema.nullable().optional(),
+    notes: notesSchema.nullable().optional(),
+    tags: z.array(tagSchema).optional(),
+    readiness: preWorkoutReadinessRequestSchema.optional(),
+} as const;
+
+/** Start an empty in-progress session (no plan/template) — create + start in one call. */
+export const startEmptyTrainingSessionRequestSchema = z.object({ ...sessionStartOverridesShape }).strict();
+
+/** Start an in-progress session from a published workout template, freezing its resolved targets. */
+export const startTemplateTrainingSessionRequestSchema = z
+    .object({ templateId: z.string().uuid(), ...sessionStartOverridesShape })
+    .strict();
+
+/** Start an in-progress session by repeating a previous session's performed structure as the plan. */
+export const startPreviousTrainingSessionRequestSchema = z
+    .object({ sourceSessionId: z.string().uuid(), ...sessionStartOverridesShape })
+    .strict();
+
+/** Append one activity to a session (strength occurrences omit the snapshot; the server resolves it). */
+export const addSessionActivityRequestSchema = z.object({ activity: sessionActivityRequestSchema }).strict();
+
+/** Reorder a session's activities by supplying the complete ordered list of activity IDs. */
+export const reorderSessionActivitiesRequestSchema = z
+    .object({ activityIds: z.array(z.string().uuid()).min(1) })
+    .strict();
+
+/** Substitute the exercise of an existing occurrence, recording a `substituted` occurrence mapping. */
+export const substituteOccurrenceRequestSchema = z
+    .object({
+        activityId: z.string().uuid(),
+        occurrenceId: z.string().uuid(),
+        newExerciseId: z.string().uuid(),
+        prescribedExerciseId: z.string().uuid().nullable().optional(),
+        reason: z.string().max(500).nullable().optional(),
+    })
+    .strict();
+
+/** A planned/actual mapping to attach to a recorded set; the server fills in the performed set ID. */
+const performedSetMappingDraftSchema = z
+    .object({
+        id: z.string().uuid().optional(),
+        prescribedSetId: z.string().uuid().nullable().optional(),
+        relation: mappingRelationSchema,
+        portion: z.string().nullable().optional(),
+        reason: z.string().max(500).nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+    })
+    .strict();
+
+/** Record (create or replace) one performed set inside an occurrence, with an optional mapping. */
+export const recordPerformedSetRequestSchema = z
+    .object({
+        activityId: z.string().uuid(),
+        occurrenceId: z.string().uuid(),
+        set: performedSetRequestSchema,
+        mapping: performedSetMappingDraftSchema.nullable().optional(),
+    })
+    .strict();
+
+/** Patch an existing performed set (partial fields), optionally updating its mapping. */
+export const updatePerformedSetRequestSchema = z
+    .object({
+        setType: performedSetTypeSchema.optional(),
+        status: performedSetStatusSchema.optional(),
+        round: z.number().int().positive().nullable().optional(),
+        position: z.number().int().nonnegative().optional(),
+        measurements: performedSetMeasurementsRequestSchema.optional(),
+        failureReason: setFailureReasonSchema.nullable().optional(),
+        technique: scale1to5.nullable().optional(),
+        discomfort: scale1to5.nullable().optional(),
+        pump: scale1to5.nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+        mapping: performedSetMappingDraftSchema.nullable().optional(),
+    })
+    .strict();
+
 export type TrainingSessionStatusValue = z.infer<typeof trainingSessionStatusSchema>;
 export type SessionActivityTypeValue = z.infer<typeof sessionActivityTypeSchema>;
 export type PainSideValue = z.infer<typeof painSideSchema>;
@@ -567,3 +704,14 @@ export type StartPlannedTrainingSessionRequest = z.infer<typeof startPlannedTrai
 export type RecordSessionMappingsRequest = z.infer<typeof recordSessionMappingsRequestSchema>;
 export type MappingRelationValue = z.infer<typeof mappingRelationSchema>;
 export type CompleteTrainingSessionRequest = z.infer<typeof completeTrainingSessionRequestSchema>;
+export type ActiveTrainingSessionResponse = z.infer<typeof activeTrainingSessionResponseSchema>;
+export type CompletionPreviewResponse = z.infer<typeof completionPreviewResponseSchema>;
+export type PlannedActualOutcomeValue = z.infer<typeof plannedActualOutcomeSchema>;
+export type StartEmptyTrainingSessionRequest = z.infer<typeof startEmptyTrainingSessionRequestSchema>;
+export type StartTemplateTrainingSessionRequest = z.infer<typeof startTemplateTrainingSessionRequestSchema>;
+export type StartPreviousTrainingSessionRequest = z.infer<typeof startPreviousTrainingSessionRequestSchema>;
+export type AddSessionActivityRequest = z.infer<typeof addSessionActivityRequestSchema>;
+export type ReorderSessionActivitiesRequest = z.infer<typeof reorderSessionActivitiesRequestSchema>;
+export type SubstituteOccurrenceRequest = z.infer<typeof substituteOccurrenceRequestSchema>;
+export type RecordPerformedSetRequest = z.infer<typeof recordPerformedSetRequestSchema>;
+export type UpdatePerformedSetRequest = z.infer<typeof updatePerformedSetRequestSchema>;

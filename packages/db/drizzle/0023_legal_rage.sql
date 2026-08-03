@@ -1,0 +1,1 @@
+ALTER TABLE "session_mappings" ALTER COLUMN "planned_session_id" DROP NOT NULL;

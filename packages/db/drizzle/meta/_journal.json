@@ -1,167 +1,174 @@
 {
-    "version": "7",
-    "dialect": "postgresql",
-    "entries": [
-        {
-            "idx": 0,
-            "version": "7",
-            "when": 1783858022750,
-            "tag": "0000_brave_lizard",
-            "breakpoints": true
-        },
-        {
-            "idx": 1,
-            "version": "7",
-            "when": 1783868384356,
-            "tag": "0001_gray_terrax",
-            "breakpoints": true
-        },
-        {
-            "idx": 2,
-            "version": "7",
-            "when": 1785067376022,
-            "tag": "0002_living_warhawk",
-            "breakpoints": true
-        },
-        {
-            "idx": 3,
-            "version": "7",
-            "when": 1785068912665,
-            "tag": "0003_curvy_squirrel_girl",
-            "breakpoints": true
-        },
-        {
-            "idx": 4,
-            "version": "7",
-            "when": 1785072018593,
-            "tag": "0004_uneven_namora",
-            "breakpoints": true
-        },
-        {
-            "idx": 5,
-            "version": "7",
-            "when": 1785076886786,
-            "tag": "0005_mushy_annihilus",
-            "breakpoints": true
-        },
-        {
-            "idx": 6,
-            "version": "7",
-            "when": 1785078942600,
-            "tag": "0006_volatile_fallen_one",
-            "breakpoints": true
-        },
-        {
-            "idx": 7,
-            "version": "7",
-            "when": 1785079774539,
-            "tag": "0007_special_hellcat",
-            "breakpoints": true
-        },
-        {
-            "idx": 8,
-            "version": "7",
-            "when": 1785157002840,
-            "tag": "0008_ordinary_doctor_spectrum",
-            "breakpoints": true
-        },
-        {
-            "idx": 9,
-            "version": "7",
-            "when": 1785161853591,
-            "tag": "0009_complete_leader",
-            "breakpoints": true
-        },
-        {
-            "idx": 10,
-            "version": "7",
-            "when": 1785232912020,
-            "tag": "0010_furry_polaris",
-            "breakpoints": true
-        },
-        {
-            "idx": 11,
-            "version": "7",
-            "when": 1785234061757,
-            "tag": "0011_quick_zombie",
-            "breakpoints": true
-        },
-        {
-            "idx": 12,
-            "version": "7",
-            "when": 1785236625430,
-            "tag": "0012_exotic_joseph",
-            "breakpoints": true
-        },
-        {
-            "idx": 13,
-            "version": "7",
-            "when": 1785243844272,
-            "tag": "0013_broken_agent_zero",
-            "breakpoints": true
-        },
-        {
-            "idx": 14,
-            "version": "7",
-            "when": 1785245137223,
-            "tag": "0014_square_robbie_robertson",
-            "breakpoints": true
-        },
-        {
-            "idx": 15,
-            "version": "7",
-            "when": 1785307998007,
-            "tag": "0015_open_omega_red",
-            "breakpoints": true
-        },
-        {
-            "idx": 16,
-            "version": "7",
-            "when": 1785321901928,
-            "tag": "0016_mute_warbird",
-            "breakpoints": true
-        },
-        {
-            "idx": 17,
-            "version": "7",
-            "when": 1785334960782,
-            "tag": "0017_mixed_ken_ellis",
-            "breakpoints": true
-        },
-        {
-            "idx": 18,
-            "version": "7",
-            "when": 1785592746462,
-            "tag": "0018_watery_amphibian",
-            "breakpoints": true
-        },
-        {
-            "idx": 19,
-            "version": "7",
-            "when": 1785595389723,
-            "tag": "0019_worried_cardiac",
-            "breakpoints": true
-        },
-        {
-            "idx": 20,
-            "version": "7",
-            "when": 1785666162878,
-            "tag": "0020_fat_bloodaxe",
-            "breakpoints": true
-        },
-        {
-            "idx": 21,
-            "version": "7",
-            "when": 1785669628860,
-            "tag": "0021_optimal_dark_phoenix",
-            "breakpoints": true
-        },
-        {
-            "idx": 22,
-            "version": "7",
-            "when": 1785678816381,
-            "tag": "0022_yellow_vision",
-            "breakpoints": true
-        }
-    ]
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1783858022750,
+      "tag": "0000_brave_lizard",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783868384356,
+      "tag": "0001_gray_terrax",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1785067376022,
+      "tag": "0002_living_warhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1785068912665,
+      "tag": "0003_curvy_squirrel_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1785072018593,
+      "tag": "0004_uneven_namora",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1785076886786,
+      "tag": "0005_mushy_annihilus",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785078942600,
+      "tag": "0006_volatile_fallen_one",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1785079774539,
+      "tag": "0007_special_hellcat",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785157002840,
+      "tag": "0008_ordinary_doctor_spectrum",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1785161853591,
+      "tag": "0009_complete_leader",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785232912020,
+      "tag": "0010_furry_polaris",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1785234061757,
+      "tag": "0011_quick_zombie",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1785236625430,
+      "tag": "0012_exotic_joseph",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1785243844272,
+      "tag": "0013_broken_agent_zero",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1785245137223,
+      "tag": "0014_square_robbie_robertson",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1785307998007,
+      "tag": "0015_open_omega_red",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1785321901928,
+      "tag": "0016_mute_warbird",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1785334960782,
+      "tag": "0017_mixed_ken_ellis",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1785592746462,
+      "tag": "0018_watery_amphibian",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1785595389723,
+      "tag": "0019_worried_cardiac",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1785666162878,
+      "tag": "0020_fat_bloodaxe",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1785669628860,
+      "tag": "0021_optimal_dark_phoenix",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1785678816381,
+      "tag": "0022_yellow_vision",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1785683288752,
+      "tag": "0023_legal_rage",
+      "breakpoints": true
+    }
+  ]
 }

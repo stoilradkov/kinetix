@@ -253,4 +253,26 @@ describe("session planned/actual mappings", () => {
         expect(edited.state.plannedLinks).toEqual([link]);
         expect(edited.state.setMappings).toHaveLength(1);
     });
+
+    it("links a frozen prescription with no planned session (template/previous reference)", () => {
+        const session = build({
+            plannedLinks: [{ sourcePrescriptionId: SOURCE_RX, resolvedPrescriptionId: RESOLVED_RX }],
+            setMappings: [{ id: id(72), prescribedSetId: PRESCRIBED_SET, performedSetId: SET, relation: "matched" }],
+        });
+        expect(session.state.plannedLinks[0]).toEqual({
+            plannedSessionId: null,
+            sourcePrescriptionId: SOURCE_RX,
+            resolvedPrescriptionId: RESOLVED_RX,
+        });
+    });
+
+    it("allows several reference links with no planned session", () => {
+        const session = build({
+            plannedLinks: [
+                { sourcePrescriptionId: SOURCE_RX, resolvedPrescriptionId: RESOLVED_RX },
+                { sourcePrescriptionId: id(80), resolvedPrescriptionId: id(81) },
+            ],
+        });
+        expect(session.state.plannedLinks).toHaveLength(2);
+    });
 });

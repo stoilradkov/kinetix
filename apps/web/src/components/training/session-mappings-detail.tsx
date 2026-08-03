@@ -97,8 +97,10 @@ function PlannedLinkCard({ link }: { readonly link: PlannedLink }): React.JSX.El
     return (
         <div className="border-border grid gap-1 rounded-lg border p-4">
             <div className="flex items-center gap-2 text-xs">
-                <Badge variant="info">planned</Badge>
-                <span className="text-muted-foreground truncate font-mono">{short(link.plannedSessionId)}</span>
+                <Badge variant="info">{link.plannedSessionId === null ? "reference" : "planned"}</Badge>
+                <span className="text-muted-foreground truncate font-mono">
+                    {link.plannedSessionId === null ? "template/previous" : short(link.plannedSessionId)}
+                </span>
                 {frozen ? <Badge variant="secondary">targets frozen</Badge> : null}
             </div>
             <span className="text-muted-foreground font-mono text-xs">

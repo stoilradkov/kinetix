@@ -1845,9 +1845,8 @@ export const sessionMappings = pgTable(
         sessionId: uuid("session_id")
             .notNull()
             .references(() => trainingSessions.id, { onDelete: "cascade" }),
-        plannedSessionId: uuid("planned_session_id")
-            .notNull()
-            .references(() => plannedSessions.id, { onDelete: "cascade" }),
+        // Nullable: template/previous references freeze a prescription without a planned session.
+        plannedSessionId: uuid("planned_session_id").references(() => plannedSessions.id, { onDelete: "cascade" }),
         sourcePrescriptionId: uuid("source_prescription_id")
             .notNull()
             .references(() => sessionPrescriptions.id),

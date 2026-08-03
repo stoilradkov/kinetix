@@ -657,6 +657,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                 plannedCommands: PlannedSessionCommands,
                 prescriptions: SessionPrescriptionRepository,
                 publisher: PrescriptionPublisher,
+                templates: WorkoutTemplateRepository,
                 targetContext: TrainingTargetContextReader,
                 increments: EquipmentIncrementQueries,
             ) =>
@@ -666,7 +667,15 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                     mutations,
                     profileReader,
                     catalog,
-                    planning: { plannedSessions, plannedCommands, prescriptions, publisher, targetContext, increments },
+                    planning: {
+                        plannedSessions,
+                        plannedCommands,
+                        prescriptions,
+                        publisher,
+                        templates,
+                        targetContext,
+                        increments,
+                    },
                     generateId: randomUUID,
                 }),
             inject: [
@@ -679,6 +688,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                 PLANNED_SESSION_COMMANDS,
                 SESSION_PRESCRIPTION_REPOSITORY,
                 PRESCRIPTION_PUBLISHER,
+                WORKOUT_TEMPLATE_REPOSITORY,
                 TRAINING_TARGET_CONTEXT_READER,
                 EQUIPMENT_INCREMENT_QUERIES,
             ],

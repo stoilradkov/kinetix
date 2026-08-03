@@ -111,4 +111,75 @@ describe("kin training sessions", () => {
         expect(url).toContain(`/training/sessions/${base.id}/complete`);
         expect(JSON.parse(String(init?.body))).toEqual({ durationMinutes: 60 });
     });
+
+    it("starts an empty session", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () => Response.json({ ...response, status: "in_progress" }));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync(["node", "kin", "training", "sessions", "start-empty", "--input", "{}"]);
+
+        const [url, init] = request.mock.calls[0]!;
+        expect(url).toContain("/training/sessions/start-empty");
+        expect(init?.method).toBe("POST");
+    });
+
+    it("starts from a template", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () => Response.json({ ...response, status: "in_progress" }));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync([
+            "node",
+            "kin",
+            "training",
+            "sessions",
+            "start-template",
+            "--input",
+            JSON.stringify({ templateId: base.profileId }),
+        ]);
+
+        const [url, init] = request.mock.calls[0]!;
+        expect(url).toContain("/training/sessions/start-template");
+        expect(JSON.parse(String(init?.body))).toEqual({ templateId: base.profileId });
+    });
+
+    it("records a set with the If-Match version", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () => Response.json({ ...response, version: 2 }));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync([
+            "node",
+            "kin",
+            "training",
+            "sessions",
+            "record-set",
+            base.id,
+            "--version",
+            "1",
+            "--input",
+            JSON.stringify({
+                activityId: base.profileId,
+                occurrenceId: base.profileId,
+                set: { id: base.profileId, position: 0, setType: "working", status: "completed" },
+            }),
+        ]);
+
+        const [url, init] = request.mock.calls[0]!;
+        expect(url).toContain(`/training/sessions/${base.id}/strength/sets`);
+        expect(init?.method).toBe("POST");
+        expect(new Headers(init?.headers).get("if-match")).toBe('"1"');
+    });
+
+    it("shows the active view with its plan count", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () => Response.json({ ...response, plans: [] }));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync(["node", "kin", "training", "sessions", "active", base.id]);
+
+        expect(request.mock.calls[0]?.[0]).toContain(`/training/sessions/${base.id}/active`);
+        expect(output).toHaveBeenCalledWith("  plans: 0");
+    });
 });

@@ -17,14 +17,26 @@ import {
 import { ApiHeader, ApiOperation, ApiParam, ApiQuery, ApiTags } from "@nestjs/swagger";
 
 import {
+    activeTrainingSessionResponseSchema,
+    addSessionActivityRequestSchema,
     completeTrainingSessionRequestSchema,
+    completionPreviewResponseSchema,
     createTrainingSessionRequestSchema,
+    recordPerformedSetRequestSchema,
     recordSessionMappingsRequestSchema,
+    reorderSessionActivitiesRequestSchema,
+    startEmptyTrainingSessionRequestSchema,
     startPlannedTrainingSessionRequestSchema,
+    startPreviousTrainingSessionRequestSchema,
+    startTemplateTrainingSessionRequestSchema,
     startTrainingSessionRequestSchema,
+    substituteOccurrenceRequestSchema,
     trainingSessionListResponseSchema,
     trainingSessionResponseSchema,
+    updatePerformedSetRequestSchema,
     updateTrainingSessionRequestSchema,
+    type ActiveTrainingSessionResponse,
+    type CompletionPreviewResponse,
     type TrainingSessionListResponse,
     type TrainingSessionResponse,
 } from "@kinetix/types";
@@ -124,6 +136,101 @@ export class TrainingSessionController {
         });
     }
 
+    @Post("start-empty")
+    @ApiOperation({ summary: "Start an empty in-progress session for the active profile" })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    startEmpty(
+        @Body() rawBody: unknown,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<TrainingSessionResponse> {
+        const request = parseContract(startEmptyTrainingSessionRequestSchema, rawBody ?? {}, "Start-empty validation failed");
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "training.session.start-empty",
+            idempotencyKey,
+            request,
+            metadata,
+            response,
+            status: 201,
+            command: transaction => this.commands.startEmpty(request, metadata, transaction),
+        });
+    }
+
+    @Post("start-template")
+    @ApiOperation({ summary: "Start an in-progress session from a workout template, freezing its resolved targets" })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    startTemplate(
+        @Body() rawBody: unknown,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<TrainingSessionResponse> {
+        const request = parseContract(
+            startTemplateTrainingSessionRequestSchema,
+            rawBody ?? {},
+            "Start-from-template validation failed",
+        );
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "training.session.start-template",
+            idempotencyKey,
+            request,
+            metadata,
+            response,
+            status: 201,
+            command: transaction => this.commands.startFromTemplate(request, metadata, transaction),
+        });
+    }
+
+    @Post("start-previous")
+    @ApiOperation({ summary: "Start an in-progress session by repeating a previous workout" })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    startPrevious(
+        @Body() rawBody: unknown,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<TrainingSessionResponse> {
+        const request = parseContract(
+            startPreviousTrainingSessionRequestSchema,
+            rawBody ?? {},
+            "Start-from-previous validation failed",
+        );
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "training.session.start-previous",
+            idempotencyKey,
+            request,
+            metadata,
+            response,
+            status: 201,
+            command: transaction => this.commands.startFromPrevious(request, metadata, transaction),
+        });
+    }
+
+    @Get(":id/active")
+    @ApiOperation({ summary: "Get the complete active-session view (session tree plus its frozen plan)" })
+    @ApiParam({ name: "id", format: "uuid" })
+    async active(
+        @Param("id") id: string,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<ActiveTrainingSessionResponse> {
+        const view = await this.commands.readActiveView(id);
+        if (!view) throw new TrainingSessionNotFoundError(id);
+        response.setHeader("ETag", formatRevisionEtag(view.version));
+        return activeTrainingSessionResponseSchema.parse(view);
+    }
+
+    @Get(":id/completion-preview")
+    @ApiOperation({ summary: "Preview a completion: validation issues plus projected planned-session outcomes" })
+    @ApiParam({ name: "id", format: "uuid" })
+    async completionPreview(@Param("id") id: string): Promise<CompletionPreviewResponse> {
+        const preview = await this.commands.previewCompletion(id);
+        return completionPreviewResponseSchema.parse(preview);
+    }
+
     @Get(":id")
     @ApiOperation({ summary: "Get one training session with its activities and pain records" })
     @ApiParam({ name: "id", format: "uuid" })
@@ -196,6 +303,151 @@ export class TrainingSessionController {
             response,
             status: 200,
             command: transaction => this.commands.recordMappings(id, expectedVersion, request, metadata, transaction),
+        });
+    }
+
+    @Post(":id/activities")
+    @ApiOperation({ summary: "Append one activity to a session (live entry)" })
+    @ApiParam({ name: "id", format: "uuid" })
+    @ApiHeader({ name: "If-Match", required: true })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    addActivity(
+        @Param("id") id: string,
+        @Body() rawBody: unknown,
+        @Headers("if-match") ifMatch: string | undefined,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<TrainingSessionResponse> {
+        const request = parseContract(addSessionActivityRequestSchema, rawBody ?? {}, "Add-activity validation failed");
+        const expectedVersion = expectedVersionFrom(ifMatch);
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "training.session.add-activity",
+            idempotencyKey,
+            request: { id, expectedVersion, body: request },
+            metadata,
+            response,
+            status: 200,
+            command: transaction => this.commands.addActivity(id, expectedVersion, request, metadata, transaction),
+        });
+    }
+
+    @Post(":id/activities/reorder")
+    @ApiOperation({ summary: "Reorder a session's activities by the complete ordered ID list" })
+    @ApiParam({ name: "id", format: "uuid" })
+    @ApiHeader({ name: "If-Match", required: true })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    reorderActivities(
+        @Param("id") id: string,
+        @Body() rawBody: unknown,
+        @Headers("if-match") ifMatch: string | undefined,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<TrainingSessionResponse> {
+        const request = parseContract(reorderSessionActivitiesRequestSchema, rawBody ?? {}, "Reorder validation failed");
+        const expectedVersion = expectedVersionFrom(ifMatch);
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "training.session.reorder-activities",
+            idempotencyKey,
+            request: { id, expectedVersion, body: request },
+            metadata,
+            response,
+            status: 200,
+            command: transaction =>
+                this.commands.reorderActivities(id, expectedVersion, request, metadata, transaction),
+        });
+    }
+
+    @Post(":id/occurrences/substitute")
+    @ApiOperation({ summary: "Substitute an occurrence's exercise, recording a substituted mapping" })
+    @ApiParam({ name: "id", format: "uuid" })
+    @ApiHeader({ name: "If-Match", required: true })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    substituteOccurrence(
+        @Param("id") id: string,
+        @Body() rawBody: unknown,
+        @Headers("if-match") ifMatch: string | undefined,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<TrainingSessionResponse> {
+        const request = parseContract(
+            substituteOccurrenceRequestSchema,
+            rawBody ?? {},
+            "Substitution validation failed",
+        );
+        const expectedVersion = expectedVersionFrom(ifMatch);
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "training.session.substitute-occurrence",
+            idempotencyKey,
+            request: { id, expectedVersion, body: request },
+            metadata,
+            response,
+            status: 200,
+            command: transaction =>
+                this.commands.substituteOccurrence(id, expectedVersion, request, metadata, transaction),
+        });
+    }
+
+    @Post(":id/strength/sets")
+    @ApiOperation({ summary: "Record one performed set inside an occurrence, with an optional mapping" })
+    @ApiParam({ name: "id", format: "uuid" })
+    @ApiHeader({ name: "If-Match", required: true })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    recordSet(
+        @Param("id") id: string,
+        @Body() rawBody: unknown,
+        @Headers("if-match") ifMatch: string | undefined,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<TrainingSessionResponse> {
+        const request = parseContract(recordPerformedSetRequestSchema, rawBody ?? {}, "Record-set validation failed");
+        const expectedVersion = expectedVersionFrom(ifMatch);
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "training.session.record-set",
+            idempotencyKey,
+            request: { id, expectedVersion, body: request },
+            metadata,
+            response,
+            status: 200,
+            command: transaction =>
+                this.commands.recordPerformedSet(id, expectedVersion, request, metadata, transaction),
+        });
+    }
+
+    @Patch(":id/strength/sets/:setId")
+    @ApiOperation({ summary: "Patch an existing performed set, optionally updating its mapping" })
+    @ApiParam({ name: "id", format: "uuid" })
+    @ApiParam({ name: "setId", format: "uuid" })
+    @ApiHeader({ name: "If-Match", required: true })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    updateSet(
+        @Param("id") id: string,
+        @Param("setId") setId: string,
+        @Body() rawBody: unknown,
+        @Headers("if-match") ifMatch: string | undefined,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<TrainingSessionResponse> {
+        const request = parseContract(updatePerformedSetRequestSchema, rawBody ?? {}, "Update-set validation failed");
+        const expectedVersion = expectedVersionFrom(ifMatch);
+        const metadata = mutationMetadata(rawCorrelationId);
+        return this.executeMutation({
+            operation: "training.session.update-set",
+            idempotencyKey,
+            request: { id, setId, expectedVersion, body: request },
+            metadata,
+            response,
+            status: 200,
+            command: transaction =>
+                this.commands.updatePerformedSet(id, expectedVersion, setId, request, metadata, transaction),
         });
     }
 
