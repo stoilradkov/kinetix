@@ -67,7 +67,7 @@ export interface SetMappingState extends LevelMappingState {
 
 export interface RunStepMappingState extends LevelMappingState {
     readonly prescribedRunStepId: string | null;
-    /** Performed run step reference. Running actuals arrive with running detail; validated structurally only. */
+    /** Performed run step owned by this session's running tree (design 11.3–11.4). */
     readonly performedRunStepId: string;
 }
 
@@ -213,12 +213,12 @@ export interface SessionActualIds {
     readonly activityIds: ReadonlySet<string>;
     readonly occurrenceIds: ReadonlySet<string>;
     readonly performedSetIds: ReadonlySet<string>;
+    readonly runStepIds: ReadonlySet<string>;
 }
 
 /**
  * Drop level mappings whose actual row an edit removed, keeping the tree consistent (like pain-record
- * reconciliation). Planned links and run-step mappings (whose actuals live outside this aggregate for
- * now) are preserved as-is.
+ * reconciliation). Planned links are frozen and preserved as-is.
  */
 export function reconcileSessionMappings(
     mappings: SessionMappingsState,
@@ -229,7 +229,7 @@ export function reconcileSessionMappings(
         activityMappings: mappings.activityMappings.filter(m => actual.activityIds.has(m.actualActivityId)),
         occurrenceMappings: mappings.occurrenceMappings.filter(m => actual.occurrenceIds.has(m.occurrenceId)),
         setMappings: mappings.setMappings.filter(m => actual.performedSetIds.has(m.performedSetId)),
-        runStepMappings: mappings.runStepMappings,
+        runStepMappings: mappings.runStepMappings.filter(m => actual.runStepIds.has(m.performedRunStepId)),
     };
 }
 
@@ -265,11 +265,10 @@ export function validateSessionMappings(mappings: SessionMappingsState, actual: 
         actualOwned: actual.performedSetIds.has(mapping.performedSetId),
         actualLabel: "performed set",
     }));
-    // Run-step actuals arrive with running detail; only structural + cardinality rules apply for now.
     validateLevel(mappings.runStepMappings, "runStepMappings", mapping => ({
         prescribedId: mapping.prescribedRunStepId,
         actualId: mapping.performedRunStepId,
-        actualOwned: true,
+        actualOwned: actual.runStepIds.has(mapping.performedRunStepId),
         actualLabel: "performed run step",
     }));
 }

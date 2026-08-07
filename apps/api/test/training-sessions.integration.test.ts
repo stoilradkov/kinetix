@@ -11,10 +11,17 @@ import {
     equipmentTypes,
     exercises,
     exerciseOccurrences,
+    gearItems,
     movementPatterns,
     painRecords,
+    performedRunSteps,
     performedSets,
     plannedSessions,
+    runSplits,
+    runZoneTimes,
+    runningActivities,
+    zoneDefinitions,
+    zoneRanges,
     prescribedActivities,
     prescribedExercises,
     prescribedSets,
@@ -32,10 +39,12 @@ import type { DatabaseService } from "#src/database/database.service";
 import {
     TRAINING_SESSION_ENTITY_TYPE,
     TrainingSessionCommands,
+    RunningActivityService,
     trainingSessionSerializer,
 } from "#src/modules/training/application/index";
-import { TrainingSession, type ExerciseSnapshotV1 } from "#src/modules/training/domain/index";
+import { deriveAveragePace, TrainingSession, type ExerciseSnapshotV1 } from "#src/modules/training/domain/index";
 import { DrizzleTrainingSessionRepository } from "#src/modules/training/infrastructure/drizzle-training-session-repository";
+import { DrizzleRunningActivityQueries } from "#src/modules/training/infrastructure/drizzle-running-activity-queries";
 import { RevisionMutationService, type CommandContext, type UnitOfWork } from "#src/platform/application/index";
 import { DrizzleOutboxStore } from "#src/platform/infrastructure/drizzle-outbox-store";
 import { DrizzleRevisionStore } from "#src/platform/infrastructure/drizzle-revision-store";
@@ -123,6 +132,14 @@ describe.runIf(testDatabaseUrl)("training session PostgreSQL persistence", () =>
         clock,
         generateId: randomUUID,
     });
+    const runQueries = new DrizzleRunningActivityQueries(db);
+    const runs = new RunningActivityService({
+        unitOfWork,
+        sessions: commands,
+        repository,
+        queries: runQueries,
+        generateId: randomUUID,
+    });
 
     beforeAll(async () => {
         await connection.db
@@ -180,6 +197,10 @@ describe.runIf(testDatabaseUrl)("training session PostgreSQL persistence", () =>
                 await connection.db.delete(entityRevisions).where(inArray(entityRevisions.entityId, ids));
             }
             await connection.db.delete(trainingSessions).where(eq(trainingSessions.profileId, profileId));
+            // Structured-running seeds gear/zone rows referenced by running_activities; the sessions are
+            // gone now, so these are unreferenced. listGear() is global, so leaving them pollutes peers.
+            await connection.db.delete(gearItems).where(eq(gearItems.profileId, profileId));
+            await connection.db.delete(zoneDefinitions).where(eq(zoneDefinitions.profileId, profileId));
             await connection.db.delete(plannedSessions).where(eq(plannedSessions.id, mappingPlannedId));
             await connection.db.delete(prescribedSets).where(eq(prescribedSets.prescriptionId, mappingRxId));
             await connection.db.delete(prescribedExercises).where(eq(prescribedExercises.prescriptionId, mappingRxId));
@@ -263,6 +284,200 @@ describe.runIf(testDatabaseUrl)("training session PostgreSQL persistence", () =>
                 ),
             );
         expect(history).toHaveLength(4);
+    });
+
+    it("round-trips a manual running summary through canonical columns, keeping missing distinct from zero", async () => {
+        const runId = randomUUID();
+        const created = await commands.create(
+            { activities: [{ id: runId, type: "running", position: 0, running: {} }] },
+            metadata,
+        );
+        const updated = await commands.setRunning(
+            created.id,
+            created.version,
+            {
+                activityId: runId,
+                running: {
+                    distance: { value: 5, unit: "km" },
+                    movingTime: { value: 25, unit: "min" },
+                    averageHeartRate: 150,
+                    calories: 0,
+                    runTags: ["Easy"],
+                    indoor: true,
+                    treadmill: true,
+                    environment: { surface: "track" },
+                },
+            },
+            metadata,
+        );
+        expect(updated.version).toBe(2);
+
+        const reloaded = await repository.readSession(created.id as never);
+        const running = reloaded!.activities[0]!.running!;
+        // Entered display units round-trip; a recorded 0 stays distinct from missing metrics.
+        expect(running.distance).toEqual({ value: 5, unit: "km" });
+        expect(running.movingTime).toEqual({ value: 25, unit: "min" });
+        expect(running.averageHeartRate).toBe(150);
+        expect(running.calories).toBe(0);
+        expect(running.maxHeartRate).toBeNull();
+        expect(running.indoor).toBe(true);
+        expect(running.treadmill).toBe(true);
+        expect(running.runTags).toEqual(["Easy"]);
+        expect(running.environment).toMatchObject({ schemaVersion: 1, surface: "track" });
+
+        // Canonical columns are populated for querying; pace derives from them, never a stored column.
+        const [row] = await connection.db
+            .select()
+            .from(runningActivities)
+            .where(eq(runningActivities.activityId, runId));
+        expect(row!.distanceM).toBe("5000.000");
+        expect(row!.movingTimeMs).toBe(1_500_000);
+        expect(deriveAveragePace(running).secondsPerKilometre).toBe(300);
+    });
+
+    it("round-trips structured running: step hierarchy, splits, zone times, route, and gear with FKs", async () => {
+        const runId = randomUUID();
+        const gearId = randomUUID();
+        const zoneDefId = randomUUID();
+        const zoneRangeId = randomUUID();
+        const repeatId = randomUUID();
+        const workId = randomUUID();
+        const recoveryId = randomUUID();
+        const warmupId = randomUUID();
+        await connection.db
+            .insert(gearItems)
+            .values({ id: gearId, profileId, name: "Test Shoe", gearType: "shoes" })
+            .onConflictDoNothing();
+        await connection.db
+            .insert(zoneDefinitions)
+            .values({ id: zoneDefId, profileId, family: "heart_rate", method: "manual", effectiveFrom: now })
+            .onConflictDoNothing();
+        await connection.db
+            .insert(zoneRanges)
+            .values({ id: zoneRangeId, zoneDefinitionId: zoneDefId, position: 0, name: "Zone 2", lowerBound: "120" })
+            .onConflictDoNothing();
+
+        const created = await commands.create(
+            { activities: [{ id: runId, type: "running", position: 0, running: {} }] },
+            metadata,
+        );
+        const updated = await commands.setRunning(
+            created.id,
+            created.version,
+            {
+                activityId: runId,
+                running: {
+                    distance: { value: 8, unit: "km" },
+                    gearItemId: gearId,
+                    steps: [
+                        {
+                            id: warmupId,
+                            type: "warm_up",
+                            position: 0,
+                            measurements: { duration: { value: 10, unit: "min" } },
+                        },
+                        { id: repeatId, type: "repeat", position: 1, repeatCount: 4 },
+                        {
+                            id: workId,
+                            type: "work",
+                            position: 0,
+                            parentStepId: repeatId,
+                            measurements: { distance: { value: 400, unit: "m" } },
+                        },
+                        { id: recoveryId, type: "recovery", position: 1, parentStepId: repeatId },
+                    ],
+                    splits: [
+                        {
+                            id: randomUUID(),
+                            position: 0,
+                            distance: { value: 1, unit: "km" },
+                            movingTime: { value: 4, unit: "min" },
+                        },
+                        { id: randomUUID(), position: 1, distance: { value: 1, unit: "km" } },
+                    ],
+                    zoneTimes: [
+                        {
+                            id: randomUUID(),
+                            position: 0,
+                            family: "heart_rate",
+                            zoneDefinitionId: zoneDefId,
+                            zoneRangeId,
+                            zoneName: "Zone 2",
+                            duration: { value: 30, unit: "min" },
+                        },
+                    ],
+                    route: {
+                        ref: "strava:99",
+                        geometry: {
+                            type: "line_string",
+                            coordinates: [
+                                [13.4, 52.5],
+                                [13.41, 52.51],
+                            ],
+                        },
+                    },
+                },
+            },
+            metadata,
+        );
+
+        const running = updated.activities[0]!.running!;
+        expect(running.steps).toHaveLength(4);
+        expect(running.steps.find(step => step.id === repeatId)!.repeatCount).toBe(4);
+        expect(running.steps.filter(step => step.parentStepId === repeatId).map(step => step.type)).toEqual([
+            "work",
+            "recovery",
+        ]);
+        expect(running.splits).toHaveLength(2);
+        expect(running.zoneTimes[0]!.zoneDefinitionId).toBe(zoneDefId);
+        expect(running.zoneTimes[0]!.duration).toEqual({ value: 30, unit: "min" });
+        expect(running.route!.geometry!.coordinates).toHaveLength(2);
+        expect(running.gearItemId).toBe(gearId);
+
+        // Canonical columns + entered blob round-trip through a fresh reload.
+        const reloaded = await repository.readSession(created.id as never);
+        expect(reloaded!.activities[0]!.running!.steps).toHaveLength(4);
+        const stepRows = await connection.db
+            .select()
+            .from(performedRunSteps)
+            .where(eq(performedRunSteps.activityId, runId));
+        expect(stepRows).toHaveLength(4);
+        const splitRows = await connection.db.select().from(runSplits).where(eq(runSplits.activityId, runId));
+        expect(splitRows).toHaveLength(2);
+        const zoneRows = await connection.db.select().from(runZoneTimes).where(eq(runZoneTimes.activityId, runId));
+        expect(zoneRows[0]!.zoneDefinitionId).toBe(zoneDefId);
+        expect(zoneRows[0]!.durationMs).toBe(1_800_000);
+
+        // Editing the run to drop its structure reconciles every child table (delete-all-then-reinsert).
+        await commands.setRunning(
+            updated.id,
+            updated.version,
+            { activityId: runId, running: { distance: { value: 8, unit: "km" } } },
+            metadata,
+        );
+        const stepsAfter = await connection.db
+            .select()
+            .from(performedRunSteps)
+            .where(eq(performedRunSteps.activityId, runId));
+        expect(stepsAfter).toHaveLength(0);
+    });
+
+    it("cascades running summaries when their activity is removed on edit", async () => {
+        const runId = randomUUID();
+        const created = await commands.create(
+            {
+                activities: [
+                    { id: runId, type: "running", position: 0, running: { distance: { value: 3, unit: "km" } } },
+                ],
+            },
+            metadata,
+        );
+        await commands.update(created.id, created.version, { activities: [] }, metadata);
+        const rows = await connection.db
+            .select()
+            .from(runningActivities)
+            .where(eq(runningActivities.activityId, runId));
+        expect(rows).toHaveLength(0);
     });
 
     it("removes deleted activities and nulls their pain links on edit", async () => {
@@ -708,5 +923,72 @@ describe.runIf(testDatabaseUrl)("training session PostgreSQL persistence", () =>
         const completed = await commands.complete(withSet.id, withSet.version, {}, metadata);
         expect(completed.status).toBe("completed");
         expect(completed.endedAt).not.toBeNull();
+    });
+
+    it("round-trips a mixed running + strength session with independent ordering and durations (AC-2)", async () => {
+        const runActivityId = randomUUID();
+        const strengthActivityId = randomUUID();
+        const occurrenceId = randomUUID();
+        const created = await commands.create(
+            {
+                title: "Brick session",
+                activities: [
+                    {
+                        id: runActivityId,
+                        type: "running",
+                        position: 0,
+                        durationSeconds: 1_800,
+                        running: { distance: { value: 6, unit: "km" }, movingTime: { value: 30, unit: "min" } },
+                    },
+                    {
+                        id: strengthActivityId,
+                        type: "strength",
+                        position: 1,
+                        durationSeconds: 1_200,
+                        strength: { occurrences: [{ id: occurrenceId, exerciseId: benchId, position: 0 }] },
+                    },
+                ],
+            },
+            metadata,
+        );
+        const started = await commands.start(created.id, created.version, metadata);
+        const completed = await commands.complete(created.id, started.version, {}, metadata);
+        expect(completed.status).toBe("completed");
+
+        const reloaded = await repository.readSession(created.id as never);
+        expect(reloaded!.activities.map(activity => activity.type)).toEqual(["running", "strength"]);
+        expect(reloaded!.activities[0]).toMatchObject({ type: "running", durationSeconds: 1_800 });
+        expect(reloaded!.activities[0]!.running!.distance).toEqual({ value: 6, unit: "km" });
+        expect(reloaded!.activities[1]).toMatchObject({ type: "strength", durationSeconds: 1_200 });
+        expect(reloaded!.activities[1]!.strength!.occurrences[0]!.snapshot.name).toBe("Bench Press");
+    });
+
+    it("logs a run through the facade and surfaces it in the bounded run-list query (AC-4/5)", async () => {
+        const run = await runs.addRun(
+            {
+                title: "Facade tempo",
+                running: {
+                    distance: { value: 10, unit: "km" },
+                    movingTime: { value: 45, unit: "min" },
+                    runTags: ["tempo"],
+                },
+            },
+            metadata,
+        );
+        expect(run.status).toBe("completed");
+        expect(run.running.distance).toEqual({ value: 10, unit: "km" });
+
+        const shown = await runs.showRun(run.sessionId);
+        expect(shown!.activityId).toBe(run.activityId);
+
+        const listed = await runQueries.listRuns();
+        const entry = listed.find(item => item.sessionId === run.sessionId);
+        expect(entry).toMatchObject({
+            activityId: run.activityId,
+            title: "Facade tempo",
+            distanceMetres: "10000.000",
+            movingTimeMs: "2700000",
+            runTags: ["tempo"],
+        });
     });
 });

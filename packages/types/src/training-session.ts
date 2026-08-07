@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { exerciseSnapshotV1Schema } from "#src/training-catalog";
 import { sessionPrescriptionResponseSchema } from "#src/session-prescription";
+import { zoneFamilySchema } from "#src/zone";
 
 /**
  * Wire contracts for TrainingSession (design 5.8, 11.1, 11.5–11.6; PRD TS-1–3, TS-5–7). A training
@@ -275,6 +276,261 @@ const strengthActivityResponseSchema = z
     })
     .strict();
 
+// ---------------------------------------------------------------------------------------------
+// Manual running summary (design 11.3; PRD R1). Every metric is optional and nullable so a partial
+// summary is valid and a recorded `0` stays distinct from an absent value. Average pace is never
+// accepted or stored — the response returns it as a derived projection with provenance/exclusions.
+// ---------------------------------------------------------------------------------------------
+
+const heartRateSchema = z.number().int().min(0).max(999);
+const cadenceSchema = z.number().int().min(0).max(999);
+const caloriesSchema = z.number().int().min(0).max(100_000);
+const runTagSchema = z.string().trim().min(1).max(80);
+const temperatureSchema = z.number().min(-100).max(100);
+
+const runEnvironmentRequestSchema = z
+    .object({
+        surface: z.string().max(80).nullable().optional(),
+        terrain: z.string().max(80).nullable().optional(),
+        weather: z.string().max(200).nullable().optional(),
+        temperatureCelsius: temperatureSchema.nullable().optional(),
+    })
+    .strict();
+
+const runEnvironmentResponseSchema = z
+    .object({
+        schemaVersion: z.literal(1),
+        surface: z.string().nullable(),
+        terrain: z.string().nullable(),
+        weather: z.string().nullable(),
+        temperatureCelsius: z.number().nullable(),
+    })
+    .strict();
+
+/** Structured-running enum for performed run steps; zone families reuse {@link zoneFamilySchema}. */
+export const runStepTypeSchema = z.enum(["warm_up", "work", "recovery", "repeat", "cool_down", "open"]);
+
+const runStepMeasurementsRequestSchema = z
+    .object({
+        distance: distanceValueSchema.nullable().optional(),
+        duration: durationValueSchema.nullable().optional(),
+        averageHeartRate: heartRateSchema.nullable().optional(),
+        maxHeartRate: heartRateSchema.nullable().optional(),
+        averageCadence: cadenceSchema.nullable().optional(),
+        maxCadence: cadenceSchema.nullable().optional(),
+        averagePower: z.number().nonnegative().nullable().optional(),
+        maxPower: z.number().nonnegative().nullable().optional(),
+        elevationGain: distanceValueSchema.nullable().optional(),
+        elevationLoss: distanceValueSchema.nullable().optional(),
+        rpe: rpeSchema.nullable().optional(),
+    })
+    .strict();
+
+const performedRunStepRequestSchema = z
+    .object({
+        id: z.string().uuid(),
+        parentStepId: z.string().uuid().nullable().optional(),
+        type: runStepTypeSchema,
+        position: z.number().int().nonnegative(),
+        repeatCount: z.number().int().min(1).max(10_000).nullable().optional(),
+        measurements: runStepMeasurementsRequestSchema.optional(),
+        notes: z.string().max(500).nullable().optional(),
+    })
+    .strict();
+
+const runSplitRequestSchema = z
+    .object({
+        id: z.string().uuid(),
+        position: z.number().int().nonnegative(),
+        distance: distanceValueSchema.nullable().optional(),
+        movingTime: durationValueSchema.nullable().optional(),
+        elapsedTime: durationValueSchema.nullable().optional(),
+        averageHeartRate: heartRateSchema.nullable().optional(),
+        maxHeartRate: heartRateSchema.nullable().optional(),
+        averageCadence: cadenceSchema.nullable().optional(),
+        averagePower: z.number().nonnegative().nullable().optional(),
+        elevationGain: distanceValueSchema.nullable().optional(),
+        elevationLoss: distanceValueSchema.nullable().optional(),
+        notes: z.string().max(500).nullable().optional(),
+    })
+    .strict();
+
+const runZoneTimeRequestSchema = z
+    .object({
+        id: z.string().uuid(),
+        position: z.number().int().nonnegative(),
+        family: zoneFamilySchema,
+        zoneDefinitionId: z.string().uuid().nullable().optional(),
+        zoneRangeId: z.string().uuid().nullable().optional(),
+        zoneName: z.string().max(120).nullable().optional(),
+        duration: durationValueSchema,
+    })
+    .strict();
+
+/** A `[longitude, latitude]` coordinate pair; the route stays PostGIS-free and bounded (design 11.3). */
+const routeCoordinateSchema = z.tuple([z.number().min(-180).max(180), z.number().min(-90).max(90)]);
+
+const runRouteGeometryRequestSchema = z
+    .object({
+        type: z.literal("line_string"),
+        coordinates: z.array(routeCoordinateSchema).min(2).max(5_000),
+    })
+    .strict();
+
+const runRouteRequestSchema = z
+    .object({
+        ref: z.string().max(200).nullable().optional(),
+        geometry: runRouteGeometryRequestSchema.nullable().optional(),
+    })
+    .strict();
+
+export const runningActivityRequestSchema = z
+    .object({
+        distance: distanceValueSchema.nullable().optional(),
+        movingTime: durationValueSchema.nullable().optional(),
+        elapsedTime: durationValueSchema.nullable().optional(),
+        averageHeartRate: heartRateSchema.nullable().optional(),
+        maxHeartRate: heartRateSchema.nullable().optional(),
+        averageCadence: cadenceSchema.nullable().optional(),
+        maxCadence: cadenceSchema.nullable().optional(),
+        averagePower: z.number().nonnegative().nullable().optional(),
+        maxPower: z.number().nonnegative().nullable().optional(),
+        elevationGain: distanceValueSchema.nullable().optional(),
+        elevationLoss: distanceValueSchema.nullable().optional(),
+        calories: caloriesSchema.nullable().optional(),
+        strideLength: distanceValueSchema.nullable().optional(),
+        groundContactTime: durationValueSchema.nullable().optional(),
+        verticalOscillation: distanceValueSchema.nullable().optional(),
+        vo2Max: z.number().nonnegative().nullable().optional(),
+        rpe: rpeSchema.nullable().optional(),
+        indoor: z.boolean().optional(),
+        treadmill: z.boolean().optional(),
+        runTags: z.array(runTagSchema).optional(),
+        environment: runEnvironmentRequestSchema.nullable().optional(),
+        steps: z.array(performedRunStepRequestSchema).optional(),
+        splits: z.array(runSplitRequestSchema).optional(),
+        zoneTimes: z.array(runZoneTimeRequestSchema).optional(),
+        route: runRouteRequestSchema.nullable().optional(),
+        gearItemId: z.string().uuid().nullable().optional(),
+    })
+    .strict();
+
+/** Reasons the derived average pace could not be computed (missing/zero distance or moving time). */
+export const paceExclusionReasonSchema = z.enum([
+    "missing_distance",
+    "zero_distance",
+    "missing_moving_time",
+    "zero_moving_time",
+]);
+
+/** Query-only average-pace projection: derived from distance/moving time, never authoritative storage. */
+const derivedRunPaceResponseSchema = z
+    .object({
+        source: z.literal("distance_and_moving_time"),
+        speedMetresPerSecond: z.string().nullable(),
+        secondsPerKilometre: z.number().nullable(),
+        secondsPerMile: z.number().nullable(),
+        exclusions: z.array(paceExclusionReasonSchema),
+    })
+    .strict();
+
+const runStepMeasurementsResponseSchema = z
+    .object({
+        distance: distanceValueSchema.nullable(),
+        duration: durationValueSchema.nullable(),
+        averageHeartRate: z.number().int().nullable(),
+        maxHeartRate: z.number().int().nullable(),
+        averageCadence: z.number().int().nullable(),
+        maxCadence: z.number().int().nullable(),
+        averagePower: z.number().nullable(),
+        maxPower: z.number().nullable(),
+        elevationGain: distanceValueSchema.nullable(),
+        elevationLoss: distanceValueSchema.nullable(),
+        rpe: rpeSchema.nullable(),
+    })
+    .strict();
+
+const performedRunStepResponseSchema = z
+    .object({
+        id: z.string().uuid(),
+        parentStepId: z.string().uuid().nullable(),
+        type: runStepTypeSchema,
+        position: z.number().int().nonnegative(),
+        repeatCount: z.number().int().nullable(),
+        measurements: runStepMeasurementsResponseSchema,
+        notes: z.string().nullable(),
+    })
+    .strict();
+
+const runSplitResponseSchema = z
+    .object({
+        id: z.string().uuid(),
+        position: z.number().int().nonnegative(),
+        distance: distanceValueSchema.nullable(),
+        movingTime: durationValueSchema.nullable(),
+        elapsedTime: durationValueSchema.nullable(),
+        averageHeartRate: z.number().int().nullable(),
+        maxHeartRate: z.number().int().nullable(),
+        averageCadence: z.number().int().nullable(),
+        averagePower: z.number().nullable(),
+        elevationGain: distanceValueSchema.nullable(),
+        elevationLoss: distanceValueSchema.nullable(),
+        notes: z.string().nullable(),
+    })
+    .strict();
+
+const runZoneTimeResponseSchema = z
+    .object({
+        id: z.string().uuid(),
+        position: z.number().int().nonnegative(),
+        family: zoneFamilySchema,
+        zoneDefinitionId: z.string().uuid().nullable(),
+        zoneRangeId: z.string().uuid().nullable(),
+        zoneName: z.string().nullable(),
+        duration: durationValueSchema,
+    })
+    .strict();
+
+const runRouteResponseSchema = z
+    .object({
+        schemaVersion: z.literal(1),
+        ref: z.string().nullable(),
+        geometry: runRouteGeometryRequestSchema.nullable(),
+    })
+    .strict();
+
+const runningActivityResponseSchema = z
+    .object({
+        distance: distanceValueSchema.nullable(),
+        movingTime: durationValueSchema.nullable(),
+        elapsedTime: durationValueSchema.nullable(),
+        averageHeartRate: z.number().int().nullable(),
+        maxHeartRate: z.number().int().nullable(),
+        averageCadence: z.number().int().nullable(),
+        maxCadence: z.number().int().nullable(),
+        averagePower: z.number().nullable(),
+        maxPower: z.number().nullable(),
+        elevationGain: distanceValueSchema.nullable(),
+        elevationLoss: distanceValueSchema.nullable(),
+        calories: z.number().int().nullable(),
+        strideLength: distanceValueSchema.nullable(),
+        groundContactTime: durationValueSchema.nullable(),
+        verticalOscillation: distanceValueSchema.nullable(),
+        vo2Max: z.number().nullable(),
+        rpe: rpeSchema.nullable(),
+        indoor: z.boolean(),
+        treadmill: z.boolean(),
+        runTags: z.array(z.string()),
+        environment: runEnvironmentResponseSchema.nullable(),
+        steps: z.array(performedRunStepResponseSchema),
+        splits: z.array(runSplitResponseSchema),
+        zoneTimes: z.array(runZoneTimeResponseSchema),
+        route: runRouteResponseSchema.nullable(),
+        gearItemId: z.string().uuid().nullable(),
+        derivedPace: derivedRunPaceResponseSchema,
+    })
+    .strict();
+
 export const sessionActivityRequestSchema = z
     .object({
         id: z.string().uuid(),
@@ -288,6 +544,7 @@ export const sessionActivityRequestSchema = z
         notes: notesSchema.nullable().optional(),
         tags: z.array(tagSchema).optional(),
         strength: strengthActivityRequestSchema.nullable().optional(),
+        running: runningActivityRequestSchema.nullable().optional(),
     })
     .strict();
 
@@ -320,6 +577,7 @@ const sessionActivityResponseSchema = z
         notes: z.string().nullable(),
         tags: z.array(z.string()),
         strength: strengthActivityResponseSchema.nullable(),
+        running: runningActivityResponseSchema.nullable(),
     })
     .strict();
 
@@ -680,6 +938,98 @@ export const updatePerformedSetRequestSchema = z
     })
     .strict();
 
+/** Upsert (create or replace) the manual running summary of a running-type activity (PRD R1). */
+export const setRunningActivityRequestSchema = z
+    .object({ activityId: z.string().uuid(), running: runningActivityRequestSchema })
+    .strict();
+
+/** Bounded running-summary read projection: the summary plus its derived pace for one activity. */
+export const runningActivitySummaryResponseSchema = z
+    .object({ activityId: z.string().uuid(), running: runningActivityResponseSchema })
+    .strict();
+
+// ---------------------------------------------------------------------------------------------
+// Run-centric surface (design §11.3–11.4, §18–19; PRD R3) — an ergonomic adapter over the
+// TrainingSession root for manual and mixed run/strength workouts. `kin run` and the web
+// `/training/runs` page speak these contracts; the server records them through the very same
+// TrainingSession commands (no parallel running backend).
+// ---------------------------------------------------------------------------------------------
+
+/** Activity-level fields a run may carry independently of its running summary (AC-2 durations/effort). */
+const runActivityFieldsShape = {
+    durationSeconds: z.number().int().nonnegative().nullable().optional(),
+    rpe: scale0to10.nullable().optional(),
+    feeling: z.string().max(2_000).nullable().optional(),
+    notes: notesSchema.nullable().optional(),
+    tags: z.array(tagSchema).optional(),
+} as const;
+
+/** Create and complete a manual run (a session with one running activity) in one call (design §19). */
+export const addRunRequestSchema = z
+    .object({
+        localDate: localDateSchema.optional(),
+        timeZone: timeZoneSchema.optional(),
+        title: titleSchema.nullable().optional(),
+        readiness: preWorkoutReadinessRequestSchema.optional(),
+        postWorkout: postWorkoutRatingsRequestSchema.optional(),
+        activityId: z.string().uuid().optional(),
+        ...runActivityFieldsShape,
+        running: runningActivityRequestSchema,
+        painRecords: z.array(painRecordRequestSchema).optional(),
+        mappings: recordSessionMappingsRequestSchema.optional(),
+    })
+    .strict();
+
+/** Replace a run's summary/structured detail (and optionally its plan mappings) for one activity. */
+export const updateRunRequestSchema = z
+    .object({
+        running: runningActivityRequestSchema,
+        mappings: recordSessionMappingsRequestSchema.optional(),
+    })
+    .strict();
+
+/** Full run-centric detail read: the enclosing session's metadata plus this run activity and its mappings. */
+export const runViewResponseSchema = z
+    .object({
+        sessionId: z.string().uuid(),
+        version: z.number().int().positive(),
+        activityId: z.string().uuid(),
+        localDate: z.string(),
+        timeZone: z.string(),
+        status: trainingSessionStatusSchema,
+        title: z.string().nullable(),
+        archivedAt: z.string().datetime().nullable(),
+        durationSeconds: z.number().int().nonnegative().nullable(),
+        rpe: scale0to10.nullable(),
+        feeling: z.string().nullable(),
+        notes: z.string().nullable(),
+        tags: z.array(z.string()),
+        running: runningActivityResponseSchema,
+        activityMapping: activityMappingResponseSchema.nullable(),
+        runStepMappings: z.array(runStepMappingResponseSchema),
+        plannedLinks: z.array(sessionPlannedLinkResponseSchema),
+    })
+    .strict();
+
+/** Bounded run-list projection (design §18.3 query separation): scalar metadata + derived pace. */
+export const runListItemResponseSchema = z
+    .object({
+        sessionId: z.string().uuid(),
+        activityId: z.string().uuid(),
+        version: z.number().int().positive(),
+        localDate: z.string(),
+        status: trainingSessionStatusSchema,
+        title: z.string().nullable(),
+        archivedAt: z.string().datetime().nullable(),
+        distanceMetres: z.string().nullable(),
+        movingTimeMs: z.string().nullable(),
+        derivedPaceSecondsPerKm: z.number().nullable(),
+        runTags: z.array(z.string()),
+    })
+    .strict();
+
+export const runListResponseSchema = z.object({ items: z.array(runListItemResponseSchema) }).strict();
+
 export type TrainingSessionStatusValue = z.infer<typeof trainingSessionStatusSchema>;
 export type SessionActivityTypeValue = z.infer<typeof sessionActivityTypeSchema>;
 export type PainSideValue = z.infer<typeof painSideSchema>;
@@ -697,6 +1047,19 @@ export type PerformedSetRequest = z.infer<typeof performedSetRequestSchema>;
 export type ExerciseOccurrenceRequest = z.infer<typeof exerciseOccurrenceRequestSchema>;
 export type SetGroupRequest = z.infer<typeof setGroupRequestSchema>;
 export type StrengthActivityRequest = z.infer<typeof strengthActivityRequestSchema>;
+export type RunningActivityRequest = z.infer<typeof runningActivityRequestSchema>;
+export type RunStepType = z.infer<typeof runStepTypeSchema>;
+export type PerformedRunStepRequest = z.infer<typeof performedRunStepRequestSchema>;
+export type PerformedRunStepResponse = z.infer<typeof performedRunStepResponseSchema>;
+export type RunSplitRequest = z.infer<typeof runSplitRequestSchema>;
+export type RunSplitResponse = z.infer<typeof runSplitResponseSchema>;
+export type RunZoneTimeRequest = z.infer<typeof runZoneTimeRequestSchema>;
+export type RunZoneTimeResponse = z.infer<typeof runZoneTimeResponseSchema>;
+export type RunRouteRequest = z.infer<typeof runRouteRequestSchema>;
+export type RunRouteResponse = z.infer<typeof runRouteResponseSchema>;
+export type PaceExclusionReasonValue = z.infer<typeof paceExclusionReasonSchema>;
+export type SetRunningActivityRequest = z.infer<typeof setRunningActivityRequestSchema>;
+export type RunningActivitySummaryResponse = z.infer<typeof runningActivitySummaryResponseSchema>;
 export type CreateTrainingSessionRequest = z.infer<typeof createTrainingSessionRequestSchema>;
 export type UpdateTrainingSessionRequest = z.infer<typeof updateTrainingSessionRequestSchema>;
 export type StartTrainingSessionRequest = z.infer<typeof startTrainingSessionRequestSchema>;
@@ -715,3 +1078,8 @@ export type ReorderSessionActivitiesRequest = z.infer<typeof reorderSessionActiv
 export type SubstituteOccurrenceRequest = z.infer<typeof substituteOccurrenceRequestSchema>;
 export type RecordPerformedSetRequest = z.infer<typeof recordPerformedSetRequestSchema>;
 export type UpdatePerformedSetRequest = z.infer<typeof updatePerformedSetRequestSchema>;
+export type AddRunRequest = z.infer<typeof addRunRequestSchema>;
+export type UpdateRunRequest = z.infer<typeof updateRunRequestSchema>;
+export type RunViewResponse = z.infer<typeof runViewResponseSchema>;
+export type RunListItemResponse = z.infer<typeof runListItemResponseSchema>;
+export type RunListResponse = z.infer<typeof runListResponseSchema>;

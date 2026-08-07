@@ -156,6 +156,14 @@ describe("training session planning services", () => {
             { setMappings: [{ id: id(700), prescribedSetId, performedSetId: SET, relation: "matched" }] },
             metadata,
         );
+        const mappingEvent = fixture.events.values.find(event => event.name === "training.mapping.changed")!;
+        expect(mappingEvent.aggregateRevision).toBe(mapped.version);
+        expect(mappingEvent.payload).toMatchObject({
+            trainingSessionId: started.id,
+            linkedPlannedSessionIds: [PLANNED],
+            invalidation: { analytics: false, adherence: true, progression: false },
+        });
+
         await fixture.commands.complete(mapped.id, mapped.version, {}, metadata);
         expect(fixture.recompute.at(-1)).toEqual({ plannedSessionId: PLANNED, outcome: "completed" });
 

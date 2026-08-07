@@ -34,7 +34,10 @@ import {
     type PlannedActualOutcome,
     type PostWorkoutRatings,
     type PreWorkoutReadiness,
+    type RunningActivityInput,
+    type RunningActivityState,
     type RunStepMappingInput,
+    type RunZoneTimeInput,
     type SessionMappingsInput,
     type SessionPlannedLink,
     type SessionPlannedLinkInput,
@@ -61,6 +64,8 @@ import type {
 import type { WorkoutTemplateRepository } from "#src/modules/training/application/workout-templates";
 import type { TrainingTargetContextReader } from "#src/modules/training/application/training-maxes";
 import type { EquipmentIncrementQueries } from "#src/modules/training/application/equipment-increments";
+import type { ZoneContextReader } from "#src/modules/training/application/zones";
+import type { GearItemRepository } from "#src/modules/training/application/gear-items";
 import type { ProfileReader } from "#src/modules/profile/index";
 
 export const TRAINING_SESSION_REPOSITORY = Symbol("TRAINING_SESSION_REPOSITORY");
@@ -162,6 +167,26 @@ export class ArchivedExerciseError extends ApplicationValidationError {
     }
 }
 
+/** No zone definition of the requested family was in force when the run was performed (PRD RN-5). */
+export class ZoneUnavailableError extends ApplicationValidationError {
+    constructor(readonly family: string) {
+        super(`No effective ${family} zone definition was found for this run`, {
+            zoneTimes: [`No effective ${family} zone definition was found for this run`],
+        });
+        this.name = "ZoneUnavailableError";
+    }
+}
+
+/** The referenced gear item does not exist, belongs to another profile, or is archived (PRD RN-6). */
+export class GearUnavailableError extends ApplicationValidationError {
+    constructor(readonly gearItemId: string) {
+        super("The referenced gear item is unavailable", {
+            gearItemId: ["The referenced gear item is unavailable"],
+        });
+        this.name = "GearUnavailableError";
+    }
+}
+
 export class TrainingSessionNotFoundError extends ApplicationNotFoundError {
     constructor(readonly trainingSessionId: string) {
         super(`Training session ${trainingSessionId} was not found`, { trainingSessionId });
@@ -187,6 +212,12 @@ export interface TrainingSessionPlanningPorts<Transaction> {
     readonly increments: Pick<EquipmentIncrementQueries, "resolveForExercise">;
 }
 
+/** Optional collaborators resolving structured-running zone/gear references (design 11.3; PRD RN-5/6). */
+export interface TrainingSessionRunningPorts<Transaction> {
+    readonly zones: ZoneContextReader;
+    readonly gear: Pick<GearItemRepository<Transaction>, "readGear">;
+}
+
 interface TrainingSessionCommandRuntime<Transaction> {
     readonly unitOfWork: UnitOfWork<Transaction>;
     readonly repository: TrainingSessionRepository<Transaction>;
@@ -194,6 +225,7 @@ interface TrainingSessionCommandRuntime<Transaction> {
     readonly profileReader: Pick<ProfileReader, "getActiveProfile">;
     readonly catalog: Pick<TrainingExerciseCatalogPort, "resolveCurrentExercise" | "currentSnapshot">;
     readonly planning?: TrainingSessionPlanningPorts<Transaction>;
+    readonly running?: TrainingSessionRunningPorts<Transaction>;
     readonly clock?: Clock;
     readonly generateId?: () => string;
 }
@@ -281,6 +313,18 @@ export interface UpdatePerformedSetCommand extends Partial<Omit<PerformedSetInpu
     readonly mapping?: PerformedSetMappingDraft | null;
 }
 
+/** Upsert (create or replace) the manual running summary of a running-type activity (PRD R1). */
+export interface SetRunningActivityCommand {
+    readonly activityId: string;
+    readonly running: RunningActivityInput;
+}
+
+/** Bounded running-summary read projection returned by {@link TrainingSessionCommands.readRunningSummary}. */
+export interface RunningActivitySummary {
+    readonly activityId: string;
+    readonly running: RunningActivityState;
+}
+
 /** One frozen prescription a live session maps against (source planned/template + resolved execution). */
 export interface ActiveSessionPlan {
     readonly referencePrescriptionId: string;
@@ -362,7 +406,7 @@ export class PlannedSessionUnavailableError extends ApplicationNotFoundError {
     }
 }
 
-type TrainingSessionAction = "created" | "started" | "updated" | "completed" | "reopened" | "archived" | "restored";
+type TrainingSessionAction = "created" | "started" | "revised" | "completed" | "reopened" | "archived" | "restored";
 
 type RecomputeMode = "complete" | "reopen" | "archive";
 
@@ -393,7 +437,7 @@ export class TrainingSessionCommands<Transaction = unknown> {
         const timeZone = command.timeZone ?? profile.timeZone;
         const localDate = command.localDate ?? localDateInZone(now, timeZone);
         // No occurrence exists yet, so every strength occurrence resolves a fresh current snapshot.
-        const activities = await this.enrichActivities(command.activities, new Map());
+        const activities = await this.enrichActivities(command.activities, new Map(), profile.id, now);
         const input: CreateTrainingSessionInput = {
             id: command.id ?? this.generateId(),
             profileId: profile.id,
@@ -451,7 +495,12 @@ export class TrainingSessionCommands<Transaction = unknown> {
             this.expectedVersions.verify(expectedVersion, stored.version);
             // Reuse the immutable snapshots of occurrences that already exist; resolve fresh ones only
             // for new work so historical facts never silently re-point to a changed catalog version.
-            const activities = await this.enrichActivities(command.activities, existingSnapshots(stored.state));
+            const activities = await this.enrichActivities(
+                command.activities,
+                existingSnapshots(stored.state),
+                stored.state.profileId,
+                now,
+            );
             const input: UpdateTrainingSessionInput = { ...command, activities };
             const result = await this.runtime.mutations.mutate({
                 entityType: TRAINING_SESSION_ENTITY_TYPE,
@@ -461,7 +510,7 @@ export class TrainingSessionCommands<Transaction = unknown> {
                     const next = TrainingSession.rehydrate(state).update(input, now);
                     return {
                         state: next.state,
-                        events: [this.event("updated", next.state, expectedVersion! + 1, metadata, now)],
+                        events: [this.event("revised", next.state, expectedVersion! + 1, metadata, now)],
                     };
                 },
                 metadata: revisionMetadata(metadata, "Updated training session"),
@@ -479,6 +528,8 @@ export class TrainingSessionCommands<Transaction = unknown> {
     private async enrichActivities(
         activities: readonly SessionActivityCommandInput[] | undefined,
         existing: ReadonlyMap<string, { readonly exerciseId: string; readonly snapshot: ExerciseSnapshotV1 }>,
+        profileId: string,
+        at: Date,
     ): Promise<readonly SessionActivityInput[] | undefined> {
         if (activities === undefined) return undefined;
         const result: SessionActivityInput[] = [];
@@ -491,7 +542,11 @@ export class TrainingSessionCommands<Transaction = unknown> {
                     throw new ApplicationValidationError("Only strength activities can carry strength detail", {
                         activities: ["Only strength activities can carry strength detail"],
                     });
-                result.push({ ...activity, strength: null });
+                const running =
+                    activity.type === "running" && activity.running != null
+                        ? await this.enrichRunning(activity.running, profileId, at)
+                        : activity.running;
+                result.push({ ...activity, strength: null, ...(running !== undefined ? { running } : {}) });
                 continue;
             }
             const occurrences: ExerciseOccurrenceInput[] = [];
@@ -518,6 +573,62 @@ export class TrainingSessionCommands<Transaction = unknown> {
         if (resolved.exercise.status === "archived") throw new ArchivedExerciseError(occurrence.exerciseId);
         const snapshot = await this.runtime.catalog.currentSnapshot(resolved.resolvedExerciseId);
         return { exerciseId: resolved.resolvedExerciseId, snapshot };
+    }
+
+    /**
+     * Resolve a running activity's zone/gear references through the public ports (design 11.3; PRD
+     * RN-5/6): each zone time is bound to the versioned zone definition in force at performance time,
+     * stamping the exact definition/range IDs and range name; gear is validated against the owner and
+     * archive state. When the running ports are not configured the references pass through unchanged so
+     * the domain's structural validation and the database foreign keys remain the only guards.
+     */
+    private async enrichRunning(
+        running: RunningActivityInput,
+        profileId: string,
+        at: Date,
+    ): Promise<RunningActivityInput> {
+        const ports = this.runtime.running;
+        if (!ports) return running;
+        const zoneTimes = running.zoneTimes;
+        const resolvedZoneTimes =
+            zoneTimes === undefined
+                ? undefined
+                : await Promise.all(zoneTimes.map(zoneTime => this.resolveZoneTime(zoneTime, profileId, at, ports)));
+        if (running.gearItemId != null) await this.assertGearAvailable(running.gearItemId, profileId, ports);
+        return resolvedZoneTimes === undefined ? running : { ...running, zoneTimes: resolvedZoneTimes };
+    }
+
+    private async resolveZoneTime(
+        zoneTime: RunZoneTimeInput,
+        profileId: string,
+        at: Date,
+        ports: TrainingSessionRunningPorts<Transaction>,
+    ): Promise<RunZoneTimeInput> {
+        const family = zoneTime.family;
+        const definition = await ports.zones.resolveZoneDefinition({ profileId, family, at: at.toISOString() });
+        if (!definition) throw new ZoneUnavailableError(family);
+        // Bind the range (when given) to the effective definition, retaining the exact IDs + a name label.
+        let zoneName: string | null = null;
+        if (zoneTime.zoneRangeId != null) {
+            const range = definition.ranges.find(candidate => candidate.id === zoneTime.zoneRangeId);
+            if (!range) throw new ZoneUnavailableError(family);
+            zoneName = range.name;
+        }
+        return {
+            ...zoneTime,
+            zoneDefinitionId: definition.zoneDefinitionId,
+            zoneName: zoneTime.zoneName ?? zoneName,
+        };
+    }
+
+    private async assertGearAvailable(
+        gearItemId: string,
+        profileId: string,
+        ports: TrainingSessionRunningPorts<Transaction>,
+    ): Promise<void> {
+        const gear = await ports.gear.readGear(entityId(gearItemId));
+        if (!gear || gear.profileId !== profileId || gear.status === "archived")
+            throw new GearUnavailableError(gearItemId);
     }
 
     complete(
@@ -674,10 +785,7 @@ export class TrainingSessionCommands<Transaction = unknown> {
         return this.inTransaction(transaction, async activeTransaction => {
             const template = await planning.templates.readTemplate(templateId, activeTransaction);
             if (!template) throw new TemplateUnavailableError(command.templateId);
-            const sourceTree = await planning.prescriptions.loadTree(
-                template.currentPrescriptionId,
-                activeTransaction,
-            );
+            const sourceTree = await planning.prescriptions.loadTree(template.currentPrescriptionId, activeTransaction);
             if (!sourceTree) throw new TemplateUnavailableError(command.templateId);
             const link = await this.freezeReferenceLink(
                 sourceTree,
@@ -774,14 +882,9 @@ export class TrainingSessionCommands<Transaction = unknown> {
         metadata: TrainingSessionMutationMetadata,
         transaction?: Transaction,
     ): Promise<TrainingSessionResource> {
-        return this.mutateTree(
-            id,
-            expectedVersion,
-            metadata,
-            transaction,
-            "Added session activity",
-            state => ({ activities: [...stateToCommandActivities(state.activities), command.activity] }),
-        );
+        return this.mutateTree(id, expectedVersion, metadata, transaction, "Added session activity", state => ({
+            activities: [...stateToCommandActivities(state.activities), command.activity],
+        }));
     }
 
     /** Reorder a session's activities to match the supplied complete ordered list of activity IDs. */
@@ -794,7 +897,10 @@ export class TrainingSessionCommands<Transaction = unknown> {
     ): Promise<TrainingSessionResource> {
         return this.mutateTree(id, expectedVersion, metadata, transaction, "Reordered session activities", state => {
             const byId = new Map(stateToCommandActivities(state.activities).map(activity => [activity.id, activity]));
-            if (command.activityIds.length !== byId.size || command.activityIds.some(activityId => !byId.has(activityId)))
+            if (
+                command.activityIds.length !== byId.size ||
+                command.activityIds.some(activityId => !byId.has(activityId))
+            )
                 throw new ApplicationValidationError("The reorder list must contain every activity exactly once", {
                     activityIds: ["The reorder list must contain every activity exactly once"],
                 });
@@ -939,6 +1045,50 @@ export class TrainingSessionCommands<Transaction = unknown> {
     }
 
     /**
+     * Upsert (create or replace) the manual running summary of a running-type activity (design 11.3;
+     * PRD R1). Rides the session concurrency/history conventions: it requires the session If-Match and
+     * bumps the session root version like every other granular child command. Average pace is never
+     * accepted or stored — it is derived on read.
+     */
+    setRunning(
+        id: string,
+        expectedVersion: number | undefined,
+        command: SetRunningActivityCommand,
+        metadata: TrainingSessionMutationMetadata,
+        transaction?: Transaction,
+    ): Promise<TrainingSessionResource> {
+        return this.mutateTree(id, expectedVersion, metadata, transaction, "Recorded running summary", state => {
+            const activities = stateToCommandActivities(state.activities);
+            const activity = activities.find(candidate => candidate.id === command.activityId);
+            if (!activity)
+                throw new ApplicationValidationError("The activity for this running summary was not found", {
+                    activityId: ["The activity for this running summary was not found in this session"],
+                });
+            if (activity.type !== "running")
+                throw new ApplicationValidationError("Only a running activity can carry a running summary", {
+                    activityId: ["Only a running activity can carry a running summary"],
+                });
+            const nextActivities = activities.map(candidate =>
+                candidate.id === command.activityId ? { ...candidate, running: command.running } : candidate,
+            );
+            return { activities: nextActivities };
+        });
+    }
+
+    /** Bounded running-summary read: the manual summary of one running activity, or null if absent. */
+    async readRunningSummary(
+        id: string,
+        activityId: string,
+        transaction?: Transaction,
+    ): Promise<RunningActivitySummary | null> {
+        const session = await this.runtime.repository.readSession(validEntityId(id), transaction);
+        if (!session) return null;
+        const activity = session.activities.find(candidate => candidate.id === activityId);
+        if (!activity || activity.type !== "running" || activity.running === null) return null;
+        return { activityId: activity.id, running: activity.running };
+    }
+
+    /**
      * Load the complete active-session view in a bounded query: the session tree plus every frozen
      * prescription it maps against (source planned/template + resolved execution), so the live UI can
      * render planned-versus-actual without extra round trips (design 18.3; PRD UX-3).
@@ -996,7 +1146,7 @@ export class TrainingSessionCommands<Transaction = unknown> {
                     const next = TrainingSession.rehydrate(state).update({ mappings: command }, now);
                     return {
                         state: next.state,
-                        events: [this.event("updated", next.state, expectedVersion! + 1, metadata, now)],
+                        events: [this.mappingChangedEvent(next.state, expectedVersion! + 1, metadata, now)],
                     };
                 },
                 metadata: revisionMetadata(metadata, "Recorded session mappings"),
@@ -1136,7 +1286,12 @@ export class TrainingSessionCommands<Transaction = unknown> {
             const change = transform(stored.state);
             const activities =
                 change.activities !== undefined
-                    ? await this.enrichActivities(change.activities, existingSnapshots(stored.state))
+                    ? await this.enrichActivities(
+                          change.activities,
+                          existingSnapshots(stored.state),
+                          stored.state.profileId,
+                          now,
+                      )
                     : undefined;
             if (change.mappings !== undefined && mappingsHavePrescribedRefs(change.mappings))
                 await this.assertPrescribedOwnership(
@@ -1157,7 +1312,7 @@ export class TrainingSessionCommands<Transaction = unknown> {
                     const next = TrainingSession.rehydrate(state).update(input, now);
                     return {
                         state: next.state,
-                        events: [this.event("updated", next.state, expectedVersion! + 1, metadata, now)],
+                        events: [this.event("revised", next.state, expectedVersion! + 1, metadata, now)],
                     };
                 },
                 metadata: revisionMetadata(metadata, summary),
@@ -1389,6 +1544,11 @@ export class TrainingSessionCommands<Transaction = unknown> {
         return transaction === undefined ? this.runtime.unitOfWork.execute(work) : work(transaction);
     }
 
+    /**
+     * Build a `training.session.<action>` integration event. Payloads carry only IDs, the new revision,
+     * and minimal invalidation metadata (design §17.1) — never the full session tree — so downstream
+     * adherence/analytics/progression workers can target exactly what a change staled.
+     */
     private event(
         action: TrainingSessionAction,
         state: TrainingSessionState,
@@ -1396,9 +1556,45 @@ export class TrainingSessionCommands<Transaction = unknown> {
         metadata: TrainingSessionMutationMetadata,
         occurredAt: Date,
     ): DomainEvent {
+        return this.buildEvent(
+            `training.session.${action}`,
+            state,
+            aggregateRevision,
+            metadata,
+            occurredAt,
+            invalidationFor(action, state),
+        );
+    }
+
+    /**
+     * Build the `training.mapping.changed` integration event (design §17.1) emitted when a session's
+     * planned/actual mappings change. Mapping edits move adherence coverage without touching performance
+     * facts, so analytics/progression stay valid while adherence is invalidated.
+     */
+    private mappingChangedEvent(
+        state: TrainingSessionState,
+        aggregateRevision: number,
+        metadata: TrainingSessionMutationMetadata,
+        occurredAt: Date,
+    ): DomainEvent {
+        return this.buildEvent("training.mapping.changed", state, aggregateRevision, metadata, occurredAt, {
+            analytics: false,
+            adherence: true,
+            progression: false,
+        });
+    }
+
+    private buildEvent(
+        name: string,
+        state: TrainingSessionState,
+        aggregateRevision: number,
+        metadata: TrainingSessionMutationMetadata,
+        occurredAt: Date,
+        invalidation: SessionInvalidation,
+    ): DomainEvent {
         return new PlatformDomainEvent({
             id: this.generateId(),
-            name: `training.session.${action}`,
+            name,
             version: 1,
             occurredAt,
             aggregateType: TRAINING_SESSION_ENTITY_TYPE,
@@ -1408,11 +1604,40 @@ export class TrainingSessionCommands<Transaction = unknown> {
             payload: {
                 trainingSessionId: state.id,
                 profileId: state.profileId,
+                version: aggregateRevision,
                 status: state.status,
                 archived: state.archivedAt !== null,
+                localDate: state.localDate,
+                linkedPlannedSessionIds: linkedPlannedSessionIds(state),
+                invalidation,
             },
         });
     }
+}
+
+/** Minimal invalidation flags carried by a session event so workers can coalesce targeted recomputes. */
+type SessionInvalidation = Readonly<Record<string, boolean>>;
+
+/**
+ * Decide which downstream projections a lifecycle change stales. Completing, reopening, archiving, or
+ * restoring a session (and editing one that is already completed) changes authoritative performance
+ * facts; drafting/starting/editing an in-progress session has no computed downstream state yet.
+ */
+function invalidationFor(action: TrainingSessionAction, state: TrainingSessionState): SessionInvalidation {
+    const affectsCompleted =
+        action === "completed" ||
+        action === "reopened" ||
+        action === "archived" ||
+        action === "restored" ||
+        (action === "revised" && state.status === "completed");
+    return { analytics: affectsCompleted, adherence: affectsCompleted, progression: affectsCompleted };
+}
+
+/** The distinct planned sessions a training session maps to — the adherence/progression scopes to invalidate. */
+function linkedPlannedSessionIds(state: TrainingSessionState): readonly string[] {
+    return [
+        ...new Set(state.plannedLinks.map(link => link.plannedSessionId).filter((id): id is string => id !== null)),
+    ];
 }
 
 const trainingSessionRevisionResourceMapper: SnapshotResourceMapper<TrainingSessionState, TrainingSessionResource> = {
@@ -1523,6 +1748,7 @@ function stateToCommandActivities(activities: TrainingSessionState["activities"]
                   setGroups: activity.strength.setGroups,
               }
             : null,
+        running: activity.running,
     }));
 }
 

@@ -201,6 +201,109 @@ describe("session planned/actual mappings", () => {
         expect(() => create("partial")).toThrow(/split/i);
     });
 
+    it("maps performed run steps to prescribed run steps with split and combined cardinality (PRD R3/AC-1)", () => {
+        const RUN_ACTIVITY = id(80);
+        const RUN_STEP_A = id(81);
+        const RUN_STEP_B = id(82);
+        const PRESCRIBED_RUN_STEP = id(83);
+        const PRESCRIBED_RUN_STEP_2 = id(84);
+        const runActivity: SessionActivityInput = {
+            id: RUN_ACTIVITY,
+            type: "running",
+            position: 0,
+            running: {
+                steps: [
+                    { id: RUN_STEP_A, type: "work", position: 0 },
+                    { id: RUN_STEP_B, type: "recovery", position: 1 },
+                ],
+            },
+        };
+        const buildRun = (mappings: SessionMappingsInput) =>
+            TrainingSession.create(
+                {
+                    id: id(9),
+                    profileId: PROFILE,
+                    localDate: "2026-08-02",
+                    timeZone: "UTC",
+                    activities: [runActivity],
+                    mappings,
+                },
+                now,
+            );
+
+        // One prescribed step split across two performed steps.
+        const split = buildRun({
+            runStepMappings: [
+                {
+                    id: id(90),
+                    prescribedRunStepId: PRESCRIBED_RUN_STEP,
+                    performedRunStepId: RUN_STEP_A,
+                    relation: "split",
+                },
+                {
+                    id: id(91),
+                    prescribedRunStepId: PRESCRIBED_RUN_STEP,
+                    performedRunStepId: RUN_STEP_B,
+                    relation: "split",
+                },
+            ],
+        });
+        expect(split.state.runStepMappings).toHaveLength(2);
+
+        // Two prescribed steps combined into one performed step.
+        const combined = buildRun({
+            runStepMappings: [
+                {
+                    id: id(92),
+                    prescribedRunStepId: PRESCRIBED_RUN_STEP,
+                    performedRunStepId: RUN_STEP_A,
+                    relation: "combined",
+                },
+                {
+                    id: id(93),
+                    prescribedRunStepId: PRESCRIBED_RUN_STEP_2,
+                    performedRunStepId: RUN_STEP_A,
+                    relation: "combined",
+                },
+            ],
+        });
+        expect(combined.state.runStepMappings).toHaveLength(2);
+
+        // A non-combined mapping may not share one performed step.
+        expect(() =>
+            buildRun({
+                runStepMappings: [
+                    {
+                        id: id(94),
+                        prescribedRunStepId: PRESCRIBED_RUN_STEP,
+                        performedRunStepId: RUN_STEP_A,
+                        relation: "matched",
+                    },
+                    {
+                        id: id(95),
+                        prescribedRunStepId: PRESCRIBED_RUN_STEP_2,
+                        performedRunStepId: RUN_STEP_A,
+                        relation: "combined",
+                    },
+                ],
+            }),
+        ).toThrow(/combined/i);
+
+        // A mapping to a performed run step the session does not own is rejected.
+        expect(() =>
+            buildRun({
+                runStepMappings: [
+                    {
+                        id: id(96),
+                        prescribedRunStepId: PRESCRIBED_RUN_STEP,
+                        performedRunStepId: id(999),
+                        relation: "matched",
+                    },
+                ],
+            }),
+        ).toThrow(DomainValidationError);
+    });
+
     it("rejects duplicate mapping ids", () => {
         expect(() =>
             build({

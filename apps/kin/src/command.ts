@@ -65,6 +65,12 @@ import {
     addSessionActivityRequestSchema,
     recordPerformedSetRequestSchema,
     updatePerformedSetRequestSchema,
+    setRunningActivityRequestSchema,
+    runningActivitySummaryResponseSchema,
+    addRunRequestSchema,
+    updateRunRequestSchema,
+    runViewResponseSchema,
+    runListResponseSchema,
     recordSessionMappingsRequestSchema,
     activeTrainingSessionResponseSchema,
     completionPreviewResponseSchema,
@@ -210,6 +216,8 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
     registerProgramCommands(training, dependencies);
     registerPlannedSessionCommands(training, dependencies);
     registerTrainingSessionCommands(training, dependencies);
+    registerTrainingSetCommands(training, dependencies);
+    registerTrainingRunningCommands(training, dependencies);
     registerTrainingInjuryCommands(training, dependencies);
     const history = training.command("history").description("Inspect and restore aggregate history");
 
@@ -291,6 +299,9 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
                 else dependencies.output(`Restored ${entityType} ${entityId} at version ${result.version}`);
             },
         );
+
+    // Top-level `kin run` alias over the Training run contracts (design §19; PRD R3).
+    registerRunCommands(program, dependencies);
 
     return program;
 }
@@ -1495,18 +1506,21 @@ function registerTrainingSessionCommands(training: Command, dependencies: Progra
 
     sessions
         .command("create")
-        .description("Create a training session (planned or unplanned) from inline JSON")
-        .option("--input <json>", "CreateTrainingSessionRequest JSON object", "{}")
+        .description("Create a training session (planned or unplanned) from JSON, a file, or stdin")
+        .option("--input <json>", "CreateTrainingSessionRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
         .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
         .option("--api-url <url>", "Override the Kinetix API URL")
         .option("--json", "Emit machine-readable JSON")
-        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
-            const input = createTrainingSessionRequestSchema.parse(parseJsonInput(options.input));
+        .action(async (options: SessionMutationOptions) => {
+            const input = createTrainingSessionRequestSchema.parse(readJsonBody(options, "{}"));
             const result = trainingSessionResponseSchema.parse(
                 await responseJson(
                     dependencies,
                     `${resolveApiUrl(options.apiUrl)}/training/sessions`,
-                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                    mutationRequest("POST", input, undefined, options.idempotencyKey, provenanceOf(options)),
                 ),
             );
             outputTrainingSession(dependencies.output, result, options.json);
@@ -1515,17 +1529,20 @@ function registerTrainingSessionCommands(training: Command, dependencies: Progra
     sessions
         .command("start-planned")
         .description("Start an in-progress session from a planned session, freezing its resolved targets")
-        .requiredOption("--input <json>", "StartPlannedTrainingSessionRequest JSON object")
+        .option("--input <json>", "StartPlannedTrainingSessionRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
         .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
         .option("--api-url <url>", "Override the Kinetix API URL")
         .option("--json", "Emit machine-readable JSON")
-        .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
-            const input = startPlannedTrainingSessionRequestSchema.parse(parseJsonInput(options.input));
+        .action(async (options: SessionMutationOptions) => {
+            const input = startPlannedTrainingSessionRequestSchema.parse(readJsonBody(options));
             const result = trainingSessionResponseSchema.parse(
                 await responseJson(
                     dependencies,
                     `${resolveApiUrl(options.apiUrl)}/training/sessions/start-planned`,
-                    mutationRequest("POST", input, undefined, options.idempotencyKey),
+                    mutationRequest("POST", input, undefined, options.idempotencyKey, provenanceOf(options)),
                 ),
             );
             outputTrainingSession(dependencies.output, result, options.json);
@@ -1536,78 +1553,72 @@ function registerTrainingSessionCommands(training: Command, dependencies: Progra
         .description("Record planned/actual mappings for a session (substitutions, splits, combines)")
         .argument("<session-id>", "Training session UUID")
         .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
-        .requiredOption("--input <json>", "RecordSessionMappingsRequest JSON object")
+        .option("--input <json>", "RecordSessionMappingsRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
         .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
         .option("--api-url <url>", "Override the Kinetix API URL")
         .option("--json", "Emit machine-readable JSON")
-        .action(
-            async (
-                sessionId: string,
-                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
-            ) => {
-                const input = recordSessionMappingsRequestSchema.parse(parseJsonInput(options.input));
-                const result = trainingSessionResponseSchema.parse(
-                    await responseJson(
-                        dependencies,
-                        `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/mappings`,
-                        mutationRequest("POST", input, options.version, options.idempotencyKey),
-                    ),
-                );
-                outputTrainingSession(dependencies.output, result, options.json);
-            },
-        );
+        .action(async (sessionId: string, options: SessionMutationOptions) => {
+            const input = recordSessionMappingsRequestSchema.parse(readJsonBody(options));
+            const result = trainingSessionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/mappings`,
+                    mutationRequest("POST", input, options.version, options.idempotencyKey, provenanceOf(options)),
+                ),
+            );
+            outputTrainingSession(dependencies.output, result, options.json);
+        });
 
     sessions
         .command("update")
         .description("Update a training session's metadata, readiness, timing, activities, or pain records")
         .argument("<session-id>", "Training session UUID")
         .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
-        .requiredOption("--input <json>", "UpdateTrainingSessionRequest JSON object")
+        .option("--input <json>", "UpdateTrainingSessionRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
         .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
         .option("--api-url <url>", "Override the Kinetix API URL")
         .option("--json", "Emit machine-readable JSON")
-        .action(
-            async (
-                sessionId: string,
-                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
-            ) => {
-                const input = updateTrainingSessionRequestSchema.parse(parseJsonInput(options.input));
-                const result = trainingSessionResponseSchema.parse(
-                    await responseJson(
-                        dependencies,
-                        `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}`,
-                        mutationRequest("PATCH", input, options.version, options.idempotencyKey),
-                    ),
-                );
-                outputTrainingSession(dependencies.output, result, options.json);
-            },
-        );
+        .action(async (sessionId: string, options: SessionMutationOptions) => {
+            const input = updateTrainingSessionRequestSchema.parse(readJsonBody(options));
+            const result = trainingSessionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}`,
+                    mutationRequest("PATCH", input, options.version, options.idempotencyKey, provenanceOf(options)),
+                ),
+            );
+            outputTrainingSession(dependencies.output, result, options.json);
+        });
 
     sessions
         .command("complete")
         .description("Complete an in-progress session, stamping the end instant and post ratings")
         .argument("<session-id>", "Training session UUID")
         .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
-        .option("--input <json>", "CompleteTrainingSessionRequest JSON object", "{}")
+        .option("--input <json>", "CompleteTrainingSessionRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
         .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
         .option("--api-url <url>", "Override the Kinetix API URL")
         .option("--json", "Emit machine-readable JSON")
-        .action(
-            async (
-                sessionId: string,
-                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
-            ) => {
-                const input = completeTrainingSessionRequestSchema.parse(parseJsonInput(options.input));
-                const result = trainingSessionResponseSchema.parse(
-                    await responseJson(
-                        dependencies,
-                        `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/complete`,
-                        mutationRequest("POST", input, options.version, options.idempotencyKey),
-                    ),
-                );
-                outputTrainingSession(dependencies.output, result, options.json);
-            },
-        );
+        .action(async (sessionId: string, options: SessionMutationOptions) => {
+            const input = completeTrainingSessionRequestSchema.parse(readJsonBody(options, "{}"));
+            const result = trainingSessionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/complete`,
+                    mutationRequest("POST", input, options.version, options.idempotencyKey, provenanceOf(options)),
+                ),
+            );
+            outputTrainingSession(dependencies.output, result, options.json);
+        });
 
     for (const [command, path, schema, description] of [
         ["start-empty", "start-empty", startEmptyTrainingSessionRequestSchema, "Start an empty in-progress session"],
@@ -1627,17 +1638,20 @@ function registerTrainingSessionCommands(training: Command, dependencies: Progra
         sessions
             .command(command)
             .description(description)
-            .option("--input <json>", `${command} request JSON object`, "{}")
+            .option("--input <json>", `${command} request JSON object`)
+            .option("--file <path>", "Read the request body from a file (use - for stdin)")
             .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+            .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+            .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
             .option("--api-url <url>", "Override the Kinetix API URL")
             .option("--json", "Emit machine-readable JSON")
-            .action(async (options: { input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean }) => {
-                const input = schema.parse(parseJsonInput(options.input));
+            .action(async (options: SessionMutationOptions) => {
+                const input = schema.parse(readJsonBody(options, "{}"));
                 const result = trainingSessionResponseSchema.parse(
                     await responseJson(
                         dependencies,
                         `${resolveApiUrl(options.apiUrl)}/training/sessions/${path}`,
-                        mutationRequest("POST", input, undefined, options.idempotencyKey),
+                        mutationRequest("POST", input, undefined, options.idempotencyKey, provenanceOf(options)),
                     ),
                 );
                 outputTrainingSession(dependencies.output, result, options.json);
@@ -1691,52 +1705,48 @@ function registerTrainingSessionCommands(training: Command, dependencies: Progra
         .description("Append one activity to a session (live entry)")
         .argument("<session-id>", "Training session UUID")
         .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
-        .requiredOption("--input <json>", "AddSessionActivityRequest JSON object")
+        .option("--input <json>", "AddSessionActivityRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
         .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
         .option("--api-url <url>", "Override the Kinetix API URL")
         .option("--json", "Emit machine-readable JSON")
-        .action(
-            async (
-                sessionId: string,
-                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
-            ) => {
-                const input = addSessionActivityRequestSchema.parse(parseJsonInput(options.input));
-                const result = trainingSessionResponseSchema.parse(
-                    await responseJson(
-                        dependencies,
-                        `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/activities`,
-                        mutationRequest("POST", input, options.version, options.idempotencyKey),
-                    ),
-                );
-                outputTrainingSession(dependencies.output, result, options.json);
-            },
-        );
+        .action(async (sessionId: string, options: SessionMutationOptions) => {
+            const input = addSessionActivityRequestSchema.parse(readJsonBody(options));
+            const result = trainingSessionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/activities`,
+                    mutationRequest("POST", input, options.version, options.idempotencyKey, provenanceOf(options)),
+                ),
+            );
+            outputTrainingSession(dependencies.output, result, options.json);
+        });
 
     sessions
         .command("record-set")
         .description("Record one performed set inside an occurrence, with an optional mapping")
         .argument("<session-id>", "Training session UUID")
         .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
-        .requiredOption("--input <json>", "RecordPerformedSetRequest JSON object")
+        .option("--input <json>", "RecordPerformedSetRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
         .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
         .option("--api-url <url>", "Override the Kinetix API URL")
         .option("--json", "Emit machine-readable JSON")
-        .action(
-            async (
-                sessionId: string,
-                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
-            ) => {
-                const input = recordPerformedSetRequestSchema.parse(parseJsonInput(options.input));
-                const result = trainingSessionResponseSchema.parse(
-                    await responseJson(
-                        dependencies,
-                        `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/strength/sets`,
-                        mutationRequest("POST", input, options.version, options.idempotencyKey),
-                    ),
-                );
-                outputTrainingSession(dependencies.output, result, options.json);
-            },
-        );
+        .action(async (sessionId: string, options: SessionMutationOptions) => {
+            const input = recordPerformedSetRequestSchema.parse(readJsonBody(options));
+            const result = trainingSessionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/strength/sets`,
+                    mutationRequest("POST", input, options.version, options.idempotencyKey, provenanceOf(options)),
+                ),
+            );
+            outputTrainingSession(dependencies.output, result, options.json);
+        });
 
     sessions
         .command("update-set")
@@ -1744,27 +1754,24 @@ function registerTrainingSessionCommands(training: Command, dependencies: Progra
         .argument("<session-id>", "Training session UUID")
         .argument("<set-id>", "Performed set UUID")
         .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
-        .requiredOption("--input <json>", "UpdatePerformedSetRequest JSON object")
+        .option("--input <json>", "UpdatePerformedSetRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
         .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
         .option("--api-url <url>", "Override the Kinetix API URL")
         .option("--json", "Emit machine-readable JSON")
-        .action(
-            async (
-                sessionId: string,
-                setId: string,
-                options: { version: number; input: string; idempotencyKey?: string; apiUrl?: string; json?: boolean },
-            ) => {
-                const input = updatePerformedSetRequestSchema.parse(parseJsonInput(options.input));
-                const result = trainingSessionResponseSchema.parse(
-                    await responseJson(
-                        dependencies,
-                        `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/strength/sets/${encodeURIComponent(setId)}`,
-                        mutationRequest("PATCH", input, options.version, options.idempotencyKey),
-                    ),
-                );
-                outputTrainingSession(dependencies.output, result, options.json);
-            },
-        );
+        .action(async (sessionId: string, setId: string, options: SessionMutationOptions) => {
+            const input = updatePerformedSetRequestSchema.parse(readJsonBody(options));
+            const result = trainingSessionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/strength/sets/${encodeURIComponent(setId)}`,
+                    mutationRequest("PATCH", input, options.version, options.idempotencyKey, provenanceOf(options)),
+                ),
+            );
+            outputTrainingSession(dependencies.output, result, options.json);
+        });
 
     for (const action of ["start", "reopen", "archive", "restore"] as const)
         sessions
@@ -1773,23 +1780,272 @@ function registerTrainingSessionCommands(training: Command, dependencies: Progra
             .argument("<session-id>", "Training session UUID")
             .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
             .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+            .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+            .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
             .option("--api-url <url>", "Override the Kinetix API URL")
             .option("--json", "Emit machine-readable JSON")
-            .action(
-                async (
-                    sessionId: string,
-                    options: { version: number; idempotencyKey?: string; apiUrl?: string; json?: boolean },
-                ) => {
-                    const result = trainingSessionResponseSchema.parse(
-                        await responseJson(
-                            dependencies,
-                            `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/${action}`,
-                            mutationRequest("POST", {}, options.version, options.idempotencyKey),
-                        ),
-                    );
-                    outputTrainingSession(dependencies.output, result, options.json);
-                },
+            .action(async (sessionId: string, options: SessionMutationOptions) => {
+                const result = trainingSessionResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/${action}`,
+                        mutationRequest("POST", {}, options.version, options.idempotencyKey, provenanceOf(options)),
+                    ),
+                );
+                outputTrainingSession(dependencies.output, result, options.json);
+            });
+}
+
+/**
+ * `kin training sets add|update|complete` — a focused verb group over a session's performed strength
+ * sets (design §19). Each command is an HTTP adapter over the session aggregate's set endpoints, carries
+ * the session's expected `--version`, and accepts its body via `--input`, `--file`, or stdin (`--file -`).
+ */
+function registerTrainingSetCommands(training: Command, dependencies: ProgramDependencies): void {
+    const sets = training.command("sets").description("Add, update, and complete performed strength sets");
+
+    sets.command("add")
+        .description("Record one performed set inside an occurrence, with an optional mapping")
+        .argument("<session-id>", "Training session UUID")
+        .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
+        .option("--input <json>", "RecordPerformedSetRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (sessionId: string, options: SessionMutationOptions) => {
+            const input = recordPerformedSetRequestSchema.parse(readJsonBody(options));
+            const result = trainingSessionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/strength/sets`,
+                    mutationRequest("POST", input, options.version, options.idempotencyKey, provenanceOf(options)),
+                ),
             );
+            outputTrainingSession(dependencies.output, result, options.json);
+        });
+
+    sets.command("update")
+        .description("Patch an existing performed set, optionally updating its mapping")
+        .argument("<session-id>", "Training session UUID")
+        .argument("<set-id>", "Performed set UUID")
+        .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
+        .option("--input <json>", "UpdatePerformedSetRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (sessionId: string, setId: string, options: SessionMutationOptions) => {
+            const input = updatePerformedSetRequestSchema.parse(readJsonBody(options));
+            const result = trainingSessionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/strength/sets/${encodeURIComponent(setId)}`,
+                    mutationRequest("PATCH", input, options.version, options.idempotencyKey, provenanceOf(options)),
+                ),
+            );
+            outputTrainingSession(dependencies.output, result, options.json);
+        });
+
+    sets.command("complete")
+        .description("Mark a performed set completed (merges status onto any supplied patch)")
+        .argument("<session-id>", "Training session UUID")
+        .argument("<set-id>", "Performed set UUID")
+        .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
+        .option("--input <json>", "UpdatePerformedSetRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (sessionId: string, setId: string, options: SessionMutationOptions) => {
+            const provided = updatePerformedSetRequestSchema.parse(readJsonBody(options, "{}"));
+            const input = updatePerformedSetRequestSchema.parse({ ...provided, status: "completed" });
+            const result = trainingSessionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/strength/sets/${encodeURIComponent(setId)}`,
+                    mutationRequest("PATCH", input, options.version, options.idempotencyKey, provenanceOf(options)),
+                ),
+            );
+            outputTrainingSession(dependencies.output, result, options.json);
+        });
+}
+
+function registerTrainingRunningCommands(training: Command, dependencies: ProgramDependencies): void {
+    const runs = training.command("runs").description("Record and inspect manual running summaries");
+
+    runs.command("set")
+        .description("Upsert the manual running summary of a running activity")
+        .argument("<session-id>", "Training session UUID")
+        .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
+        .option("--input <json>", "SetRunningActivityRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (sessionId: string, options: SessionMutationOptions) => {
+            const input = setRunningActivityRequestSchema.parse(readJsonBody(options));
+            const result = trainingSessionResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/running`,
+                    mutationRequest("PUT", input, options.version, options.idempotencyKey, provenanceOf(options)),
+                ),
+            );
+            outputTrainingSession(dependencies.output, result, options.json);
+        });
+
+    runs.command("show")
+        .description("Show the manual running summary of one activity, with its derived pace")
+        .argument("<session-id>", "Training session UUID")
+        .argument("<activity-id>", "Running activity UUID")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (sessionId: string, activityId: string, options: { apiUrl?: string; json?: boolean }) => {
+            const result = runningActivitySummaryResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/running/${encodeURIComponent(activityId)}`,
+                ),
+            );
+            outputRunningSummary(dependencies.output, result, options.json);
+        });
+}
+
+/**
+ * `kin run add|update|show|list` — an ergonomic alias over the Training run contracts (design §19;
+ * PRD R3). It reuses the same HTTP client, `--json`, non-interactive input, explicit version, and
+ * idempotency-key conventions as the rest of the CLI; every write ultimately maps to the same
+ * TrainingSession aggregate as strength work.
+ */
+function registerRunCommands(program: Command, dependencies: ProgramDependencies): void {
+    const run = program.command("run").description("Log and inspect manual and mixed-session runs");
+
+    run.command("add")
+        .description("Log a manual run: create a session with one running activity and complete it")
+        .option("--input <json>", "AddRunRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: SessionMutationOptions) => {
+            const input = addRunRequestSchema.parse(readJsonBody(options));
+            const result = runViewResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/runs`,
+                    mutationRequest("POST", input, undefined, options.idempotencyKey, provenanceOf(options)),
+                ),
+            );
+            outputRunView(dependencies.output, result, options.json);
+        });
+
+    run.command("update")
+        .description("Correct a run's summary/detail and plan mappings for one running activity")
+        .argument("<session-id>", "Training session UUID")
+        .argument("<activity-id>", "Running activity UUID")
+        .requiredOption("--version <version>", "Expected session version", parsePositiveInteger)
+        .option("--input <json>", "UpdateRunRequest JSON object")
+        .option("--file <path>", "Read the request body from a file (use - for stdin)")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--source <source>", "Provenance channel recorded in history (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Free-text reason recorded in history (e.g. a manual correction)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (sessionId: string, activityId: string, options: SessionMutationOptions) => {
+            const input = updateRunRequestSchema.parse(readJsonBody(options));
+            const result = runViewResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/runs/${encodeURIComponent(sessionId)}/${encodeURIComponent(activityId)}`,
+                    mutationRequest("PUT", input, options.version, options.idempotencyKey, provenanceOf(options)),
+                ),
+            );
+            outputRunView(dependencies.output, result, options.json);
+        });
+
+    run.command("show")
+        .description("Show a run: the session's running activity, its derived pace, and plan mappings")
+        .argument("<session-id>", "Training session UUID")
+        .argument("[activity-id]", "Running activity UUID (defaults to the session's first run)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (sessionId: string, activityId: string | undefined, options: { apiUrl?: string; json?: boolean }) => {
+                const path = activityId
+                    ? `/training/runs/${encodeURIComponent(sessionId)}/${encodeURIComponent(activityId)}`
+                    : `/training/runs/${encodeURIComponent(sessionId)}`;
+                const result = runViewResponseSchema.parse(
+                    await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}${path}`),
+                );
+                outputRunView(dependencies.output, result, options.json);
+            },
+        );
+
+    run.command("list")
+        .description("List runs across sessions with distance and derived pace")
+        .option("--include-archived", "Include runs from archived sessions")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { includeArchived?: boolean; apiUrl?: string; json?: boolean }) => {
+            const query = options.includeArchived ? "?includeArchived=true" : "";
+            const result = runListResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/runs${query}`),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const item of result.items) outputRunListItem(dependencies.output, item);
+        });
+}
+
+function outputRunView(
+    output: (message: string) => void,
+    run: ReturnType<typeof runViewResponseSchema.parse>,
+    json?: boolean,
+): void {
+    if (json) {
+        output(JSON.stringify(run));
+        return;
+    }
+    const { running } = run;
+    const distance = running.distance ? `${running.distance.value}${running.distance.unit}` : "-";
+    const moving = running.movingTime ? `${running.movingTime.value}${running.movingTime.unit}` : "-";
+    const pace =
+        running.derivedPace.secondsPerKilometre === null
+            ? `pace=- (${running.derivedPace.exclusions.join(",") || "unavailable"})`
+            : `pace=${formatPace(running.derivedPace.secondsPerKilometre)}/km`;
+    const line = `${run.sessionId}\t${run.activityId}\tv${run.version}\t${run.status}\t${run.localDate}\t${run.title ?? ""}`;
+    // Notes can carry personal reflections; the human view signals presence only (use --json for content).
+    output(run.notes ? `${line}\tnotes=[redacted]` : line);
+    output(`\tdistance=${distance}\tmoving=${moving}\t${pace}`);
+    const structure: string[] = [];
+    if (running.steps.length > 0) structure.push(`steps=${running.steps.length}`);
+    if (running.splits.length > 0) structure.push(`splits=${running.splits.length}`);
+    if (running.zoneTimes.length > 0) structure.push(`zones=${running.zoneTimes.length}`);
+    if (run.runStepMappings.length > 0) structure.push(`mappings=${run.runStepMappings.length}`);
+    if (running.gearItemId !== null) structure.push(`gear=${running.gearItemId}`);
+    if (structure.length > 0) output(`\t${structure.join("\t")}`);
+}
+
+function outputRunListItem(
+    output: (message: string) => void,
+    item: ReturnType<typeof runListResponseSchema.parse>["items"][number],
+): void {
+    const distance = item.distanceMetres === null ? "-" : `${(Number(item.distanceMetres) / 1000).toFixed(2)}km`;
+    const pace =
+        item.derivedPaceSecondsPerKm === null ? "pace=-" : `pace=${formatPace(item.derivedPaceSecondsPerKm)}/km`;
+    output(
+        `${item.sessionId}\t${item.activityId}\tv${item.version}\t${item.status}\t${item.localDate}\tdistance=${distance}\t${pace}\t${item.title ?? ""}`,
+    );
 }
 
 function registerTrainingProfileCommands(training: Command, dependencies: ProgramDependencies): void {
@@ -2300,16 +2556,42 @@ async function responseJson(dependencies: ProgramDependencies, url: string, init
     return response.json();
 }
 
+/** Caller-declared provenance recorded in history and echoed on the emitted outbox event. */
+interface Provenance {
+    source?: string;
+    reason?: string;
+}
+
 function mutationRequest(
     method: "POST" | "PATCH" | "PUT",
     body: unknown,
     version?: number,
     idempotencyKey?: string,
+    provenance?: Provenance,
 ): RequestInit {
     const headers = new Headers({ "content-type": "application/json" });
     if (version !== undefined) headers.set("if-match", `"${version}"`);
     if (idempotencyKey) headers.set("idempotency-key", idempotencyKey);
+    if (provenance?.source) headers.set("x-kinetix-source", provenance.source);
+    if (provenance?.reason) headers.set("x-kinetix-reason", provenance.reason);
     return { method, headers, body: JSON.stringify(body) };
+}
+
+/** Pull the provenance flags off a parsed command's options for {@link mutationRequest}. */
+function provenanceOf(options: { source?: string; reason?: string }): Provenance {
+    return { source: options.source, reason: options.reason };
+}
+
+/** Options shared by every `kin training sessions`/`sets` mutation: body input, version, and provenance. */
+interface SessionMutationOptions {
+    input?: string;
+    file?: string;
+    version?: number;
+    idempotencyKey?: string;
+    source?: string;
+    reason?: string;
+    apiUrl?: string;
+    json?: boolean;
 }
 
 function mergeInput(options: { canonical: string; merged: string; canonicalVersion: number; mergedVersion: number }) {
@@ -2335,6 +2617,20 @@ function readEnvelopeInput(options: { file?: string; input?: string }): unknown 
     if (options.file === undefined) throw new Error("Provide the bulk program via --input <json> or --file <path>");
     const raw = options.file === "-" ? readFileSync(0, "utf8") : readFileSync(options.file, "utf8");
     return parseJsonInput(raw);
+}
+
+/**
+ * Read a JSON request body from `--input <json>`, a `--file <path>`, or stdin (`--file -`). When neither
+ * is supplied the caller may pass a `fallback` (e.g. `"{}"`) for commands whose body is optional.
+ */
+function readJsonBody(options: { input?: string; file?: string }, fallback?: string): unknown {
+    if (options.input !== undefined) return parseJsonInput(options.input);
+    if (options.file !== undefined) {
+        const raw = options.file === "-" ? readFileSync(0, "utf8") : readFileSync(options.file, "utf8");
+        return parseJsonInput(raw);
+    }
+    if (fallback !== undefined) return parseJsonInput(fallback);
+    throw new Error("Provide the request body via --input <json> or --file <path> (use - for stdin)");
 }
 
 function outputExercise(
@@ -2473,8 +2769,50 @@ function outputTrainingSession(
         | ReturnType<typeof trainingSessionListResponseSchema.parse>["items"][number],
     json?: boolean,
 ): void {
-    if (json) output(JSON.stringify(session));
-    else output(`${session.id}\t${session.version}\t${session.status}\t${session.localDate}\t${session.title ?? ""}`);
+    if (json) {
+        // Machine-readable output is the authoritative payload and is never redacted.
+        output(JSON.stringify(session));
+        return;
+    }
+    const line = `${session.id}\t${session.version}\t${session.status}\t${session.localDate}\t${session.title ?? ""}`;
+    // Session notes can carry personal reflections; the human view signals their presence without ever
+    // printing the content (design §19; use --json to retrieve the full payload).
+    output(session.notes ? `${line}\tnotes=[redacted]` : line);
+}
+
+function outputRunningSummary(
+    output: (message: string) => void,
+    summary: ReturnType<typeof runningActivitySummaryResponseSchema.parse>,
+    json?: boolean,
+): void {
+    if (json) {
+        output(JSON.stringify(summary));
+        return;
+    }
+    const { running } = summary;
+    const distance = running.distance ? `${running.distance.value}${running.distance.unit}` : "-";
+    const moving = running.movingTime ? `${running.movingTime.value}${running.movingTime.unit}` : "-";
+    const pace =
+        running.derivedPace.secondsPerKilometre === null
+            ? `pace=- (${running.derivedPace.exclusions.join(",") || "unavailable"})`
+            : `pace=${formatPace(running.derivedPace.secondsPerKilometre)}/km`;
+    output(`${summary.activityId}\tdistance=${distance}\tmoving=${moving}\t${pace}`);
+    // Structured-running counts (design 11.3; PRD RN-3/4/5/6): only surface sections that carry data.
+    const structure: string[] = [];
+    if (running.steps.length > 0) structure.push(`steps=${running.steps.length}`);
+    if (running.splits.length > 0) structure.push(`splits=${running.splits.length}`);
+    if (running.zoneTimes.length > 0) structure.push(`zones=${running.zoneTimes.length}`);
+    if (running.route !== null) structure.push("route=yes");
+    if (running.gearItemId !== null) structure.push(`gear=${running.gearItemId}`);
+    if (structure.length > 0) output(`\t${structure.join("\t")}`);
+}
+
+/** Render seconds-per-kilometre as a `m:ss` running pace. */
+function formatPace(secondsPerKilometre: number): string {
+    const total = Math.round(secondsPerKilometre);
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
 function capitalizeWord(value: string): string {

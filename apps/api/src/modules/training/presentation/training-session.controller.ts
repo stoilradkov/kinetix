@@ -11,6 +11,7 @@ import {
     Param,
     Patch,
     Post,
+    Put,
     Query,
     Res,
 } from "@nestjs/common";
@@ -25,6 +26,8 @@ import {
     recordPerformedSetRequestSchema,
     recordSessionMappingsRequestSchema,
     reorderSessionActivitiesRequestSchema,
+    runningActivitySummaryResponseSchema,
+    setRunningActivityRequestSchema,
     startEmptyTrainingSessionRequestSchema,
     startPlannedTrainingSessionRequestSchema,
     startPreviousTrainingSessionRequestSchema,
@@ -37,6 +40,7 @@ import {
     updateTrainingSessionRequestSchema,
     type ActiveTrainingSessionResponse,
     type CompletionPreviewResponse,
+    type RunningActivitySummaryResponse,
     type TrainingSessionListResponse,
     type TrainingSessionResponse,
 } from "@kinetix/types";
@@ -56,6 +60,7 @@ import {
     IDEMPOTENT_COMMAND_EXECUTOR,
     type IdempotentCommandExecutor,
 } from "#src/platform/application/index";
+import { deriveAveragePace, type SessionActivityState } from "#src/modules/training/domain/index";
 import { entityId } from "#src/platform/domain/index";
 import { formatRevisionEtag, parseRevisionEtag } from "#src/platform/presentation/revision-etag";
 
@@ -92,13 +97,15 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
         const request = parseContract(
             createTrainingSessionRequestSchema,
             rawBody ?? {},
             "Training session validation failed",
         );
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.create",
             idempotencyKey,
@@ -118,13 +125,15 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
         const request = parseContract(
             startPlannedTrainingSessionRequestSchema,
             rawBody ?? {},
             "Start-from-planned validation failed",
         );
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.start-planned",
             idempotencyKey,
@@ -144,9 +153,15 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
-        const request = parseContract(startEmptyTrainingSessionRequestSchema, rawBody ?? {}, "Start-empty validation failed");
-        const metadata = mutationMetadata(rawCorrelationId);
+        const request = parseContract(
+            startEmptyTrainingSessionRequestSchema,
+            rawBody ?? {},
+            "Start-empty validation failed",
+        );
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.start-empty",
             idempotencyKey,
@@ -166,13 +181,15 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
         const request = parseContract(
             startTemplateTrainingSessionRequestSchema,
             rawBody ?? {},
             "Start-from-template validation failed",
         );
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.start-template",
             idempotencyKey,
@@ -192,13 +209,15 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
         const request = parseContract(
             startPreviousTrainingSessionRequestSchema,
             rawBody ?? {},
             "Start-from-previous validation failed",
         );
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.start-previous",
             idempotencyKey,
@@ -220,7 +239,7 @@ export class TrainingSessionController {
         const view = await this.commands.readActiveView(id);
         if (!view) throw new TrainingSessionNotFoundError(id);
         response.setHeader("ETag", formatRevisionEtag(view.version));
-        return activeTrainingSessionResponseSchema.parse(view);
+        return activeTrainingSessionResponseSchema.parse(withDerivedPace(view));
     }
 
     @Get(":id/completion-preview")
@@ -256,6 +275,8 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
         const request = parseContract(
             updateTrainingSessionRequestSchema,
@@ -263,7 +284,7 @@ export class TrainingSessionController {
             "Training session update validation failed",
         );
         const expectedVersion = expectedVersionFrom(ifMatch);
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.update",
             idempotencyKey,
@@ -287,6 +308,8 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
         const request = parseContract(
             recordSessionMappingsRequestSchema,
@@ -294,7 +317,7 @@ export class TrainingSessionController {
             "Session mapping validation failed",
         );
         const expectedVersion = expectedVersionFrom(ifMatch);
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.mappings",
             idempotencyKey,
@@ -318,10 +341,12 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
         const request = parseContract(addSessionActivityRequestSchema, rawBody ?? {}, "Add-activity validation failed");
         const expectedVersion = expectedVersionFrom(ifMatch);
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.add-activity",
             idempotencyKey,
@@ -345,10 +370,16 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
-        const request = parseContract(reorderSessionActivitiesRequestSchema, rawBody ?? {}, "Reorder validation failed");
+        const request = parseContract(
+            reorderSessionActivitiesRequestSchema,
+            rawBody ?? {},
+            "Reorder validation failed",
+        );
         const expectedVersion = expectedVersionFrom(ifMatch);
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.reorder-activities",
             idempotencyKey,
@@ -373,6 +404,8 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
         const request = parseContract(
             substituteOccurrenceRequestSchema,
@@ -380,7 +413,7 @@ export class TrainingSessionController {
             "Substitution validation failed",
         );
         const expectedVersion = expectedVersionFrom(ifMatch);
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.substitute-occurrence",
             idempotencyKey,
@@ -405,10 +438,12 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
         const request = parseContract(recordPerformedSetRequestSchema, rawBody ?? {}, "Record-set validation failed");
         const expectedVersion = expectedVersionFrom(ifMatch);
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.record-set",
             idempotencyKey,
@@ -435,10 +470,12 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
         const request = parseContract(updatePerformedSetRequestSchema, rawBody ?? {}, "Update-set validation failed");
         const expectedVersion = expectedVersionFrom(ifMatch);
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.update-set",
             idempotencyKey,
@@ -448,6 +485,48 @@ export class TrainingSessionController {
             status: 200,
             command: transaction =>
                 this.commands.updatePerformedSet(id, expectedVersion, setId, request, metadata, transaction),
+        });
+    }
+
+    @Get(":id/running/:activityId")
+    @ApiOperation({ summary: "Get the manual running summary of one activity, with its derived pace" })
+    @ApiParam({ name: "id", format: "uuid" })
+    @ApiParam({ name: "activityId", format: "uuid" })
+    async runningSummary(
+        @Param("id") id: string,
+        @Param("activityId") activityId: string,
+    ): Promise<RunningActivitySummaryResponse> {
+        const summary = await this.commands.readRunningSummary(id, activityId);
+        if (!summary) throw new TrainingSessionNotFoundError(id);
+        return runningActivitySummaryResponseSchema.parse(toRunningSummaryResponse(summary));
+    }
+
+    @Put(":id/running")
+    @ApiOperation({ summary: "Upsert the manual running summary of a running activity (live entry)" })
+    @ApiParam({ name: "id", format: "uuid" })
+    @ApiHeader({ name: "If-Match", required: true })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    setRunning(
+        @Param("id") id: string,
+        @Body() rawBody: unknown,
+        @Headers("if-match") ifMatch: string | undefined,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
+    ): Promise<TrainingSessionResponse> {
+        const request = parseContract(setRunningActivityRequestSchema, rawBody ?? {}, "Set-running validation failed");
+        const expectedVersion = expectedVersionFrom(ifMatch);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
+        return this.executeMutation({
+            operation: "training.session.set-running",
+            idempotencyKey,
+            request: { id, expectedVersion, body: request },
+            metadata,
+            response,
+            status: 200,
+            command: transaction => this.commands.setRunning(id, expectedVersion, request, metadata, transaction),
         });
     }
 
@@ -462,10 +541,12 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
         parseContract(startTrainingSessionRequestSchema, rawBody ?? {}, "Training session start validation failed");
         const expectedVersion = expectedVersionFrom(ifMatch);
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.start",
             idempotencyKey,
@@ -488,6 +569,8 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
         const request = parseContract(
             completeTrainingSessionRequestSchema,
@@ -495,7 +578,7 @@ export class TrainingSessionController {
             "Training session completion validation failed",
         );
         const expectedVersion = expectedVersionFrom(ifMatch);
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: "training.session.complete",
             idempotencyKey,
@@ -517,9 +600,19 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
-        return this.transition("reopen", id, ifMatch, rawCorrelationId, idempotencyKey, response, (v, m, t) =>
-            this.commands.reopen(id, v, m, t),
+        return this.transition(
+            "reopen",
+            id,
+            ifMatch,
+            rawCorrelationId,
+            rawSource,
+            rawReason,
+            idempotencyKey,
+            response,
+            (v, m, t) => this.commands.reopen(id, v, m, t),
         );
     }
 
@@ -533,9 +626,19 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
-        return this.transition("archive", id, ifMatch, rawCorrelationId, idempotencyKey, response, (v, m, t) =>
-            this.commands.archive(id, v, m, t),
+        return this.transition(
+            "archive",
+            id,
+            ifMatch,
+            rawCorrelationId,
+            rawSource,
+            rawReason,
+            idempotencyKey,
+            response,
+            (v, m, t) => this.commands.archive(id, v, m, t),
         );
     }
 
@@ -549,9 +652,19 @@ export class TrainingSessionController {
         @Headers("x-correlation-id") rawCorrelationId: string | undefined,
         @Headers("idempotency-key") idempotencyKey: string | undefined,
         @Res({ passthrough: true }) response: HeaderResponse,
+        @Headers("x-kinetix-source") rawSource?: string,
+        @Headers("x-kinetix-reason") rawReason?: string,
     ): Promise<TrainingSessionResponse> {
-        return this.transition("restore", id, ifMatch, rawCorrelationId, idempotencyKey, response, (v, m, t) =>
-            this.commands.restore(id, v, m, t),
+        return this.transition(
+            "restore",
+            id,
+            ifMatch,
+            rawCorrelationId,
+            rawSource,
+            rawReason,
+            idempotencyKey,
+            response,
+            (v, m, t) => this.commands.restore(id, v, m, t),
         );
     }
 
@@ -560,6 +673,8 @@ export class TrainingSessionController {
         id: string,
         ifMatch: string | undefined,
         rawCorrelationId: string | undefined,
+        rawSource: string | undefined,
+        rawReason: string | undefined,
         idempotencyKey: string | undefined,
         response: HeaderResponse,
         command: (
@@ -569,7 +684,7 @@ export class TrainingSessionController {
         ) => Promise<TrainingSessionResource>,
     ): Promise<TrainingSessionResponse> {
         const expectedVersion = expectedVersionFrom(ifMatch);
-        const metadata = mutationMetadata(rawCorrelationId);
+        const metadata = mutationMetadata(rawCorrelationId, rawSource, rawReason);
         return this.executeMutation({
             operation: `training.session.${action}`,
             idempotencyKey,
@@ -615,7 +730,33 @@ export class TrainingSessionController {
 }
 
 function toResponse(resource: TrainingSessionResource): unknown {
-    return resource;
+    return withDerivedPace(resource);
+}
+
+/**
+ * Attach the derived average pace to every running activity as a query-only projection. Pace is never
+ * stored on the aggregate (design 11.3); it is computed here from canonical distance/moving time so the
+ * wire response carries it alongside the recorded metrics with its provenance and exclusions.
+ */
+function withDerivedPace<T extends { readonly activities: readonly SessionActivityState[] }>(resource: T): T {
+    return {
+        ...resource,
+        activities: resource.activities.map(activity =>
+            activity.running === null
+                ? activity
+                : { ...activity, running: { ...activity.running, derivedPace: deriveAveragePace(activity.running) } },
+        ),
+    };
+}
+
+function toRunningSummaryResponse(summary: {
+    readonly activityId: string;
+    readonly running: NonNullable<SessionActivityState["running"]>;
+}): unknown {
+    return {
+        activityId: summary.activityId,
+        running: { ...summary.running, derivedPace: deriveAveragePace(summary.running) },
+    };
 }
 
 function sessionId(value: string) {
@@ -656,8 +797,33 @@ function contractValidationException(
     return new HttpException({ code: "VALIDATION_FAILED", message, fieldErrors }, 422);
 }
 
-function mutationMetadata(rawCorrelationId: string | undefined): TrainingSessionMutationMetadata {
-    return { correlationId: rawCorrelationId?.trim() || randomUUID(), actorId: null, source: "user" };
+/**
+ * Build the command context for a session mutation. Provenance travels in headers so the same
+ * value threads through the aggregate revision (design §12) and its outbox event: `x-kinetix-source`
+ * attributes the change (web/CLI default to `user`, automation sets `agent`), and `x-kinetix-reason`
+ * captures a free-text note such as a manual correction. Unknown sources fall back to `user` rather
+ * than trusting an arbitrary client string.
+ */
+function mutationMetadata(
+    rawCorrelationId: string | undefined,
+    rawSource?: string,
+    rawReason?: string,
+): TrainingSessionMutationMetadata {
+    const reason = rawReason?.trim();
+    return {
+        correlationId: rawCorrelationId?.trim() || randomUUID(),
+        actorId: null,
+        source: mutationSource(rawSource),
+        ...(reason ? { reason } : {}),
+    };
+}
+
+const MUTATION_SOURCES = ["user", "agent", "import", "sync", "system"] as const;
+type MutationSource = (typeof MUTATION_SOURCES)[number];
+
+function mutationSource(rawSource: string | undefined): MutationSource {
+    const normalized = rawSource?.trim().toLowerCase();
+    return MUTATION_SOURCES.find(source => source === normalized) ?? "user";
 }
 
 function expectedVersionFrom(ifMatch: string | undefined): number {

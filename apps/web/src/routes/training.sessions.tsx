@@ -9,6 +9,7 @@ import type { TrainingSessionStatusValue, TrainingSessionSummary } from "@kineti
 import { SessionForm } from "@/components/training/session-form";
 import { SessionMappingsDetail } from "@/components/training/session-mappings-detail";
 import { ElapsedTimer } from "@/components/training/session-timers";
+import { RunningActivityDetail } from "@/components/training/running-activity-detail";
 import { StrengthActivityDetail } from "@/components/training/strength-activity-detail";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -292,6 +293,7 @@ function EditSession({
                 submitLabel="Save changes"
             />
             <StrengthActivityDetail activities={detail.data.activities} />
+            <RunningActivityDetail activities={detail.data.activities} />
             <SessionMappingsDetail session={detail.data} />
             {history.data && history.data.items.length > 0 ? (
                 <section className="grid gap-2">

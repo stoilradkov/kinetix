@@ -18,6 +18,7 @@ export * from "#src/modules/training/domain/program-planning";
 export * from "#src/modules/training/domain/schedule-expansion";
 export * from "#src/modules/training/domain/planned-session";
 export * from "#src/modules/training/domain/session-strength";
+export * from "#src/modules/training/domain/session-running";
 export * from "#src/modules/training/domain/session-mapping";
 export * from "#src/modules/training/domain/target-resolution";
 export * from "#src/modules/training/domain/training-session";

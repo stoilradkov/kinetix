@@ -56,6 +56,7 @@ import {
     ZoneDefinitionCommands,
     ZoneDefinitionQueries,
     RepositoryZoneContextReader,
+    type ZoneContextReader,
     type ZoneDefinitionRepository,
     EQUIPMENT_INCREMENT_COMMANDS,
     EQUIPMENT_INCREMENT_MUTATION_SERVICE,
@@ -105,6 +106,10 @@ import {
     TRAINING_SESSION_MUTATION_SERVICE,
     TRAINING_SESSION_COMMANDS,
     TRAINING_SESSION_REVISION_HANDLER,
+    RUNNING_ACTIVITY_SERVICE,
+    RUNNING_ACTIVITY_QUERIES,
+    RunningActivityService,
+    type RunningActivityQueries,
     TrainingSessionCommands,
     TrainingSessionRevisionHandler,
     trainingSessionSerializer,
@@ -186,6 +191,7 @@ import { WorkoutTemplateRevisionRegistrar } from "#src/modules/training/infrastr
 import { DrizzlePlannedSessionRepository } from "#src/modules/training/infrastructure/drizzle-planned-session-repository";
 import { PlannedSessionRevisionRegistrar } from "#src/modules/training/infrastructure/planned-session-revision-registrar";
 import { DrizzleTrainingSessionRepository } from "#src/modules/training/infrastructure/drizzle-training-session-repository";
+import { DrizzleRunningActivityQueries } from "#src/modules/training/infrastructure/drizzle-running-activity-queries";
 import { TrainingSessionRevisionRegistrar } from "#src/modules/training/infrastructure/training-session-revision-registrar";
 import { DrizzleProgramRepository } from "#src/modules/training/infrastructure/drizzle-program-repository";
 import { DrizzleProgramMembershipRepository } from "#src/modules/training/infrastructure/drizzle-program-membership-repository";
@@ -213,6 +219,7 @@ import {
     ProgramController,
     PlannedSessionController,
     TrainingSessionController,
+    RunController,
     BulkProgramController,
 } from "#src/modules/training/presentation/index";
 import {
@@ -245,6 +252,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         ProgramController,
         PlannedSessionController,
         TrainingSessionController,
+        RunController,
         BulkProgramController,
     ],
     providers: [
@@ -660,6 +668,8 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                 templates: WorkoutTemplateRepository,
                 targetContext: TrainingTargetContextReader,
                 increments: EquipmentIncrementQueries,
+                zones: ZoneContextReader,
+                gear: GearItemRepository,
             ) =>
                 new TrainingSessionCommands({
                     unitOfWork,
@@ -676,6 +686,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                         targetContext,
                         increments,
                     },
+                    running: { zones, gear },
                     generateId: randomUUID,
                 }),
             inject: [
@@ -691,6 +702,8 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                 WORKOUT_TEMPLATE_REPOSITORY,
                 TRAINING_TARGET_CONTEXT_READER,
                 EQUIPMENT_INCREMENT_QUERIES,
+                ZONE_CONTEXT_READER,
+                GEAR_ITEM_REPOSITORY,
             ],
         },
         {
@@ -700,6 +713,18 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                 revisions: RevisionStore,
             ) => new TrainingSessionRevisionHandler(mutations, revisions, { now: () => new Date() }, randomUUID),
             inject: [TRAINING_SESSION_MUTATION_SERVICE, REVISION_STORE],
+        },
+        DrizzleRunningActivityQueries,
+        { provide: RUNNING_ACTIVITY_QUERIES, useExisting: DrizzleRunningActivityQueries },
+        {
+            provide: RUNNING_ACTIVITY_SERVICE,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                sessions: TrainingSessionCommands,
+                repository: TrainingSessionRepository,
+                queries: RunningActivityQueries,
+            ) => new RunningActivityService({ unitOfWork, sessions, repository, queries, generateId: randomUUID }),
+            inject: [UNIT_OF_WORK, TRAINING_SESSION_COMMANDS, TRAINING_SESSION_REPOSITORY, RUNNING_ACTIVITY_QUERIES],
         },
         TrainingSessionRevisionRegistrar,
         DrizzleProgramRepository,

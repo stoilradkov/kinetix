@@ -12,5 +12,6 @@ export { WorkoutTemplateController } from "#src/modules/training/presentation/wo
 export { ProgramController } from "#src/modules/training/presentation/program.controller";
 export { PlannedSessionController } from "#src/modules/training/presentation/planned-session.controller";
 export { TrainingSessionController } from "#src/modules/training/presentation/training-session.controller";
+export { RunController } from "#src/modules/training/presentation/run.controller";
 
 export { BulkProgramController } from "#src/modules/training/presentation/bulk-program.controller";

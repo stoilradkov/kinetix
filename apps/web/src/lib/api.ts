@@ -95,6 +95,11 @@ import {
     completionPreviewResponseSchema,
     trainingSessionListResponseSchema,
     trainingSessionResponseSchema,
+    addRunRequestSchema,
+    updateRunRequestSchema,
+    runListResponseSchema,
+    runViewResponseSchema,
+    type RunViewResponse,
     type TrainingSessionResponse,
     type TrainingSessionSummary,
     type ExerciseCatalogItemResponse,
@@ -716,6 +721,50 @@ export async function recordSessionMappings(
     );
 }
 
+// --- Runs (design §18–19; PRD R3): an ergonomic surface over the same TrainingSession contracts. ---
+
+export function runsQueryOptions(includeArchived: boolean) {
+    return queryOptions({
+        queryKey: ["training-runs", includeArchived],
+        queryFn: async () =>
+            runListResponseSchema.parse(
+                await apiRequest(`/training/runs${includeArchived ? "?includeArchived=true" : ""}`),
+            ),
+    });
+}
+
+export function runViewQueryOptions(sessionId: string | null) {
+    return queryOptions({
+        queryKey: ["training-run", sessionId],
+        enabled: sessionId !== null,
+        queryFn: async () =>
+            runViewResponseSchema.parse(await apiRequest(`/training/runs/${encodeURIComponent(sessionId!)}`)),
+    });
+}
+
+export async function addRun(input: unknown): Promise<RunViewResponse> {
+    return runViewResponseSchema.parse(
+        await apiRequest("/training/runs", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(addRunRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updateRun(
+    run: Pick<RunViewResponse, "sessionId" | "activityId" | "version">,
+    input: unknown,
+): Promise<RunViewResponse> {
+    return runViewResponseSchema.parse(
+        await apiRequest(`/training/runs/${encodeURIComponent(run.sessionId)}/${encodeURIComponent(run.activityId)}`, {
+            method: "PUT",
+            headers: mutationHeaders(run.version, crypto.randomUUID()),
+            body: JSON.stringify(updateRunRequestSchema.parse(input)),
+        }),
+    );
+}
+
 /** Lifecycle transitions that carry no body: start, reopen, archive, restore. */
 export async function transitionTrainingSession(
     session: Pick<TrainingSessionSummary, "id" | "version">,
@@ -1053,7 +1102,9 @@ async function apiRequest(path: string, init?: RequestInit): Promise<unknown> {
     const body: unknown = await response.json();
     if (!response.ok) {
         const parsed = apiErrorSchema.safeParse(body);
-        const message = parsed.success ? parsed.data.message : `Kinetix API request failed with HTTP ${response.status}`;
+        const message = parsed.success
+            ? parsed.data.message
+            : `Kinetix API request failed with HTTP ${response.status}`;
         if (response.status === 409) throw new VersionConflictError(message);
         throw new ApiError(response.status, message);
     }

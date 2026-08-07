@@ -1820,6 +1820,232 @@ export const performedSets = pgTable(
 );
 
 /* --------------------------------------------------------------------------------------
+ * Running detail (design 11.3, PRD R1).
+ *
+ * One-to-one manual running summary attached to a `session_activities` row of type `running`
+ * (parallel to `strength` detail living in `exercise_occurrences`/`performed_sets`). Frequently
+ * queried metrics are promoted to canonical columns — distance in metres, moving/elapsed time in
+ * milliseconds, heart rate/cadence, power in watts, elevation and biomechanics in metres, VO2max,
+ * RPE — while the user's originally-entered `{value, unit}` per measurement is preserved in
+ * `entered_measurements` so display units round-trip. Average pace is deliberately NOT a column: it
+ * is derived from distance and moving time in the domain/query projection. Run-classification tags
+ * and an optional versioned environment blob are stored as jsonb. Cascades with the activity.
+ * ----------------------------------------------------------------------------------- */
+
+export const runningActivities = pgTable(
+    "running_activities",
+    {
+        activityId: uuid("activity_id")
+            .primaryKey()
+            .references(() => sessionActivities.id, { onDelete: "cascade" }),
+        distanceM: numeric("distance_m", { precision: 14, scale: 3 }),
+        movingTimeMs: bigint("moving_time_ms", { mode: "number" }),
+        elapsedTimeMs: bigint("elapsed_time_ms", { mode: "number" }),
+        averageHeartRateBpm: integer("average_heart_rate_bpm"),
+        maxHeartRateBpm: integer("max_heart_rate_bpm"),
+        averageCadenceRpm: integer("average_cadence_rpm"),
+        maxCadenceRpm: integer("max_cadence_rpm"),
+        averagePowerW: numeric("average_power_w", { precision: 12, scale: 2 }),
+        maxPowerW: numeric("max_power_w", { precision: 12, scale: 2 }),
+        elevationGainM: numeric("elevation_gain_m", { precision: 14, scale: 3 }),
+        elevationLossM: numeric("elevation_loss_m", { precision: 14, scale: 3 }),
+        calories: integer("calories"),
+        strideLengthM: numeric("stride_length_m", { precision: 14, scale: 3 }),
+        groundContactTimeMs: bigint("ground_contact_time_ms", { mode: "number" }),
+        verticalOscillationM: numeric("vertical_oscillation_m", { precision: 14, scale: 3 }),
+        vo2Max: numeric("vo2max", { precision: 6, scale: 2 }),
+        rpe: numeric("rpe", { precision: 3, scale: 1 }),
+        indoor: boolean("indoor").notNull().default(false),
+        treadmill: boolean("treadmill").notNull().default(false),
+        runTags: jsonb("run_tags").$type<string[]>().notNull().default([]),
+        enteredMeasurements: jsonb("entered_measurements").$type<Record<string, unknown>>().notNull().default({}),
+        environment: jsonb("environment").$type<Record<string, unknown>>(),
+        // Optional shoes/equipment (design 11.3, PRD RN-6); resolved through the gear port at write time.
+        gearItemId: uuid("gear_item_id").references(() => gearItems.id),
+        // Optional route reference + bounded PostGIS-free geometry (design 11.3, PRD RN-4).
+        route: jsonb("route").$type<Record<string, unknown>>(),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("running_activities_route_valid", sql`${table.route} IS NULL OR ${table.route} ? 'schemaVersion'`),
+        check(
+            "running_activities_metrics_nonneg",
+            sql`(${table.distanceM} IS NULL OR ${table.distanceM} >= 0)
+                AND (${table.movingTimeMs} IS NULL OR ${table.movingTimeMs} >= 0)
+                AND (${table.elapsedTimeMs} IS NULL OR ${table.elapsedTimeMs} >= 0)
+                AND (${table.averagePowerW} IS NULL OR ${table.averagePowerW} >= 0)
+                AND (${table.maxPowerW} IS NULL OR ${table.maxPowerW} >= 0)
+                AND (${table.elevationGainM} IS NULL OR ${table.elevationGainM} >= 0)
+                AND (${table.elevationLossM} IS NULL OR ${table.elevationLossM} >= 0)
+                AND (${table.calories} IS NULL OR ${table.calories} >= 0)
+                AND (${table.strideLengthM} IS NULL OR ${table.strideLengthM} >= 0)
+                AND (${table.groundContactTimeMs} IS NULL OR ${table.groundContactTimeMs} >= 0)
+                AND (${table.verticalOscillationM} IS NULL OR ${table.verticalOscillationM} >= 0)
+                AND (${table.vo2Max} IS NULL OR ${table.vo2Max} >= 0)`,
+        ),
+        check(
+            "running_activities_rates_range",
+            sql`(${table.averageHeartRateBpm} IS NULL OR ${table.averageHeartRateBpm} BETWEEN 0 AND 999)
+                AND (${table.maxHeartRateBpm} IS NULL OR ${table.maxHeartRateBpm} BETWEEN 0 AND 999)
+                AND (${table.averageCadenceRpm} IS NULL OR ${table.averageCadenceRpm} BETWEEN 0 AND 999)
+                AND (${table.maxCadenceRpm} IS NULL OR ${table.maxCadenceRpm} BETWEEN 0 AND 999)`,
+        ),
+        check("running_activities_rpe_range", sql`${table.rpe} IS NULL OR ${table.rpe} BETWEEN 1 AND 10`),
+        // Moving time cannot exceed elapsed time — a run cannot move longer than it lasted.
+        check(
+            "running_activities_moving_le_elapsed",
+            sql`${table.movingTimeMs} IS NULL OR ${table.elapsedTimeMs} IS NULL OR ${table.movingTimeMs} <= ${table.elapsedTimeMs}`,
+        ),
+        // A treadmill run is by definition indoor.
+        check("running_activities_treadmill_indoor", sql`NOT ${table.treadmill} OR ${table.indoor}`),
+        // Promoted columns exist to be queried: support distance-range and duration lookups.
+        index("running_activities_distance_idx").on(table.distanceM),
+        index("running_activities_moving_time_idx").on(table.movingTimeMs),
+    ],
+);
+
+/* --------------------------------------------------------------------------------------
+ * Structured running detail (design 11.3; PRD RN-3/4/5).
+ *
+ * Hierarchical performed run steps, arbitrary splits, and zone times hang off a running activity,
+ * cascading with it. Canonical columns drive queries/analytics; the originally entered value/unit per
+ * field is preserved in `entered_measurements` so display units round-trip. `performed_run_steps`
+ * mirrors the prescribed run-step tree (self-referential parent, repeat/repeat-count pairing, partial
+ * unique root/child positions). Zone times reference the effective versioned zone definition/range.
+ * ----------------------------------------------------------------------------------- */
+
+export const performedRunSteps = pgTable(
+    "performed_run_steps",
+    {
+        id: uuid("id").primaryKey(),
+        activityId: uuid("activity_id")
+            .notNull()
+            .references(() => sessionActivities.id, { onDelete: "cascade" }),
+        parentStepId: uuid("parent_step_id").references((): AnyPgColumn => performedRunSteps.id),
+        type: text("type").notNull(),
+        position: integer("position").notNull(),
+        repeatCount: integer("repeat_count"),
+        distanceM: numeric("distance_m", { precision: 14, scale: 3 }),
+        durationMs: bigint("duration_ms", { mode: "number" }),
+        averageHeartRateBpm: integer("average_heart_rate_bpm"),
+        maxHeartRateBpm: integer("max_heart_rate_bpm"),
+        averageCadenceRpm: integer("average_cadence_rpm"),
+        maxCadenceRpm: integer("max_cadence_rpm"),
+        averagePowerW: numeric("average_power_w", { precision: 12, scale: 2 }),
+        maxPowerW: numeric("max_power_w", { precision: 12, scale: 2 }),
+        elevationGainM: numeric("elevation_gain_m", { precision: 14, scale: 3 }),
+        elevationLossM: numeric("elevation_loss_m", { precision: 14, scale: 3 }),
+        rpe: numeric("rpe", { precision: 3, scale: 1 }),
+        enteredMeasurements: jsonb("entered_measurements").$type<Record<string, unknown>>().notNull().default({}),
+        notes: text("notes"),
+    },
+    table => [
+        check(
+            "performed_run_steps_type_valid",
+            sql`${table.type} IN ('warm_up', 'work', 'recovery', 'repeat', 'cool_down', 'open')`,
+        ),
+        check("performed_run_steps_position_nonneg", sql`${table.position} >= 0`),
+        check("performed_run_steps_repeat_pair", sql`(${table.type} = 'repeat') = (${table.repeatCount} IS NOT NULL)`),
+        check("performed_run_steps_repeat_positive", sql`${table.repeatCount} IS NULL OR ${table.repeatCount} >= 1`),
+        check(
+            "performed_run_steps_metrics_nonneg",
+            sql`(${table.distanceM} IS NULL OR ${table.distanceM} >= 0)
+                AND (${table.durationMs} IS NULL OR ${table.durationMs} >= 0)
+                AND (${table.averagePowerW} IS NULL OR ${table.averagePowerW} >= 0)
+                AND (${table.maxPowerW} IS NULL OR ${table.maxPowerW} >= 0)
+                AND (${table.elevationGainM} IS NULL OR ${table.elevationGainM} >= 0)
+                AND (${table.elevationLossM} IS NULL OR ${table.elevationLossM} >= 0)`,
+        ),
+        check(
+            "performed_run_steps_rates_range",
+            sql`(${table.averageHeartRateBpm} IS NULL OR ${table.averageHeartRateBpm} BETWEEN 0 AND 999)
+                AND (${table.maxHeartRateBpm} IS NULL OR ${table.maxHeartRateBpm} BETWEEN 0 AND 999)
+                AND (${table.averageCadenceRpm} IS NULL OR ${table.averageCadenceRpm} BETWEEN 0 AND 999)
+                AND (${table.maxCadenceRpm} IS NULL OR ${table.maxCadenceRpm} BETWEEN 0 AND 999)`,
+        ),
+        check("performed_run_steps_rpe_range", sql`${table.rpe} IS NULL OR ${table.rpe} BETWEEN 1 AND 10`),
+        uniqueIndex("performed_run_steps_root_position_unique")
+            .on(table.activityId, table.position)
+            .where(isNull(table.parentStepId)),
+        uniqueIndex("performed_run_steps_child_position_unique")
+            .on(table.parentStepId, table.position)
+            .where(isNotNull(table.parentStepId)),
+        index("performed_run_steps_activity_idx").on(table.activityId),
+    ],
+);
+
+export const runSplits = pgTable(
+    "run_splits",
+    {
+        id: uuid("id").primaryKey(),
+        activityId: uuid("activity_id")
+            .notNull()
+            .references(() => sessionActivities.id, { onDelete: "cascade" }),
+        position: integer("position").notNull(),
+        distanceM: numeric("distance_m", { precision: 14, scale: 3 }),
+        movingTimeMs: bigint("moving_time_ms", { mode: "number" }),
+        elapsedTimeMs: bigint("elapsed_time_ms", { mode: "number" }),
+        averageHeartRateBpm: integer("average_heart_rate_bpm"),
+        maxHeartRateBpm: integer("max_heart_rate_bpm"),
+        averageCadenceRpm: integer("average_cadence_rpm"),
+        averagePowerW: numeric("average_power_w", { precision: 12, scale: 2 }),
+        elevationGainM: numeric("elevation_gain_m", { precision: 14, scale: 3 }),
+        elevationLossM: numeric("elevation_loss_m", { precision: 14, scale: 3 }),
+        enteredMeasurements: jsonb("entered_measurements").$type<Record<string, unknown>>().notNull().default({}),
+        notes: text("notes"),
+    },
+    table => [
+        check("run_splits_position_nonneg", sql`${table.position} >= 0`),
+        check(
+            "run_splits_metrics_nonneg",
+            sql`(${table.distanceM} IS NULL OR ${table.distanceM} >= 0)
+                AND (${table.movingTimeMs} IS NULL OR ${table.movingTimeMs} >= 0)
+                AND (${table.elapsedTimeMs} IS NULL OR ${table.elapsedTimeMs} >= 0)
+                AND (${table.averagePowerW} IS NULL OR ${table.averagePowerW} >= 0)
+                AND (${table.elevationGainM} IS NULL OR ${table.elevationGainM} >= 0)
+                AND (${table.elevationLossM} IS NULL OR ${table.elevationLossM} >= 0)`,
+        ),
+        check(
+            "run_splits_rates_range",
+            sql`(${table.averageHeartRateBpm} IS NULL OR ${table.averageHeartRateBpm} BETWEEN 0 AND 999)
+                AND (${table.maxHeartRateBpm} IS NULL OR ${table.maxHeartRateBpm} BETWEEN 0 AND 999)
+                AND (${table.averageCadenceRpm} IS NULL OR ${table.averageCadenceRpm} BETWEEN 0 AND 999)`,
+        ),
+        check(
+            "run_splits_moving_le_elapsed",
+            sql`${table.movingTimeMs} IS NULL OR ${table.elapsedTimeMs} IS NULL OR ${table.movingTimeMs} <= ${table.elapsedTimeMs}`,
+        ),
+        uniqueIndex("run_splits_position_unique").on(table.activityId, table.position),
+        index("run_splits_activity_idx").on(table.activityId),
+    ],
+);
+
+export const runZoneTimes = pgTable(
+    "run_zone_times",
+    {
+        id: uuid("id").primaryKey(),
+        activityId: uuid("activity_id")
+            .notNull()
+            .references(() => sessionActivities.id, { onDelete: "cascade" }),
+        position: integer("position").notNull(),
+        family: text("family").notNull(),
+        zoneDefinitionId: uuid("zone_definition_id").references(() => zoneDefinitions.id),
+        zoneRangeId: uuid("zone_range_id").references(() => zoneRanges.id),
+        zoneName: text("zone_name"),
+        durationMs: bigint("duration_ms", { mode: "number" }).notNull(),
+        enteredMeasurements: jsonb("entered_measurements").$type<Record<string, unknown>>().notNull().default({}),
+    },
+    table => [
+        check("run_zone_times_family_valid", sql`${table.family} IN ('heart_rate', 'pace', 'power')`),
+        check("run_zone_times_position_nonneg", sql`${table.position} >= 0`),
+        check("run_zone_times_duration_positive", sql`${table.durationMs} > 0`),
+        uniqueIndex("run_zone_times_position_unique").on(table.activityId, table.position),
+        index("run_zone_times_activity_idx").on(table.activityId),
+        index("run_zone_times_definition_idx").on(table.zoneDefinitionId),
+    ],
+);
+
+/* --------------------------------------------------------------------------------------
  * Planned/actual mappings (design 11.4, TS-4).
  *
  * FK-backed join tables connecting immutable prescribed rows to the actual rows performed in a
@@ -1955,7 +2181,9 @@ export const runStepMappings = pgTable(
             .notNull()
             .references(() => trainingSessions.id, { onDelete: "cascade" }),
         prescribedRunStepId: uuid("prescribed_run_step_id").references(() => prescribedRunSteps.id),
-        performedRunStepId: uuid("performed_run_step_id").notNull(),
+        performedRunStepId: uuid("performed_run_step_id")
+            .notNull()
+            .references(() => performedRunSteps.id, { onDelete: "cascade" }),
         relation: text("relation").notNull(),
         reason: text("reason"),
         notes: text("notes"),
@@ -1976,6 +2204,10 @@ export type ExerciseOccurrenceRow = typeof exerciseOccurrences.$inferSelect;
 export type SetGroupRow = typeof setGroups.$inferSelect;
 export type SetGroupMemberRow = typeof setGroupMembers.$inferSelect;
 export type PerformedSetRow = typeof performedSets.$inferSelect;
+export type RunningActivityRow = typeof runningActivities.$inferSelect;
+export type PerformedRunStepRow = typeof performedRunSteps.$inferSelect;
+export type RunSplitRow = typeof runSplits.$inferSelect;
+export type RunZoneTimeRow = typeof runZoneTimes.$inferSelect;
 export type SessionMappingRow = typeof sessionMappings.$inferSelect;
 export type ActivityMappingRow = typeof activityMappings.$inferSelect;
 export type ExerciseOccurrenceMappingRow = typeof exerciseOccurrenceMappings.$inferSelect;

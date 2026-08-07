@@ -8,6 +8,13 @@ import {
     type StrengthActivityState,
 } from "#src/modules/training/domain/session-strength";
 import {
+    EMPTY_RUNNING_ACTIVITY,
+    normalizeRunningActivity,
+    validateRunningActivity,
+    type RunningActivityInput,
+    type RunningActivityState,
+} from "#src/modules/training/domain/session-running";
+import {
     EMPTY_SESSION_MAPPINGS,
     normalizeSessionMappings,
     reconcileSessionMappings,
@@ -80,6 +87,8 @@ export interface SessionActivityState {
     readonly tags: readonly string[];
     /** Structured strength detail (occurrences/groups/sets); non-null exactly when `type === "strength"`. */
     readonly strength: StrengthActivityState | null;
+    /** Manual running summary; non-null exactly when `type === "running"` (design 11.3, PRD R1). */
+    readonly running: RunningActivityState | null;
 }
 
 /**
@@ -157,6 +166,7 @@ export interface SessionActivityInput {
     readonly notes?: string | null;
     readonly tags?: readonly string[];
     readonly strength?: StrengthActivityInput | null;
+    readonly running?: RunningActivityInput | null;
 }
 
 export interface PainRecordInput {
@@ -460,14 +470,16 @@ function actualIdsOfActivities(activities: readonly SessionActivityState[]): Ses
     const activityIds = new Set<string>();
     const occurrenceIds = new Set<string>();
     const performedSetIds = new Set<string>();
+    const runStepIds = new Set<string>();
     for (const activity of activities) {
         activityIds.add(activity.id);
         for (const occurrence of activity.strength?.occurrences ?? []) {
             occurrenceIds.add(occurrence.id);
             for (const set of occurrence.performedSets) performedSetIds.add(set.id);
         }
+        for (const step of activity.running?.steps ?? []) runStepIds.add(step.id);
     }
-    return { activityIds, occurrenceIds, performedSetIds };
+    return { activityIds, occurrenceIds, performedSetIds, runStepIds };
 }
 
 function normalizeStatus(value: TrainingSessionStatus): TrainingSessionStatus {
@@ -560,6 +572,7 @@ function normalizeActivities(inputs: readonly SessionActivityInput[]): readonly 
             notes: optionalText(input.notes, "Activity notes", 4_000),
             tags: normalizeTags(input.tags ?? []),
             strength: normalizeActivityStrength(type, input.strength),
+            running: normalizeActivityRunning(type, input.running),
         };
     });
 }
@@ -580,6 +593,24 @@ function normalizeActivityStrength(
         return null;
     }
     return input == null ? EMPTY_STRENGTH_ACTIVITY : normalizeStrengthActivity(input);
+}
+
+/**
+ * A running activity always carries a (possibly empty) running summary; other types never do. This is
+ * the mirror of {@link normalizeActivityStrength} so the activity discriminator stays authoritative.
+ */
+function normalizeActivityRunning(
+    type: SessionActivityType,
+    input: RunningActivityInput | null | undefined,
+): RunningActivityState | null {
+    if (type !== "running") {
+        if (input != null)
+            throw new DomainValidationError("Only running activities can carry a running summary", {
+                activities: ["Only running activities can carry a running summary"],
+            });
+        return null;
+    }
+    return input == null ? EMPTY_RUNNING_ACTIVITY : normalizeRunningActivity(input);
 }
 
 function validateActivities(activities: readonly SessionActivityState[]): void {
@@ -620,6 +651,16 @@ function validateActivities(activities: readonly SessionActivityState[]): void {
         } else if (activity.strength !== null)
             throw new DomainValidationError("Only strength activities can carry strength detail", {
                 activities: ["Only strength activities can carry strength detail"],
+            });
+        if (activity.type === "running") {
+            if (activity.running === null)
+                throw new DomainValidationError("A running activity must carry a running summary", {
+                    activities: ["A running activity must carry a running summary"],
+                });
+            validateRunningActivity(activity.running);
+        } else if (activity.running !== null)
+            throw new DomainValidationError("Only running activities can carry a running summary", {
+                activities: ["Only running activities can carry a running summary"],
             });
     }
 }

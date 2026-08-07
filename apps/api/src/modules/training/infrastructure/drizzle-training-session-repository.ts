@@ -6,8 +6,12 @@ import {
     exerciseOccurrenceMappings,
     exerciseOccurrences,
     painRecords,
+    performedRunSteps,
     performedSets,
+    runSplits,
     runStepMappings,
+    runZoneTimes,
+    runningActivities,
     sessionActivities,
     sessionMappings,
     setGroupMembers,
@@ -19,8 +23,12 @@ import {
     type ExerciseOccurrenceMappingRow,
     type ExerciseOccurrenceRow,
     type PainRecordRow,
+    type PerformedRunStepRow,
     type PerformedSetRow,
+    type RunSplitRow,
     type RunStepMappingRow,
+    type RunZoneTimeRow,
+    type RunningActivityRow,
     type SessionActivityRow,
     type SessionMappingRow,
     type SetMappingRow,
@@ -40,16 +48,19 @@ import {
 import {
     Distance,
     Duration,
+    EMPTY_RUNNING_ACTIVITY,
     EMPTY_STRENGTH_ACTIVITY,
     Mass,
     TrainingSession,
     painSides,
     performedSetStatuses,
     performedSetTypes,
+    runStepTypes,
     sessionActivityTypes,
     setFailureReasons,
     setGroupTypes,
     trainingSessionStatuses,
+    zoneFamilies,
     type DistanceValue,
     type DurationValue,
     type ExerciseOccurrenceState,
@@ -61,8 +72,14 @@ import {
     type OccurrenceMappingState,
     type PainRecordState,
     type PainSide,
+    type PerformedRunStepState,
     type PerformedSetMeasurements,
     type PerformedSetState,
+    type RunEnvironment,
+    type RunRoute,
+    type RunSplitState,
+    type RunZoneTimeState,
+    type RunningActivityState,
     type RunStepMappingState,
     type SessionActivityState,
     type SessionActivityType,
@@ -132,6 +149,7 @@ export class DrizzleTrainingSessionRepository implements TrainingSessionReposito
         await executor.insert(trainingSessions).values(rootValues(state, version));
         await this.writeChildren(state, executor, "insert");
         await this.insertStrength(state, executor);
+        await this.insertRunning(state, executor);
         await this.insertMappings(state, executor);
     }
 
@@ -170,11 +188,36 @@ export class DrizzleTrainingSessionRepository implements TrainingSessionReposito
                 .orderBy(asc(painRecords.createdAt)),
             this.loadMappings(id, executor),
         ]);
-        const strengthRows = await this.loadStrength(
-            activityRows.filter(activity => activity.type === "strength").map(activity => activity.id),
-            executor,
-        );
-        return { activityRows, painRows, strength: hydrateStrengthByActivity(strengthRows), mappings: mappingRows };
+        const [strengthRows, runningRows] = await Promise.all([
+            this.loadStrength(
+                activityRows.filter(activity => activity.type === "strength").map(activity => activity.id),
+                executor,
+            ),
+            this.loadRunning(
+                activityRows.filter(activity => activity.type === "running").map(activity => activity.id),
+                executor,
+            ),
+        ]);
+        return {
+            activityRows,
+            painRows,
+            strength: hydrateStrengthByActivity(strengthRows),
+            running: hydrateRunningByActivity(runningRows),
+            mappings: mappingRows,
+        };
+    }
+
+    /** Load the running summaries plus their structured step/split/zone-time rows in batched queries. */
+    private async loadRunning(activityIds: readonly string[], executor: Database): Promise<RunningRows> {
+        if (activityIds.length === 0) return { activities: [], steps: [], splits: [], zoneTimes: [] };
+        const ids = [...activityIds];
+        const [activities, steps, splits, zoneTimes] = await Promise.all([
+            executor.select().from(runningActivities).where(inArray(runningActivities.activityId, ids)),
+            executor.select().from(performedRunSteps).where(inArray(performedRunSteps.activityId, ids)),
+            executor.select().from(runSplits).where(inArray(runSplits.activityId, ids)),
+            executor.select().from(runZoneTimes).where(inArray(runZoneTimes.activityId, ids)),
+        ]);
+        return { activities, steps, splits, zoneTimes };
     }
 
     private async loadMappings(id: EntityId, executor: Database): Promise<MappingRows> {
@@ -271,7 +314,41 @@ export class DrizzleTrainingSessionRepository implements TrainingSessionReposito
             await executor.delete(sessionActivities).where(inArray(sessionActivities.id, removedActivities));
         await this.writeChildren(state, executor, "upsert");
         await this.reconcileStrength(state, executor);
+        await this.reconcileRunning(state, executor);
         await this.insertMappings(state, executor);
+    }
+
+    /** Rewrite the running summaries + structured children for a mutated session: clear, then re-insert. */
+    private async reconcileRunning(state: TrainingSessionState, executor: Database): Promise<void> {
+        const activityIds = state.activities.map(activity => activity.id);
+        if (activityIds.length > 0) {
+            // Zone times and splits are independent; run steps carry a self-FK, so delete them leaf-first.
+            await executor.delete(runZoneTimes).where(inArray(runZoneTimes.activityId, activityIds));
+            await executor.delete(runSplits).where(inArray(runSplits.activityId, activityIds));
+            const existingSteps = await executor
+                .select({ id: performedRunSteps.id, parentGroupId: performedRunSteps.parentStepId })
+                .from(performedRunSteps)
+                .where(inArray(performedRunSteps.activityId, activityIds));
+            for (const stepId of setGroupIdsLeafFirst(existingSteps))
+                await executor.delete(performedRunSteps).where(eq(performedRunSteps.id, stepId));
+            await executor.delete(runningActivities).where(inArray(runningActivities.activityId, activityIds));
+        }
+        await this.insertRunning(state, executor);
+    }
+
+    private async insertRunning(state: TrainingSessionState, executor: Database): Promise<void> {
+        for (const activity of state.activities) {
+            if (activity.type !== "running" || activity.running === null) continue;
+            const running = activity.running;
+            await executor.insert(runningActivities).values(runningActivityInsert(activity.id, running));
+            // Parent run steps must land before their children (self-referential FK).
+            for (const step of runStepsParentFirst(running.steps))
+                await executor.insert(performedRunSteps).values(runStepInsert(activity.id, step));
+            const splits = running.splits.map(split => runSplitInsert(activity.id, split));
+            if (splits.length > 0) await executor.insert(runSplits).values(splits);
+            const zoneTimes = running.zoneTimes.map(zoneTime => runZoneTimeInsert(activity.id, zoneTime));
+            if (zoneTimes.length > 0) await executor.insert(runZoneTimes).values(zoneTimes);
+        }
     }
 
     private async deleteMappings(sessionId: string, executor: Database): Promise<void> {
@@ -343,7 +420,7 @@ export class DrizzleTrainingSessionRepository implements TrainingSessionReposito
 }
 
 function hydrate(row: TrainingSessionRow, children: SessionChildren): TrainingSessionState {
-    const { activityRows, painRows, strength: strengthByActivity, mappings } = children;
+    const { activityRows, painRows, strength: strengthByActivity, running: runningByActivity, mappings } = children;
     return TrainingSession.rehydrate({
         id: row.id,
         profileId: row.profileId,
@@ -373,7 +450,7 @@ function hydrate(row: TrainingSessionRow, children: SessionChildren): TrainingSe
         notes: row.notes,
         tags: row.tags,
         sourcePlannedSessionId: row.sourcePlannedSessionId,
-        activities: activityRows.map(activity => hydrateActivity(activity, strengthByActivity)),
+        activities: activityRows.map(activity => hydrateActivity(activity, strengthByActivity, runningByActivity)),
         painRecords: painRows.map(hydratePain),
         plannedLinks: mappings.links.map(hydratePlannedLink),
         activityMappings: mappings.activity.map(hydrateActivityMapping),
@@ -389,6 +466,7 @@ function hydrate(row: TrainingSessionRow, children: SessionChildren): TrainingSe
 function hydrateActivity(
     row: SessionActivityRow,
     strengthByActivity: Map<string, StrengthActivityState>,
+    runningByActivity: Map<string, RunningActivityState>,
 ): SessionActivityState {
     const type = checkedActivityType(row.type);
     return {
@@ -403,6 +481,7 @@ function hydrateActivity(
         notes: row.notes,
         tags: row.tags,
         strength: type === "strength" ? (strengthByActivity.get(row.id) ?? EMPTY_STRENGTH_ACTIVITY) : null,
+        running: type === "running" ? (runningByActivity.get(row.id) ?? EMPTY_RUNNING_ACTIVITY) : null,
     };
 }
 
@@ -581,6 +660,7 @@ interface SessionChildren {
     readonly activityRows: readonly SessionActivityRow[];
     readonly painRows: readonly PainRecordRow[];
     readonly strength: Map<string, StrengthActivityState>;
+    readonly running: Map<string, RunningActivityState>;
     readonly mappings: MappingRows;
 }
 
@@ -714,6 +794,14 @@ interface StrengthRows {
     readonly performedSets: readonly PerformedSetRow[];
 }
 
+/** All running rows for a session: the 1:1 summaries plus the structured step/split/zone-time children. */
+interface RunningRows {
+    readonly activities: readonly RunningActivityRow[];
+    readonly steps: readonly PerformedRunStepRow[];
+    readonly splits: readonly RunSplitRow[];
+    readonly zoneTimes: readonly RunZoneTimeRow[];
+}
+
 type EnteredValue = { readonly value: number; readonly unit: string };
 
 function hydrateStrengthByActivity(rows: StrengthRows): Map<string, StrengthActivityState> {
@@ -736,6 +824,318 @@ function hydrateStrengthByActivity(rows: StrengthRows): Map<string, StrengthActi
         result.set(activityId, { occurrences, setGroups });
     }
     return result;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Running summary mapping (state <-> promoted columns + entered/environment JSONB). Canonical
+// numeric columns drive queries; the entered `{value, unit}` blob round-trips display units.
+// ---------------------------------------------------------------------------------------------
+
+function hydrateRunningByActivity(rows: RunningRows): Map<string, RunningActivityState> {
+    const stepsByActivity = groupBy(rows.steps, row => row.activityId);
+    const splitsByActivity = groupBy(rows.splits, row => row.activityId);
+    const zoneTimesByActivity = groupBy(rows.zoneTimes, row => row.activityId);
+    const map = new Map<string, RunningActivityState>();
+    for (const row of rows.activities)
+        map.set(
+            row.activityId,
+            hydrateRunning(
+                row,
+                stepsByActivity.get(row.activityId) ?? [],
+                splitsByActivity.get(row.activityId) ?? [],
+                zoneTimesByActivity.get(row.activityId) ?? [],
+            ),
+        );
+    return map;
+}
+
+function hydrateRunning(
+    row: RunningActivityRow,
+    steps: readonly PerformedRunStepRow[],
+    splits: readonly RunSplitRow[],
+    zoneTimes: readonly RunZoneTimeRow[],
+): RunningActivityState {
+    const entered = row.enteredMeasurements ?? {};
+    return {
+        distance: enteredDistance(entered.distance),
+        movingTime: enteredDuration(entered.movingTime),
+        elapsedTime: enteredDuration(entered.elapsedTime),
+        averageHeartRate: row.averageHeartRateBpm,
+        maxHeartRate: row.maxHeartRateBpm,
+        averageCadence: row.averageCadenceRpm,
+        maxCadence: row.maxCadenceRpm,
+        averagePower: row.averagePowerW === null ? null : Number(row.averagePowerW),
+        maxPower: row.maxPowerW === null ? null : Number(row.maxPowerW),
+        elevationGain: enteredDistance(entered.elevationGain),
+        elevationLoss: enteredDistance(entered.elevationLoss),
+        calories: row.calories,
+        strideLength: enteredDistance(entered.strideLength),
+        groundContactTime: enteredDuration(entered.groundContactTime),
+        verticalOscillation: enteredDistance(entered.verticalOscillation),
+        vo2Max: row.vo2Max === null ? null : Number(row.vo2Max),
+        rpe: row.rpe === null ? null : Number(row.rpe),
+        indoor: row.indoor,
+        treadmill: row.treadmill,
+        runTags: row.runTags,
+        environment: hydrateEnvironment(row.environment),
+        steps: steps
+            .slice()
+            .sort((a, b) => a.position - b.position)
+            .map(hydrateRunStep),
+        splits: splits
+            .slice()
+            .sort((a, b) => a.position - b.position)
+            .map(hydrateRunSplit),
+        zoneTimes: zoneTimes
+            .slice()
+            .sort((a, b) => a.position - b.position)
+            .map(hydrateRunZoneTime),
+        route: hydrateRoute(row.route),
+        gearItemId: row.gearItemId,
+    };
+}
+
+function hydrateRunStep(row: PerformedRunStepRow): PerformedRunStepState {
+    const entered = row.enteredMeasurements ?? {};
+    return {
+        id: row.id,
+        parentStepId: row.parentStepId,
+        type: checked(row.type, runStepTypes, "run step type"),
+        position: row.position,
+        repeatCount: row.repeatCount,
+        measurements: {
+            distance: enteredDistance(entered.distance),
+            duration: enteredDuration(entered.duration),
+            averageHeartRate: row.averageHeartRateBpm,
+            maxHeartRate: row.maxHeartRateBpm,
+            averageCadence: row.averageCadenceRpm,
+            maxCadence: row.maxCadenceRpm,
+            averagePower: row.averagePowerW === null ? null : Number(row.averagePowerW),
+            maxPower: row.maxPowerW === null ? null : Number(row.maxPowerW),
+            elevationGain: enteredDistance(entered.elevationGain),
+            elevationLoss: enteredDistance(entered.elevationLoss),
+            rpe: row.rpe === null ? null : Number(row.rpe),
+        },
+        notes: row.notes,
+    };
+}
+
+function hydrateRunSplit(row: RunSplitRow): RunSplitState {
+    const entered = row.enteredMeasurements ?? {};
+    return {
+        id: row.id,
+        position: row.position,
+        distance: enteredDistance(entered.distance),
+        movingTime: enteredDuration(entered.movingTime),
+        elapsedTime: enteredDuration(entered.elapsedTime),
+        averageHeartRate: row.averageHeartRateBpm,
+        maxHeartRate: row.maxHeartRateBpm,
+        averageCadence: row.averageCadenceRpm,
+        averagePower: row.averagePowerW === null ? null : Number(row.averagePowerW),
+        elevationGain: enteredDistance(entered.elevationGain),
+        elevationLoss: enteredDistance(entered.elevationLoss),
+        notes: row.notes,
+    };
+}
+
+function hydrateRunZoneTime(row: RunZoneTimeRow): RunZoneTimeState {
+    const entered = row.enteredMeasurements ?? {};
+    const duration = enteredDuration(entered.duration) ?? { value: row.durationMs, unit: "ms" as const };
+    return {
+        id: row.id,
+        position: row.position,
+        family: checked(row.family, zoneFamilies, "zone family"),
+        zoneDefinitionId: row.zoneDefinitionId,
+        zoneRangeId: row.zoneRangeId,
+        zoneName: row.zoneName,
+        duration,
+    };
+}
+
+function hydrateRoute(value: unknown): RunRoute | null {
+    if (value == null || typeof value !== "object") return null;
+    const record = value as Record<string, unknown>;
+    const ref = typeof record.ref === "string" ? record.ref : null;
+    const geometry = hydrateRouteGeometry(record.geometry);
+    if (ref === null && geometry === null) return null;
+    return { schemaVersion: 1, ref, geometry };
+}
+
+function hydrateRouteGeometry(value: unknown): RunRoute["geometry"] {
+    if (value == null || typeof value !== "object") return null;
+    const record = value as Record<string, unknown>;
+    if (record.type !== "line_string" || !Array.isArray(record.coordinates)) return null;
+    const coordinates = record.coordinates
+        .filter((point): point is [number, number] => Array.isArray(point) && point.length === 2)
+        .map(point => [point[0], point[1]] as [number, number]);
+    return { type: "line_string", coordinates };
+}
+
+function hydrateEnvironment(value: unknown): RunEnvironment | null {
+    if (value == null || typeof value !== "object") return null;
+    const record = value as Record<string, unknown>;
+    return {
+        schemaVersion: 1,
+        surface: typeof record.surface === "string" ? record.surface : null,
+        terrain: typeof record.terrain === "string" ? record.terrain : null,
+        weather: typeof record.weather === "string" ? record.weather : null,
+        temperatureCelsius: typeof record.temperatureCelsius === "number" ? record.temperatureCelsius : null,
+    };
+}
+
+function runningActivityInsert(activityId: string, running: RunningActivityState) {
+    const entered: Record<string, EnteredValue> = {};
+    const put = (key: string, value: EnteredValue | null) => {
+        if (value !== null) entered[key] = value;
+    };
+    put("distance", enteredOf(running.distance));
+    put("movingTime", enteredOf(running.movingTime));
+    put("elapsedTime", enteredOf(running.elapsedTime));
+    put("elevationGain", enteredOf(running.elevationGain));
+    put("elevationLoss", enteredOf(running.elevationLoss));
+    put("strideLength", enteredOf(running.strideLength));
+    put("groundContactTime", enteredOf(running.groundContactTime));
+    put("verticalOscillation", enteredOf(running.verticalOscillation));
+    return {
+        activityId,
+        distanceM: distanceM(running.distance),
+        movingTimeMs: durationMs(running.movingTime),
+        elapsedTimeMs: durationMs(running.elapsedTime),
+        averageHeartRateBpm: running.averageHeartRate,
+        maxHeartRateBpm: running.maxHeartRate,
+        averageCadenceRpm: running.averageCadence,
+        maxCadenceRpm: running.maxCadence,
+        averagePowerW: numericOrNull(running.averagePower),
+        maxPowerW: numericOrNull(running.maxPower),
+        elevationGainM: distanceM(running.elevationGain),
+        elevationLossM: distanceM(running.elevationLoss),
+        calories: running.calories,
+        strideLengthM: distanceM(running.strideLength),
+        groundContactTimeMs: durationMs(running.groundContactTime),
+        verticalOscillationM: distanceM(running.verticalOscillation),
+        vo2Max: numericOrNull(running.vo2Max),
+        rpe: numericOrNull(running.rpe),
+        indoor: running.indoor,
+        treadmill: running.treadmill,
+        runTags: [...running.runTags],
+        enteredMeasurements: entered as Record<string, unknown>,
+        environment: running.environment === null ? null : ({ ...running.environment } as Record<string, unknown>),
+        gearItemId: running.gearItemId,
+        route: running.route === null ? null : routeJson(running.route),
+    };
+}
+
+function routeJson(route: RunRoute): Record<string, unknown> {
+    return {
+        schemaVersion: route.schemaVersion,
+        ref: route.ref,
+        geometry:
+            route.geometry === null
+                ? null
+                : { type: route.geometry.type, coordinates: route.geometry.coordinates.map(point => [...point]) },
+    };
+}
+
+/** Entered value/unit blob for a run step's/split's measurement fields (keeps display units). */
+function enteredMeasurementBlob(
+    fields: ReadonlyArray<[string, MassValue | DistanceValue | DurationValue | null]>,
+): Record<string, unknown> {
+    const entered: Record<string, EnteredValue> = {};
+    for (const [key, value] of fields) {
+        const pair = enteredOf(value);
+        if (pair !== null) entered[key] = pair;
+    }
+    return entered;
+}
+
+function runStepInsert(activityId: string, step: PerformedRunStepState) {
+    const m = step.measurements;
+    return {
+        id: step.id,
+        activityId,
+        parentStepId: step.parentStepId,
+        type: step.type,
+        position: step.position,
+        repeatCount: step.repeatCount,
+        distanceM: distanceM(m.distance),
+        durationMs: durationMs(m.duration),
+        averageHeartRateBpm: m.averageHeartRate,
+        maxHeartRateBpm: m.maxHeartRate,
+        averageCadenceRpm: m.averageCadence,
+        maxCadenceRpm: m.maxCadence,
+        averagePowerW: numericOrNull(m.averagePower),
+        maxPowerW: numericOrNull(m.maxPower),
+        elevationGainM: distanceM(m.elevationGain),
+        elevationLossM: distanceM(m.elevationLoss),
+        rpe: numericOrNull(m.rpe),
+        enteredMeasurements: enteredMeasurementBlob([
+            ["distance", m.distance],
+            ["duration", m.duration],
+            ["elevationGain", m.elevationGain],
+            ["elevationLoss", m.elevationLoss],
+        ]),
+        notes: step.notes,
+    };
+}
+
+function runSplitInsert(activityId: string, split: RunSplitState) {
+    return {
+        id: split.id,
+        activityId,
+        position: split.position,
+        distanceM: distanceM(split.distance),
+        movingTimeMs: durationMs(split.movingTime),
+        elapsedTimeMs: durationMs(split.elapsedTime),
+        averageHeartRateBpm: split.averageHeartRate,
+        maxHeartRateBpm: split.maxHeartRate,
+        averageCadenceRpm: split.averageCadence,
+        averagePowerW: numericOrNull(split.averagePower),
+        elevationGainM: distanceM(split.elevationGain),
+        elevationLossM: distanceM(split.elevationLoss),
+        enteredMeasurements: enteredMeasurementBlob([
+            ["distance", split.distance],
+            ["movingTime", split.movingTime],
+            ["elapsedTime", split.elapsedTime],
+            ["elevationGain", split.elevationGain],
+            ["elevationLoss", split.elevationLoss],
+        ]),
+        notes: split.notes,
+    };
+}
+
+function runZoneTimeInsert(activityId: string, zoneTime: RunZoneTimeState) {
+    return {
+        id: zoneTime.id,
+        activityId,
+        position: zoneTime.position,
+        family: zoneTime.family,
+        zoneDefinitionId: zoneTime.zoneDefinitionId,
+        zoneRangeId: zoneTime.zoneRangeId,
+        zoneName: zoneTime.zoneName,
+        durationMs: durationMs(zoneTime.duration) ?? 0,
+        enteredMeasurements: enteredMeasurementBlob([["duration", zoneTime.duration]]),
+    };
+}
+
+/** Run steps ordered so a parent always precedes its children (safe self-referential insert order). */
+function runStepsParentFirst(steps: readonly PerformedRunStepState[]): readonly PerformedRunStepState[] {
+    const byId = new Map(steps.map(step => [step.id, step]));
+    const depth = (step: PerformedRunStepState): number => {
+        let current: PerformedRunStepState | undefined = step;
+        let count = 0;
+        const seen = new Set<string>();
+        while (current && current.parentStepId !== null && !seen.has(current.id)) {
+            seen.add(current.id);
+            current = byId.get(current.parentStepId);
+            count += 1;
+        }
+        return count;
+    };
+    return [...steps].sort((a, b) => depth(a) - depth(b));
+}
+
+function numericOrNull(value: number | null): string | null {
+    return value === null ? null : value.toString();
 }
 
 function hydrateOccurrence(row: ExerciseOccurrenceRow, sets: readonly PerformedSetRow[]): ExerciseOccurrenceState {

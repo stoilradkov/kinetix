@@ -70,6 +70,46 @@ describe("training session application services", () => {
         expect(recompleted).toMatchObject({ status: "completed", version: 5 });
     });
 
+    it("emits canonically-named lifecycle events carrying IDs, revision, and invalidation metadata", async () => {
+        const fixture = createFixture();
+        const created = await fixture.commands.create({}, metadata);
+        const started = await fixture.commands.start(created.id, created.version, metadata);
+        const revised = await fixture.commands.update(started.id, started.version, { notes: "warmup" }, metadata);
+        const completed = await fixture.commands.complete(revised.id, revised.version, {}, metadata);
+        const reopened = await fixture.commands.reopen(completed.id, completed.version, metadata);
+        const archived = await fixture.commands.archive(reopened.id, reopened.version, metadata);
+        await fixture.commands.restore(archived.id, archived.version, metadata);
+
+        expect(fixture.events.values.map(event => event.name)).toEqual([
+            "training.session.created",
+            "training.session.started",
+            "training.session.revised",
+            "training.session.completed",
+            "training.session.reopened",
+            "training.session.archived",
+            "training.session.restored",
+        ]);
+
+        const completedEvent = fixture.events.values.find(event => event.name === "training.session.completed")!;
+        expect(completedEvent.aggregateRevision).toBe(completed.version);
+        expect(completedEvent.payload).toMatchObject({
+            trainingSessionId: created.id,
+            profileId: PROFILE,
+            version: completed.version,
+            status: "completed",
+            archived: false,
+            localDate: "2026-08-02",
+            linkedPlannedSessionIds: [],
+            invalidation: { analytics: true, adherence: true, progression: true },
+        });
+
+        // Editing a still-in-progress session has no computed downstream state to stale.
+        const revisedEvent = fixture.events.values.find(event => event.name === "training.session.revised")!;
+        expect(revisedEvent.payload).toMatchObject({
+            invalidation: { analytics: false, adherence: false, progression: false },
+        });
+    });
+
     it("updates readiness, tags, notes, and activities on an in-progress session", async () => {
         const fixture = createFixture();
         const created = await fixture.commands.create({}, metadata);
@@ -333,6 +373,187 @@ describe("training session application services", () => {
     });
 });
 
+describe("training session running summaries", () => {
+    const RUN = activityId(0x51);
+
+    async function withRunActivity() {
+        const fixture = createFixture();
+        const created = await fixture.commands.create(
+            { activities: [{ id: RUN, type: "running", position: 0, running: {} }] },
+            metadata,
+        );
+        return { fixture, created };
+    }
+
+    it("accepts a partial running summary through session create", async () => {
+        const fixture = createFixture();
+        const created = await fixture.commands.create(
+            {
+                activities: [
+                    {
+                        id: RUN,
+                        type: "running",
+                        position: 0,
+                        running: { distance: { value: 5, unit: "km" }, runTags: ["Easy", "easy"] },
+                    },
+                ],
+            },
+            metadata,
+        );
+        const running = created.activities[0]!.running!;
+        expect(running.distance).toEqual({ value: 5, unit: "km" });
+        expect(running.movingTime).toBeNull();
+        expect(running.runTags).toEqual(["Easy"]);
+    });
+
+    it("upserts a running summary under session expected version, bumping version and emitting a revised event", async () => {
+        const { fixture, created } = await withRunActivity();
+        const updated = await fixture.commands.setRunning(
+            created.id,
+            created.version,
+            {
+                activityId: RUN,
+                running: { distance: { value: 10, unit: "km" }, movingTime: { value: 50, unit: "min" } },
+            },
+            metadata,
+        );
+        expect(updated.version).toBe(2);
+        expect(updated.activities[0]!.running).toMatchObject({
+            distance: { value: 10, unit: "km" },
+            movingTime: { value: 50, unit: "min" },
+        });
+        expect(fixture.events.values.map(event => event.name)).toEqual([
+            "training.session.created",
+            "training.session.revised",
+        ]);
+    });
+
+    it("returns the running summary through the bounded read projection", async () => {
+        const { fixture, created } = await withRunActivity();
+        await fixture.commands.setRunning(
+            created.id,
+            created.version,
+            { activityId: RUN, running: { distance: { value: 8, unit: "km" } } },
+            metadata,
+        );
+        const summary = await fixture.commands.readRunningSummary(created.id, RUN);
+        expect(summary).toMatchObject({ activityId: RUN, running: { distance: { value: 8, unit: "km" } } });
+    });
+
+    it("rejects a running summary targeting a non-running activity", async () => {
+        const fixture = createFixture();
+        const created = await fixture.commands.create(
+            { activities: [{ id: RUN, type: "strength", position: 0, strength: { occurrences: [] } }] },
+            metadata,
+        );
+        await expect(
+            fixture.commands.setRunning(created.id, created.version, { activityId: RUN, running: {} }, metadata),
+        ).rejects.toThrow(/running activity/i);
+    });
+
+    const ZONE_DEF = activityId(0x61);
+    const ZONE_RANGE = activityId(0x62);
+    const GEAR = activityId(0x63);
+
+    function runningPorts(overrides: Partial<FakeRunningPorts> = {}): FakeRunningPorts {
+        return {
+            zones: {
+                resolveZoneDefinition: async ({ family }) =>
+                    family === "heart_rate"
+                        ? { zoneDefinitionId: ZONE_DEF, ranges: [{ id: ZONE_RANGE, name: "Zone 2" }] }
+                        : null,
+            },
+            gear: { readGear: async () => ({ profileId: PROFILE, status: "active" }) },
+            ...overrides,
+        };
+    }
+
+    it("resolves the effective zone definition through the port, stamping its ID and range name", async () => {
+        const fixture = createFixture(defaultCatalog(), runningPorts());
+        const created = await fixture.commands.create(
+            { activities: [{ id: RUN, type: "running", position: 0, running: {} }] },
+            metadata,
+        );
+        const updated = await fixture.commands.setRunning(
+            created.id,
+            created.version,
+            {
+                activityId: RUN,
+                running: {
+                    zoneTimes: [
+                        {
+                            id: activityId(0x64),
+                            position: 0,
+                            family: "heart_rate",
+                            zoneRangeId: ZONE_RANGE,
+                            duration: { value: 20, unit: "min" },
+                        },
+                    ],
+                },
+            },
+            metadata,
+        );
+        const zoneTime = updated.activities[0]!.running!.zoneTimes[0]!;
+        expect(zoneTime.zoneDefinitionId).toBe(ZONE_DEF);
+        expect(zoneTime.zoneName).toBe("Zone 2");
+    });
+
+    it("rejects a zone time when no effective zone definition exists for its family", async () => {
+        const fixture = createFixture(defaultCatalog(), runningPorts());
+        const created = await fixture.commands.create(
+            { activities: [{ id: RUN, type: "running", position: 0, running: {} }] },
+            metadata,
+        );
+        await expect(
+            fixture.commands.setRunning(
+                created.id,
+                created.version,
+                {
+                    activityId: RUN,
+                    running: {
+                        zoneTimes: [
+                            { id: activityId(0x64), position: 0, family: "power", duration: { value: 5, unit: "min" } },
+                        ],
+                    },
+                },
+                metadata,
+            ),
+        ).rejects.toThrow(/zone definition/i);
+    });
+
+    it("resolves gear through the port and rejects archived gear", async () => {
+        const fixture = createFixture(defaultCatalog(), runningPorts());
+        const created = await fixture.commands.create(
+            { activities: [{ id: RUN, type: "running", position: 0, running: {} }] },
+            metadata,
+        );
+        const updated = await fixture.commands.setRunning(
+            created.id,
+            created.version,
+            { activityId: RUN, running: { gearItemId: GEAR } },
+            metadata,
+        );
+        expect(updated.activities[0]!.running!.gearItemId).toBe(GEAR);
+
+        const archived = createFixture(
+            defaultCatalog(),
+            runningPorts({ gear: { readGear: async () => ({ profileId: PROFILE, status: "archived" }) } }),
+        );
+        const created2 = await archived.commands.create(
+            { activities: [{ id: RUN, type: "running", position: 0, running: {} }] },
+            metadata,
+        );
+        await expect(
+            archived.commands.setRunning(
+                created2.id,
+                created2.version,
+                { activityId: RUN, running: { gearItemId: GEAR } },
+                metadata,
+            ),
+        ).rejects.toThrow(/gear item is unavailable/i);
+    });
+});
+
 function activityId(index: number): string {
     return `0198a4db-d8da-7000-8000-${index.toString(16).padStart(12, "0")}`;
 }
@@ -398,7 +619,18 @@ function defaultCatalog() {
     };
 }
 
-function createFixture(catalog: ReturnType<typeof defaultCatalog> = defaultCatalog()) {
+interface FakeRunningPorts {
+    readonly zones: {
+        resolveZoneDefinition: (query: {
+            profileId: string;
+            family: string;
+            at: string;
+        }) => Promise<{ zoneDefinitionId: string; ranges: readonly { id: string; name: string }[] } | null>;
+    };
+    readonly gear: { readGear: (id: string) => Promise<{ profileId: string; status: string } | null> };
+}
+
+function createFixture(catalog: ReturnType<typeof defaultCatalog> = defaultCatalog(), running?: FakeRunningPorts) {
     const revisions = new FakeRevisionStore();
     const events = new FakeEvents();
     const unitOfWork: UnitOfWork<typeof transaction> = { execute: work => work(transaction) };
@@ -431,6 +663,7 @@ function createFixture(catalog: ReturnType<typeof defaultCatalog> = defaultCatal
         mutations,
         profileReader,
         catalog,
+        ...(running ? { running: running as never } : {}),
         clock,
         generateId,
     });

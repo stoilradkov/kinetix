@@ -169,6 +169,20 @@
       "when": 1785683288752,
       "tag": "0023_legal_rage",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786099909737,
+      "tag": "0024_living_blur",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1786105935993,
+      "tag": "0025_aspiring_post",
+      "breakpoints": true
     }
   ]
 }

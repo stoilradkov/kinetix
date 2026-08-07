@@ -201,7 +201,13 @@ describe("training session live commands", () => {
         const substituted = await fixture.commands.substituteOccurrence(
             withActivity.id,
             withActivity.version,
-            { activityId: ACTIVITY, occurrenceId: OCCURRENCE, newExerciseId: BENCH, prescribedExerciseId, reason: "Rack taken" },
+            {
+                activityId: ACTIVITY,
+                occurrenceId: OCCURRENCE,
+                newExerciseId: BENCH,
+                prescribedExerciseId,
+                reason: "Rack taken",
+            },
             metadata,
         );
         expect(substituted.activities[0]?.strength?.occurrences[0]?.exerciseId).toBe(BENCH);
@@ -393,6 +399,7 @@ describe("sessionToPrescriptionDraft", () => {
                     ],
                     setGroups: [],
                 },
+                running: null,
             },
         ];
         const draft = sessionToPrescriptionDraft(activities);

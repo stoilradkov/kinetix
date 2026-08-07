@@ -47,6 +47,50 @@ function resource(overrides: Partial<TrainingSessionResource> = {}): TrainingSes
     };
 }
 
+function runningActivity(): TrainingSessionResource["activities"][number] {
+    return {
+        id: ids.activity,
+        type: "running",
+        position: 0,
+        startedAt: null,
+        endedAt: null,
+        durationSeconds: null,
+        rpe: null,
+        feeling: null,
+        notes: null,
+        tags: [],
+        strength: null,
+        running: {
+            distance: { value: 5, unit: "km" },
+            movingTime: { value: 25, unit: "min" },
+            elapsedTime: null,
+            averageHeartRate: null,
+            maxHeartRate: null,
+            averageCadence: null,
+            maxCadence: null,
+            averagePower: null,
+            maxPower: null,
+            elevationGain: null,
+            elevationLoss: null,
+            calories: null,
+            strideLength: null,
+            groundContactTime: null,
+            verticalOscillation: null,
+            vo2Max: null,
+            rpe: null,
+            indoor: false,
+            treadmill: false,
+            runTags: [],
+            environment: null,
+            steps: [],
+            splits: [],
+            zoneTimes: [],
+            route: null,
+            gearItemId: null,
+        },
+    };
+}
+
 function summary(overrides: Partial<TrainingSessionSummary> = {}): TrainingSessionSummary {
     const {
         activities,
@@ -211,6 +255,39 @@ describe("TrainingSessionController", () => {
         expect(restore).toHaveBeenCalledWith(ids.session, 2, expect.any(Object), undefined);
     });
 
+    it("threads the x-kinetix-source and x-kinetix-reason headers into the command metadata", async () => {
+        const archive = vi.fn(async () => resource({ archivedAt: "2026-08-02T12:00:00.000Z", version: 2 }));
+        await controller({ commands: { archive } }).archive(
+            ids.session,
+            '"1"',
+            "r",
+            undefined,
+            { setHeader: vi.fn() },
+            "agent",
+            "nightly cleanup",
+        );
+        expect(archive).toHaveBeenCalledWith(
+            ids.session,
+            1,
+            expect.objectContaining({ source: "agent", reason: "nightly cleanup" }),
+            undefined,
+        );
+    });
+
+    it("falls back to the user source when the provenance header is absent or unrecognised", async () => {
+        const reopen = vi.fn(async () => resource({ status: "in_progress", version: 2 }));
+        await controller({ commands: { reopen } }).reopen(
+            ids.session,
+            '"1"',
+            "r",
+            undefined,
+            { setHeader: vi.fn() },
+            "spoofed-channel",
+            undefined,
+        );
+        expect(reopen).toHaveBeenCalledWith(ids.session, 1, expect.objectContaining({ source: "user" }), undefined);
+    });
+
     it("requires If-Match on update", () => {
         expect(() =>
             controller({}).update(ids.session, { notes: "x" }, undefined, "r", undefined, { setHeader: vi.fn() }),
@@ -292,7 +369,13 @@ describe("TrainingSessionController", () => {
             { setHeader: vi.fn() },
         );
         expect(result).toMatchObject({ version: 5 });
-        expect(recordPerformedSet).toHaveBeenCalledWith(ids.session, 4, expect.any(Object), expect.any(Object), undefined);
+        expect(recordPerformedSet).toHaveBeenCalledWith(
+            ids.session,
+            4,
+            expect.any(Object),
+            expect.any(Object),
+            undefined,
+        );
     });
 
     it("patches a set through the command with the set ID and If-Match version", async () => {
@@ -314,6 +397,48 @@ describe("TrainingSessionController", () => {
             expect.any(Object),
             undefined,
         );
+    });
+
+    it("gets a session, deriving the running pace as a query-only projection", async () => {
+        const withRun = repository({ readSession: async () => resource({ activities: [runningActivity()] }) });
+        const result = await controller({ repository: withRun }).get(ids.session, { setHeader: vi.fn() });
+        const running = result.activities[0]!.running!;
+        expect(running.derivedPace.secondsPerKilometre).toBe(300);
+        expect(running.derivedPace.exclusions).toEqual([]);
+    });
+
+    it("upserts a running summary through the command with the If-Match version", async () => {
+        const setRunning = vi.fn(async () => resource({ version: 7, activities: [runningActivity()] }));
+        const result = await controller({ commands: { setRunning } as never }).setRunning(
+            ids.session,
+            { activityId: ids.activity, running: { distance: { value: 5, unit: "km" } } },
+            '"6"',
+            "r",
+            undefined,
+            { setHeader: vi.fn() },
+        );
+        expect(result).toMatchObject({ version: 7 });
+        expect(setRunning).toHaveBeenCalledWith(ids.session, 6, expect.any(Object), expect.any(Object), undefined);
+    });
+
+    it("returns the running summary with its derived pace", async () => {
+        const readRunningSummary = vi.fn(async () => ({
+            activityId: ids.activity,
+            running: runningActivity().running!,
+        }));
+        const result = await controller({ commands: { readRunningSummary } as never }).runningSummary(
+            ids.session,
+            ids.activity,
+        );
+        expect(result.activityId).toBe(ids.activity);
+        expect(result.running.derivedPace.secondsPerKilometre).toBe(300);
+    });
+
+    it("surfaces a missing running summary as not found", async () => {
+        const readRunningSummary = vi.fn(async () => null);
+        await expect(
+            controller({ commands: { readRunningSummary } as never }).runningSummary(ids.session, ids.activity),
+        ).rejects.toBeInstanceOf(TrainingSessionNotFoundError);
     });
 
     it("requires If-Match on record-set", () => {
