@@ -151,14 +151,18 @@ import {
     IMPORT_BATCH_REPOSITORY,
     REGISTER_IMPORT_BATCH,
     IMPORT_BATCH_QUERY_SERVICE,
+    IMPORT_STORAGE_READ_PORT,
+    RECONCILE_IMPORT_STORAGE,
     BulkCatalogResolver,
     DryRunBulkProgram,
     CommitBulkProgram,
     RegisterImportBatch,
     ImportBatchQueryService,
+    ReconcileImportStorage,
     type BulkDryRunRepository,
     type BulkExternalIdRegistry,
     type ImportBatchRepository,
+    type ImportStorageReadPort,
     type ExerciseExternalIdResolver,
     type TrainingExerciseCatalogPort,
 } from "#src/modules/training/application/index";
@@ -179,6 +183,7 @@ import { DrizzleTrainingCatalogRepository } from "#src/modules/training/infrastr
 import { DrizzleBulkDryRunRepository } from "#src/modules/training/infrastructure/drizzle-bulk-dry-run-repository";
 import { DrizzleBulkExternalIdRegistry } from "#src/modules/training/infrastructure/drizzle-bulk-external-id-registry";
 import { DrizzleImportBatchRepository } from "#src/modules/training/infrastructure/drizzle-import-batch-repository";
+import { DrizzleImportStorageReadPort } from "#src/modules/training/infrastructure/drizzle-import-storage-read-port";
 import { DrizzleExerciseExternalIdResolver } from "#src/modules/training/infrastructure/drizzle-exercise-external-id-resolver";
 import { DrizzleTrainingProfileRepository } from "#src/modules/training/infrastructure/drizzle-training-profile-repository";
 import { TrainingProfileRevisionRegistrar } from "#src/modules/training/infrastructure/training-profile-revision-registrar";
@@ -802,10 +807,12 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         DrizzleBulkDryRunRepository,
         DrizzleBulkExternalIdRegistry,
         DrizzleImportBatchRepository,
+        DrizzleImportStorageReadPort,
         DrizzleExerciseExternalIdResolver,
         { provide: BULK_DRY_RUN_REPOSITORY, useExisting: DrizzleBulkDryRunRepository },
         { provide: BULK_EXTERNAL_ID_REGISTRY, useExisting: DrizzleBulkExternalIdRegistry },
         { provide: IMPORT_BATCH_REPOSITORY, useExisting: DrizzleImportBatchRepository },
+        { provide: IMPORT_STORAGE_READ_PORT, useExisting: DrizzleImportStorageReadPort },
         { provide: EXERCISE_EXTERNAL_ID_RESOLVER, useExisting: DrizzleExerciseExternalIdResolver },
         {
             provide: BULK_CATALOG_RESOLVER,
@@ -876,6 +883,11 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                 profileReader: ProfileReader,
             ) => new ImportBatchQueryService({ repository, externalIds, profileReader }),
             inject: [IMPORT_BATCH_REPOSITORY, BULK_EXTERNAL_ID_REGISTRY, PROFILE_READER],
+        },
+        {
+            provide: RECONCILE_IMPORT_STORAGE,
+            useFactory: (readPort: ImportStorageReadPort) => new ReconcileImportStorage({ readPort }),
+            inject: [IMPORT_STORAGE_READ_PORT],
         },
         {
             provide: TRAINING_MODULE_DEFINITION,

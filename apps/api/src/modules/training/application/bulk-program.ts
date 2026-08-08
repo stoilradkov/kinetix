@@ -380,6 +380,12 @@ export interface BulkExternalIdEntry {
     readonly entityType: BulkExternalEntityType;
     readonly externalId: string;
     readonly entityId: string;
+    /**
+     * The normalized content fingerprint recorded for this entity (issue #57, HI3). A later import
+     * compares its recomputed fingerprint against this to detect `skip-identical`. Optional — the
+     * single-program bulk commit registers without one until it carries per-entity fingerprints.
+     */
+    readonly contentFingerprint?: string | null;
 }
 
 /** One persisted external-ID → Kinetix-ID mapping, as read back for a batch. */

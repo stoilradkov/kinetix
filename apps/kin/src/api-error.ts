@@ -23,6 +23,7 @@ export function cliExitCode(error: unknown): number {
     switch (error.response.code) {
         case "VALIDATION_FAILED":
         case "CATALOG_MAPPING_REQUIRED":
+        case "PAYLOAD_TOO_LARGE":
             return 2;
         case "NOT_FOUND":
             return 3;
@@ -36,6 +37,7 @@ export function cliExitCode(error: unknown): number {
         case "DRY_RUN_CONSUMED":
         case "DRY_RUN_TOKEN_INVALID":
         case "EXTERNAL_ID_CONFLICT":
+        case "IMPORT_PAYLOAD_CONFLICT":
         case "PROGRESSION_CONFLICT":
         case "PROGRESSION_STALE":
             return 5;

@@ -1,0 +1,2 @@
+ALTER TABLE "bulk_external_ids" ADD COLUMN "content_fingerprint" text;--> statement-breakpoint
+ALTER TABLE "bulk_external_ids" ADD CONSTRAINT "bulk_external_ids_content_fingerprint_valid" CHECK ("bulk_external_ids"."content_fingerprint" IS NULL OR "bulk_external_ids"."content_fingerprint" ~ '^[0-9a-f]{64}$');

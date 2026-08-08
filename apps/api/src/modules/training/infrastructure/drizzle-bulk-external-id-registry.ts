@@ -44,6 +44,7 @@ export class DrizzleBulkExternalIdRegistry implements BulkExternalIdRegistry {
                         entityType: entry.entityType,
                         externalId: entry.externalId,
                         entityId: entry.entityId,
+                        contentFingerprint: entry.contentFingerprint ?? null,
                     })),
                 );
         } catch (error) {

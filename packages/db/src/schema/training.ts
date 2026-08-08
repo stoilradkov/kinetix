@@ -2320,6 +2320,11 @@ export const bulkExternalIds = pgTable(
         entityType: text("entity_type").notNull(),
         externalId: text("external_id").notNull(),
         entityId: uuid("entity_id").notNull(),
+        // The normalized content fingerprint recorded at import (issue #57, HI3; design §12.3). A later
+        // import recomputes this over the incoming entity and compares: an equal value is a genuine
+        // `skip-identical`, so a full replay of the same payload is a deterministic no-op. Nullable —
+        // entries registered before fingerprints were captured are treated as "content unknown".
+        contentFingerprint: text("content_fingerprint"),
         createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     },
     table => [
@@ -2329,6 +2334,10 @@ export const bulkExternalIds = pgTable(
         ),
         check("bulk_external_ids_namespace_valid", sql`length(btrim(${table.sourceNamespace})) BETWEEN 1 AND 120`),
         check("bulk_external_ids_value_valid", sql`length(btrim(${table.externalId})) BETWEEN 1 AND 200`),
+        check(
+            "bulk_external_ids_content_fingerprint_valid",
+            sql`${table.contentFingerprint} IS NULL OR ${table.contentFingerprint} ~ '^[0-9a-f]{64}$'`,
+        ),
         uniqueIndex("bulk_external_ids_namespace_type_value_unique").on(
             table.sourceNamespace,
             table.entityType,
