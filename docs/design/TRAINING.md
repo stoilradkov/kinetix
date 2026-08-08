@@ -965,7 +965,38 @@ unchanged.
 **Read surface.** `POST /training/imports/batches` registers (open-or-resolve);
 `GET /training/imports/batches/:id` reads identity + lifecycle; `GET …/:id/mappings` lists the
 deterministic `(entity_type, external_id) → entity_id` mappings, sorted for stable output. The
-dry-run/commit execution that populates a batch's entities is a later increment (HI4/HI5).
+commit execution that populates a batch's entities is a later increment (HI5).
+
+### 14.6 Historical import dry-run
+
+`POST /api/v1/training/imports/dry-runs` (issue #58, HI4) previews how an already-normalized archive
+(14.4) — many programs and completed sessions together — would be stored, changing no authoritative
+catalog/program/session state. It mirrors the single-program bulk dry-run (14.2) but for the whole
+archive, and reuses the shipped machinery rather than a parallel one:
+
+1. Validate the versioned envelope, then the pure cross-node invariants
+   (`validateHistoricalImportIdentities`: bounded size, per-type `externalId` uniqueness, mapping and
+   intra-session reference resolution). Structural failures are a `422`.
+2. Normalize and validate every program with the extracted `BulkProgramNormalizer` (catalog resolution,
+   in-memory `Program`/prescription validation, schedule expansion).
+3. Build each completed session as an in-memory `TrainingSession` (create → start → complete) so every
+   measurement, RPE, pain-record target, and structural reference runs the ordinary domain invariants.
+   Canonical exercise references resolve by catalog `id`, `slug`, or provider `externalId` only.
+4. Reconcile storage for every import-addressable entity via the shared #57 engine, producing the exact
+   create / update / skip-identical / conflict plan a commit will execute, keyed by content fingerprint.
+5. Persist one expiring artifact in `historical_import_dry_runs` (approval token + reference hash; no
+   authoritative write). The response carries the normalized program + session trees, the storage plan,
+   an entity/count summary, validation errors, required catalog mappings, and affected versions.
+
+Nothing is repaired: a missing canonical reference, an invalid measurement/RPE, or a stale version is
+rejected, not fixed. The `kin training imports dry-run --file|--input` command mirrors the endpoint with
+concise human output plus complete machine-readable JSON.
+
+**Resource bounds.** The per-archive caps are `HISTORICAL_IMPORT_LIMITS` (≤200 programs, ≤20 000
+completed sessions, with per-session/-activity/-occurrence sub-limits). Reconciliation resolves the
+whole archive in a fixed number of batched reads (one external-ID mapping read, then one version read
+per version-tracked root type) regardless of payload size — never one round-trip per entity — so a
+representative five-year archive (~1 000 completed sessions) previews within a single request.
 
 ## 15. Progression rule engine
 

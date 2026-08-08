@@ -554,38 +554,50 @@ interface ResolvedRef {
 }
 
 /**
- * Dry-run a complete bulk program (design 14.2). Resolves catalog references, normalizes entered
- * measurements, expands the schedule, and runs every Program/prescription domain invariant against
- * in-memory aggregates — never a repository — producing the canonical normalized tree, warnings,
- * required mappings, and affected versions. The only persistence is the preview artifact itself,
- * written in one UnitOfWork; there is no way for this use case to mutate a program or the catalog
- * because it holds no program/prescription/catalog write port.
+ * The reusable, side-effect-free result of normalizing one bulk program (design 14.2). Both the
+ * single-program dry-run and the multi-program historical import (issue #58, HI4) consume it: the
+ * canonical normalized tree, path-anchored errors, required catalog mappings, proposed exercises, and
+ * the affected catalog versions (sorted) that seed the reference fingerprint.
  */
-export class DryRunBulkProgram<Transaction = unknown> {
-    private readonly clock: Clock;
-    private readonly generateId: () => string;
-    private readonly ttlMs: number;
+export interface BulkProgramNormalization {
+    readonly normalizedProgram: BulkNormalizedProgram;
+    readonly warnings: readonly PlanningWarning[];
+    readonly errors: readonly BulkDryRunError[];
+    readonly mappings: readonly BulkExerciseMapping[];
+    readonly proposedExercises: readonly BulkProposedExercisePreview[];
+    readonly affected: readonly BulkAffectedVersion[];
+}
 
-    constructor(private readonly runtime: DryRunRuntime<Transaction>) {
-        this.clock = runtime.clock ?? { now: () => new Date() };
-        this.generateId =
-            runtime.generateId ??
-            (() => {
-                throw new Error("Bulk dry-run ID generation is not configured");
-            });
-        this.ttlMs = runtime.ttlMs ?? BULK_DRY_RUN_TTL_MS;
-    }
+/** Options controlling one program normalization: where its errors anchor, and catalog-create policy. */
+export interface BulkProgramNormalizeOptions {
+    /** The payload location this program sits at, so errors/mappings anchor correctly (e.g. `["program"]`). */
+    readonly basePath: readonly (string | number)[];
+    readonly createMissingExercises: boolean;
+}
 
-    async execute(
-        envelope: BulkProgramEnvelope,
-        _metadata: CommandContext,
-        transaction?: Transaction,
-    ): Promise<BulkDryRunResponse> {
-        const now = this.clock.now();
-        const profileId = await this.runtime.profileReader.requireActiveProfileId();
-        const input = envelope.program;
+/**
+ * Pure-of-persistence normalization of a single bulk program (design 14.2 steps 3–8). Resolves catalog
+ * references, normalizes entered measurements, builds and validates the Program aggregate and each
+ * session prescription entirely in memory, and expands the schedule — never touching a repository. It
+ * holds only a read-only {@link BulkCatalogResolver} and an ID minter, so it cannot mutate a program or
+ * the catalog. {@link DryRunBulkProgram} wraps it with artifact persistence; {@link HistoricalImportDryRun}
+ * runs it once per program in a multi-program archive.
+ */
+export class BulkProgramNormalizer {
+    constructor(
+        private readonly resolver: BulkCatalogResolver,
+        private readonly generateId: () => string,
+    ) {}
+
+    async normalize(
+        input: BulkProgramInput,
+        options: BulkProgramNormalizeOptions,
+        profileId: string,
+        now: Date,
+    ): Promise<BulkProgramNormalization> {
         const blocks = input.blocks ?? [];
         const sessions = input.sessions ?? [];
+        const basePath = options.basePath;
 
         assertWithinBulkLimits(countBulkInput(input));
 
@@ -609,7 +621,7 @@ export class DryRunBulkProgram<Transaction = unknown> {
                 if (activity.type !== "strength") continue;
                 for (const [exerciseIndex, exercise] of activity.exercises.entries()) {
                     const path = [
-                        "program",
+                        ...basePath,
                         "sessions",
                         session.externalId,
                         "activities",
@@ -621,7 +633,7 @@ export class DryRunBulkProgram<Transaction = unknown> {
                         session,
                         exercise,
                         path,
-                        envelope.createMissingExercises ?? false,
+                        options.createMissingExercises,
                         now,
                         { errors, mappings, proposedExercises, affected },
                     );
@@ -650,7 +662,7 @@ export class DryRunBulkProgram<Transaction = unknown> {
                 now,
             ).state;
         } catch (error) {
-            errors.push(toError(["program"], error));
+            errors.push(toError([...basePath], error));
         }
 
         // ---- Build (and validate) each session prescription without persisting ---------------
@@ -662,7 +674,7 @@ export class DryRunBulkProgram<Transaction = unknown> {
                 const draft = this.prescriptionDraft(session, perRef);
                 prescriptionBySession.set(session.externalId, this.publishInMemory(draft, now));
             } catch (error) {
-                errors.push(toError(["program", "sessions", session.externalId, "prescription"], error));
+                errors.push(toError([...basePath, "sessions", session.externalId, "prescription"], error));
             }
         }
 
@@ -702,37 +714,7 @@ export class DryRunBulkProgram<Transaction = unknown> {
         );
 
         const affectedVersions = [...affected.values()].sort((a, b) => a.entityId.localeCompare(b.entityId));
-        const referenceHash = hashRequest(affectedVersions);
-        const state: BulkDryRunState = mappings.length > 0 ? "needs_mapping" : "ready";
-        const dryRunId = this.generateId();
-        const record: StoredBulkDryRun = {
-            id: dryRunId,
-            profileId,
-            schemaVersion: 1,
-            sourceNamespace: envelope.source.namespace,
-            sourceGeneratedBy: envelope.source.generatedBy ?? null,
-            mode: envelope.mode,
-            state,
-            referenceHash,
-            approvalToken: this.generateId(),
-            normalizedProgram,
-            warnings,
-            errors,
-            mappings,
-            proposedExercises,
-            affectedVersions,
-            createdAt: now,
-            expiresAt: new Date(now.getTime() + this.ttlMs),
-            consumedAt: null,
-        };
-
-        // The single side effect: persist the preview artifact, joining the caller's transaction
-        // (e.g. the idempotency executor's) when one is supplied.
-        if (transaction === undefined)
-            await this.runtime.unitOfWork.execute(active => this.runtime.repository.save(record, active));
-        else await this.runtime.repository.save(record, transaction);
-
-        return this.toResponse(record);
+        return { normalizedProgram, warnings, errors, mappings, proposedExercises, affected: affectedVersions };
     }
 
     private async resolveExercise(
@@ -753,7 +735,7 @@ export class DryRunBulkProgram<Transaction = unknown> {
         },
     ): Promise<ResolvedRef | null> {
         const typedExercise = exercise;
-        const resolution = await this.runtime.resolver.resolve(typedExercise.reference);
+        const resolution = await this.resolver.resolve(typedExercise.reference);
         if (resolution.status === "resolved") {
             sink.affected.set(resolution.exerciseId, {
                 entityType: "training.exercise",
@@ -800,29 +782,7 @@ export class DryRunBulkProgram<Transaction = unknown> {
     }
 
     private proposeExercise(proposed: BulkProposedExercise, now: Date): { snapshot: ExerciseSnapshotV1 } {
-        const definition = ExerciseDefinition.create(
-            {
-                id: this.generateId(),
-                slug: proposed.slug ?? slugify(proposed.name),
-                name: proposed.name,
-                ownership: "user",
-                forkedFromExerciseId: null,
-                equipmentTypeId: proposed.equipmentTypeId,
-                movementPatternId: proposed.movementPatternId,
-                classification: proposed.classification,
-                laterality: proposed.laterality,
-                bodyPosition: proposed.bodyPosition,
-                repetitionSemantics: proposed.repetitionSemantics,
-                loadModel: proposed.loadModel,
-                supportedMeasurements: proposed.supportedMeasurements,
-                muscles: (proposed.muscles ?? []).map(muscle => ({
-                    muscleGroupId: muscle.muscleGroupId,
-                    role: muscle.role,
-                })),
-            },
-            now,
-        );
-        return { snapshot: createExerciseSnapshot(definition, 1) };
+        return { snapshot: proposeExerciseSnapshot(proposed, this.generateId, now) };
     }
 
     private sessionFullyResolved(session: BulkProgramSession, perRef: SessionResolution): boolean {
@@ -1005,6 +965,79 @@ export class DryRunBulkProgram<Transaction = unknown> {
                 prescription: prescriptionBySession.get(session.externalId) ?? null,
             })),
         };
+    }
+}
+
+/**
+ * Dry-run a complete bulk program (design 14.2). Delegates the whole normalization to
+ * {@link BulkProgramNormalizer} (catalog resolution, in-memory Program/prescription validation,
+ * schedule expansion) and adds only the reference fingerprint, dry-run state, and the single side
+ * effect: persisting the preview artifact in one UnitOfWork. It holds no program/prescription/catalog
+ * write port, so it cannot mutate authoritative state.
+ */
+export class DryRunBulkProgram<Transaction = unknown> {
+    private readonly clock: Clock;
+    private readonly generateId: () => string;
+    private readonly ttlMs: number;
+    private readonly normalizer: BulkProgramNormalizer;
+
+    constructor(private readonly runtime: DryRunRuntime<Transaction>) {
+        this.clock = runtime.clock ?? { now: () => new Date() };
+        this.generateId =
+            runtime.generateId ??
+            (() => {
+                throw new Error("Bulk dry-run ID generation is not configured");
+            });
+        this.ttlMs = runtime.ttlMs ?? BULK_DRY_RUN_TTL_MS;
+        this.normalizer = new BulkProgramNormalizer(runtime.resolver, this.generateId);
+    }
+
+    async execute(
+        envelope: BulkProgramEnvelope,
+        _metadata: CommandContext,
+        transaction?: Transaction,
+    ): Promise<BulkDryRunResponse> {
+        const now = this.clock.now();
+        const profileId = await this.runtime.profileReader.requireActiveProfileId();
+
+        const normalization = await this.normalizer.normalize(
+            envelope.program,
+            { basePath: ["program"], createMissingExercises: envelope.createMissingExercises ?? false },
+            profileId,
+            now,
+        );
+
+        const affectedVersions = [...normalization.affected];
+        const referenceHash = hashRequest(affectedVersions);
+        const state: BulkDryRunState = normalization.mappings.length > 0 ? "needs_mapping" : "ready";
+        const record: StoredBulkDryRun = {
+            id: this.generateId(),
+            profileId,
+            schemaVersion: 1,
+            sourceNamespace: envelope.source.namespace,
+            sourceGeneratedBy: envelope.source.generatedBy ?? null,
+            mode: envelope.mode,
+            state,
+            referenceHash,
+            approvalToken: this.generateId(),
+            normalizedProgram: normalization.normalizedProgram,
+            warnings: [...normalization.warnings],
+            errors: [...normalization.errors],
+            mappings: [...normalization.mappings],
+            proposedExercises: [...normalization.proposedExercises],
+            affectedVersions,
+            createdAt: now,
+            expiresAt: new Date(now.getTime() + this.ttlMs),
+            consumedAt: null,
+        };
+
+        // The single side effect: persist the preview artifact, joining the caller's transaction
+        // (e.g. the idempotency executor's) when one is supplied.
+        if (transaction === undefined)
+            await this.runtime.unitOfWork.execute(active => this.runtime.repository.save(record, active));
+        else await this.runtime.repository.save(record, transaction);
+
+        return this.toResponse(record);
     }
 
     private toResponse(record: StoredBulkDryRun): BulkDryRunResponse {
@@ -1337,4 +1370,39 @@ function slugify(name: string): string {
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "");
     return slug.length > 0 ? slug : "exercise";
+}
+
+/**
+ * Build an in-memory exercise snapshot for a proposed (not-yet-catalogued) exercise definition, minting
+ * a fresh id. Shared by the bulk-program preview and the historical-import preview (issue #58, HI4) so a
+ * proposed exercise is previewed identically wherever it is referenced. Pure — it creates no catalog row.
+ */
+export function proposeExerciseSnapshot(
+    proposed: BulkProposedExercise,
+    generateId: () => string,
+    now: Date,
+): ExerciseSnapshotV1 {
+    const definition = ExerciseDefinition.create(
+        {
+            id: generateId(),
+            slug: proposed.slug ?? slugify(proposed.name),
+            name: proposed.name,
+            ownership: "user",
+            forkedFromExerciseId: null,
+            equipmentTypeId: proposed.equipmentTypeId,
+            movementPatternId: proposed.movementPatternId,
+            classification: proposed.classification,
+            laterality: proposed.laterality,
+            bodyPosition: proposed.bodyPosition,
+            repetitionSemantics: proposed.repetitionSemantics,
+            loadModel: proposed.loadModel,
+            supportedMeasurements: proposed.supportedMeasurements,
+            muscles: (proposed.muscles ?? []).map(muscle => ({
+                muscleGroupId: muscle.muscleGroupId,
+                role: muscle.role,
+            })),
+        },
+        now,
+    );
+    return createExerciseSnapshot(definition, 1);
 }

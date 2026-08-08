@@ -485,3 +485,222 @@ function push(errors: Record<string, string[]>, path: Path, message: string): vo
     const key = path.join(".");
     (errors[key] ??= []).push(message);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Storage-plan requests (issue #58, HI4; design §14.2)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * One import-addressable entity a dry-run must reconcile against current state: its payload location
+ * (`path`), its `(entityType, externalId)` identity, and the canonical `content` whose fingerprint the
+ * storage-reconciliation engine (#57) compares to decide create / update / skip-identical / conflict.
+ *
+ * `content` is the entity's **own** identity-relevant fields, deliberately excluding any child
+ * collection that is itself separately addressable (a program's blocks/sessions, an activity's
+ * occurrences, an occurrence's performed sets). This gives entity-level fingerprint granularity: a
+ * changed set marks that set as an update while its parent occurrence stays `skip-identical`. The
+ * shape is stable across retries because it is derived from the caller's canonical payload and never
+ * from a minted UUID or a wall-clock value.
+ */
+export interface HistoricalStorageRequest {
+    readonly path: Path;
+    readonly entityType: HistoricalEntityType;
+    readonly externalId: string;
+    readonly content: Readonly<Record<string, unknown>>;
+}
+
+interface StorageProgramSet {
+    readonly externalId?: string;
+    readonly [key: string]: unknown;
+}
+interface StorageProgramExercise {
+    readonly externalId?: string;
+    readonly sets?: readonly StorageProgramSet[];
+    readonly [key: string]: unknown;
+}
+interface StorageProgramActivity {
+    readonly externalId?: string;
+    readonly exercises?: readonly StorageProgramExercise[];
+    readonly [key: string]: unknown;
+}
+interface StorageProgramSession {
+    readonly externalId: string;
+    readonly prescription?: { readonly activities?: readonly StorageProgramActivity[] } & Record<string, unknown>;
+    readonly [key: string]: unknown;
+}
+interface StorageProgramBlock {
+    readonly externalId: string;
+    readonly [key: string]: unknown;
+}
+interface StorageProgram {
+    readonly externalId?: string;
+    readonly blocks?: readonly StorageProgramBlock[];
+    readonly sessions?: readonly StorageProgramSession[];
+    readonly [key: string]: unknown;
+}
+
+interface StoragePerformedSet {
+    readonly externalId: string;
+    readonly [key: string]: unknown;
+}
+interface StorageOccurrence {
+    readonly externalId: string;
+    readonly performedSets?: readonly StoragePerformedSet[];
+    readonly [key: string]: unknown;
+}
+interface StorageSetGroup {
+    readonly externalId: string;
+    readonly [key: string]: unknown;
+}
+interface StorageRunStep {
+    readonly externalId: string;
+    readonly [key: string]: unknown;
+}
+interface StorageRunSplit {
+    readonly externalId: string;
+    readonly [key: string]: unknown;
+}
+interface StorageSessionActivity {
+    readonly externalId: string;
+    readonly strength?: {
+        readonly occurrences?: readonly StorageOccurrence[];
+        readonly setGroups?: readonly StorageSetGroup[];
+    };
+    readonly running?: { readonly steps?: readonly StorageRunStep[]; readonly splits?: readonly StorageRunSplit[] };
+    readonly [key: string]: unknown;
+}
+interface StoragePainRecord {
+    readonly externalId: string;
+    readonly [key: string]: unknown;
+}
+interface StorageCompletedSession {
+    readonly externalId: string;
+    readonly activities?: readonly StorageSessionActivity[];
+    readonly painRecords?: readonly StoragePainRecord[];
+    readonly [key: string]: unknown;
+}
+export interface HistoricalStoragePayload {
+    readonly programs?: readonly StorageProgram[];
+    readonly completedSessions?: readonly StorageCompletedSession[];
+}
+
+/** Shallow-clone a payload node, dropping the child-collection keys that are addressed separately. */
+function ownContent(node: Record<string, unknown>, exclude: readonly string[]): Readonly<Record<string, unknown>> {
+    const content: Record<string, unknown> = {};
+    for (const key of Object.keys(node)) {
+        if (exclude.includes(key)) continue;
+        content[key] = node[key];
+    }
+    return content;
+}
+
+/**
+ * Walk an already-validated historical payload and emit one {@link HistoricalStorageRequest} per
+ * import-addressable entity, in deterministic payload order (programs first, then completed sessions;
+ * each depth-first). The plan side mirrors exactly what the shipped bulk commit registers — program,
+ * program-block, planned-session — while the performance side covers the completed-session tree:
+ * training-session, session-activity, occurrence, set-group, performed-set, run-step, run-split, and
+ * pain-record. The application turns each entry's `content` into a fingerprint and runs the shared
+ * reconciliation engine; this function performs no I/O and mints nothing.
+ */
+export function collectHistoricalStorageRequests(
+    payload: HistoricalStoragePayload,
+): readonly HistoricalStorageRequest[] {
+    const requests: HistoricalStorageRequest[] = [];
+
+    payload.programs?.forEach((program, p) => {
+        if (program.externalId !== undefined)
+            requests.push({
+                path: ["programs", p],
+                entityType: "program",
+                externalId: program.externalId,
+                content: ownContent(program, ["blocks", "sessions"]),
+            });
+        program.blocks?.forEach((block, b) =>
+            requests.push({
+                path: ["programs", p, "blocks", b],
+                entityType: "program-block",
+                externalId: block.externalId,
+                content: ownContent(block, []),
+            }),
+        );
+        program.sessions?.forEach((session, s) =>
+            requests.push({
+                path: ["programs", p, "sessions", s],
+                entityType: "planned-session",
+                externalId: session.externalId,
+                content: ownContent(session, []),
+            }),
+        );
+    });
+
+    payload.completedSessions?.forEach((session, s) => {
+        const base = ["completedSessions", s] as const;
+        requests.push({
+            path: [...base],
+            entityType: "training-session",
+            externalId: session.externalId,
+            content: ownContent(session, ["activities", "painRecords"]),
+        });
+        session.activities?.forEach((activity, a) => {
+            const actBase = [...base, "activities", a] as const;
+            requests.push({
+                path: [...actBase],
+                entityType: "session-activity",
+                externalId: activity.externalId,
+                content: ownContent(activity, ["strength", "running"]),
+            });
+            activity.strength?.occurrences?.forEach((occurrence, o) => {
+                const occBase = [...actBase, "strength", "occurrences", o] as const;
+                requests.push({
+                    path: [...occBase],
+                    entityType: "occurrence",
+                    externalId: occurrence.externalId,
+                    content: ownContent(occurrence, ["performedSets"]),
+                });
+                occurrence.performedSets?.forEach((set, t) =>
+                    requests.push({
+                        path: [...occBase, "performedSets", t],
+                        entityType: "performed-set",
+                        externalId: set.externalId,
+                        content: ownContent(set, []),
+                    }),
+                );
+            });
+            activity.strength?.setGroups?.forEach((group, g) =>
+                requests.push({
+                    path: [...actBase, "strength", "setGroups", g],
+                    entityType: "set-group",
+                    externalId: group.externalId,
+                    content: ownContent(group, []),
+                }),
+            );
+            activity.running?.steps?.forEach((step, r) =>
+                requests.push({
+                    path: [...actBase, "running", "steps", r],
+                    entityType: "run-step",
+                    externalId: step.externalId,
+                    content: ownContent(step, []),
+                }),
+            );
+            activity.running?.splits?.forEach((split, r) =>
+                requests.push({
+                    path: [...actBase, "running", "splits", r],
+                    entityType: "run-split",
+                    externalId: split.externalId,
+                    content: ownContent(split, []),
+                }),
+            );
+        });
+        session.painRecords?.forEach((pain, r) =>
+            requests.push({
+                path: [...base, "painRecords", r],
+                entityType: "pain-record",
+                externalId: pain.externalId,
+                content: ownContent(pain, []),
+            }),
+        );
+    });
+
+    return requests;
+}

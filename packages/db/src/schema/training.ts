@@ -2350,6 +2350,61 @@ export const bulkExternalIds = pgTable(
 
 export type BulkExternalIdRow = typeof bulkExternalIds.$inferSelect;
 
+/**
+ * The expiring preview artifact for an already-normalized historical import (issue #58, HI4; design
+ * §14.2). Where {@link bulkDryRuns} previews one program, this previews a whole archive: many normalized
+ * program trees (`programs`) together with completed-session trees (`completed_sessions`) plus the
+ * deterministic `storage_plan` (#57) a later commit will execute unchanged. Nothing authoritative is
+ * written when the artifact is stored; `approval_token` + `reference_hash` guard a follow-up commit, and
+ * `consumed_at` (set only on that future commit) makes double-commit impossible. Rows expire at
+ * `expires_at`.
+ */
+export const historicalImportDryRuns = pgTable(
+    "historical_import_dry_runs",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        schemaVersion: smallint("schema_version").notNull().default(1),
+        sourceNamespace: text("source_namespace").notNull(),
+        sourceGeneratedBy: text("source_generated_by"),
+        payloadId: text("payload_id").notNull(),
+        checksum: text("checksum").notNull(),
+        mode: text("mode").notNull(),
+        state: text("state").notNull(),
+        referenceHash: text("reference_hash").notNull(),
+        approvalToken: text("approval_token").notNull(),
+        programs: jsonb("programs").$type<unknown[]>().notNull().default([]),
+        completedSessions: jsonb("completed_sessions").$type<unknown[]>().notNull().default([]),
+        storagePlan: jsonb("storage_plan").$type<Record<string, unknown>>().notNull(),
+        summary: jsonb("summary").$type<Record<string, unknown>>().notNull(),
+        warnings: jsonb("warnings").$type<unknown[]>().notNull().default([]),
+        errors: jsonb("errors").$type<unknown[]>().notNull().default([]),
+        mappings: jsonb("mappings").$type<unknown[]>().notNull().default([]),
+        proposedExercises: jsonb("proposed_exercises").$type<unknown[]>().notNull().default([]),
+        affectedVersions: jsonb("affected_versions").$type<unknown[]>().notNull().default([]),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+        // Set once, on a future commit transaction (HI5). A non-null value means the dry-run was consumed.
+        consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    },
+    table => [
+        check("historical_import_dry_runs_schema_version_valid", sql`${table.schemaVersion} = 1`),
+        check("historical_import_dry_runs_mode_valid", sql`${table.mode} IN ('create', 'upsert')`),
+        check("historical_import_dry_runs_state_valid", sql`${table.state} IN ('ready', 'needs_mapping')`),
+        check("historical_import_dry_runs_reference_hash_valid", sql`${table.referenceHash} ~ '^[0-9a-f]{64}$'`),
+        check("historical_import_dry_runs_checksum_valid", sql`${table.checksum} ~ '^[0-9a-f]{64}$'`),
+        check(
+            "historical_import_dry_runs_namespace_valid",
+            sql`length(btrim(${table.sourceNamespace})) BETWEEN 1 AND 120`,
+        ),
+        check("historical_import_dry_runs_payload_id_valid", sql`length(btrim(${table.payloadId})) BETWEEN 1 AND 200`),
+        index("historical_import_dry_runs_profile_idx").on(table.profileId, table.createdAt),
+        index("historical_import_dry_runs_expires_idx").on(table.expiresAt),
+    ],
+);
+
+export type HistoricalImportDryRunRow = typeof historicalImportDryRuns.$inferSelect;
+
 export type WorkoutTemplateRow = typeof workoutTemplates.$inferSelect;
 export type WorkoutTemplatePrescriptionRow = typeof workoutTemplatePrescriptions.$inferSelect;
 export type ProgramRow = typeof programs.$inferSelect;

@@ -9,6 +9,8 @@ import {
     bulkCommitResponseSchema,
     bulkDryRunResponseSchema,
     bulkProgramEnvelopeSchema,
+    historicalImportDryRunResponseSchema,
+    historicalImportEnvelopeSchema,
     healthResponseSchema,
     coreProfileResponseSchema,
     createProfileRequestSchema,
@@ -214,6 +216,7 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
     registerGearCommands(training, dependencies);
     registerWorkoutTemplateCommands(training, dependencies);
     registerProgramCommands(training, dependencies);
+    registerImportCommands(training, dependencies);
     registerPlannedSessionCommands(training, dependencies);
     registerTrainingSessionCommands(training, dependencies);
     registerTrainingSetCommands(training, dependencies);
@@ -1278,6 +1281,61 @@ function registerProgramCommands(training: Command, dependencies: ProgramDepende
                     outputProgram(dependencies.output, result, options.json);
                 },
             );
+}
+
+function registerImportCommands(training: Command, dependencies: ProgramDependencies): void {
+    const imports = training.command("imports").description("Preview and manage normalized historical imports");
+
+    imports
+        .command("dry-run")
+        .description("Validate and preview an already-normalized historical import (many programs + sessions)")
+        .option("--file <path>", "Path to a HistoricalImportEnvelope JSON file ('-' reads stdin)")
+        .option("--input <json>", "Inline HistoricalImportEnvelope JSON object")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: {
+                file?: string;
+                input?: string;
+                idempotencyKey?: string;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const envelope = historicalImportEnvelopeSchema.parse(readEnvelopeInput(options));
+                const result = historicalImportDryRunResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/imports/dry-runs`,
+                        mutationRequest("POST", envelope, undefined, options.idempotencyKey),
+                    ),
+                );
+                if (options.json) {
+                    dependencies.output(JSON.stringify(result));
+                    return;
+                }
+                const counts = result.storagePlan.counts;
+                dependencies.output(
+                    `${result.dryRunId}\t${result.state}\tprograms=${result.summary.programs}\tsessions=${result.summary.completedSessions}\texpires=${result.expiresAt}`,
+                );
+                dependencies.output(`token\t${result.approvalToken}\thash\t${result.referenceHash}`);
+                dependencies.output(
+                    `storage\tcreate=${counts.create}\tupdate=${counts.update}\tskip=${counts["skip-identical"]}\tconflict=${counts.conflict}`,
+                );
+                for (const conflict of result.storagePlan.conflicts)
+                    dependencies.output(
+                        `conflict\t${conflict.entityType}\t${conflict.externalId}\t${conflict.conflictCode ?? ""}`,
+                    );
+                for (const warning of result.warnings)
+                    dependencies.output(`warning\t${warning.code}\t${warning.message}`);
+                for (const mapping of result.mappings)
+                    dependencies.output(
+                        `mapping\t${mapping.status}\t${mapping.sessionExternalId}\t${mapping.exerciseRef}`,
+                    );
+                for (const error of result.errors)
+                    dependencies.output(`error\t${error.code}\t${error.path.join(".")}\t${error.message}`);
+            },
+        );
 }
 
 function registerPlannedSessionCommands(training: Command, dependencies: ProgramDependencies): void {

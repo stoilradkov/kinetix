@@ -153,17 +153,23 @@ import {
     IMPORT_BATCH_QUERY_SERVICE,
     IMPORT_STORAGE_READ_PORT,
     RECONCILE_IMPORT_STORAGE,
+    HISTORICAL_IMPORT_DRY_RUN_REPOSITORY,
+    EXERCISE_SLUG_RESOLVER,
+    HISTORICAL_IMPORT_DRY_RUN,
     BulkCatalogResolver,
     DryRunBulkProgram,
     CommitBulkProgram,
     RegisterImportBatch,
     ImportBatchQueryService,
     ReconcileImportStorage,
+    HistoricalImportDryRun,
     type BulkDryRunRepository,
     type BulkExternalIdRegistry,
     type ImportBatchRepository,
     type ImportStorageReadPort,
     type ExerciseExternalIdResolver,
+    type ExerciseSlugResolver,
+    type HistoricalImportDryRunRepository,
     type TrainingExerciseCatalogPort,
 } from "#src/modules/training/application/index";
 import type {
@@ -184,6 +190,8 @@ import { DrizzleBulkDryRunRepository } from "#src/modules/training/infrastructur
 import { DrizzleBulkExternalIdRegistry } from "#src/modules/training/infrastructure/drizzle-bulk-external-id-registry";
 import { DrizzleImportBatchRepository } from "#src/modules/training/infrastructure/drizzle-import-batch-repository";
 import { DrizzleImportStorageReadPort } from "#src/modules/training/infrastructure/drizzle-import-storage-read-port";
+import { DrizzleHistoricalImportDryRunRepository } from "#src/modules/training/infrastructure/drizzle-historical-import-dry-run-repository";
+import { DrizzleExerciseSlugResolver } from "#src/modules/training/infrastructure/drizzle-exercise-slug-resolver";
 import { DrizzleExerciseExternalIdResolver } from "#src/modules/training/infrastructure/drizzle-exercise-external-id-resolver";
 import { DrizzleTrainingProfileRepository } from "#src/modules/training/infrastructure/drizzle-training-profile-repository";
 import { TrainingProfileRevisionRegistrar } from "#src/modules/training/infrastructure/training-profile-revision-registrar";
@@ -234,6 +242,7 @@ import {
     RunController,
     BulkProgramController,
     ImportBatchController,
+    HistoricalImportController,
 } from "#src/modules/training/presentation/index";
 import {
     OUTBOX_WRITER,
@@ -268,6 +277,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         RunController,
         BulkProgramController,
         ImportBatchController,
+        HistoricalImportController,
     ],
     providers: [
         DrizzleTrainingCatalogRepository,
@@ -808,11 +818,15 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         DrizzleBulkExternalIdRegistry,
         DrizzleImportBatchRepository,
         DrizzleImportStorageReadPort,
+        DrizzleHistoricalImportDryRunRepository,
+        DrizzleExerciseSlugResolver,
         DrizzleExerciseExternalIdResolver,
         { provide: BULK_DRY_RUN_REPOSITORY, useExisting: DrizzleBulkDryRunRepository },
         { provide: BULK_EXTERNAL_ID_REGISTRY, useExisting: DrizzleBulkExternalIdRegistry },
         { provide: IMPORT_BATCH_REPOSITORY, useExisting: DrizzleImportBatchRepository },
         { provide: IMPORT_STORAGE_READ_PORT, useExisting: DrizzleImportStorageReadPort },
+        { provide: HISTORICAL_IMPORT_DRY_RUN_REPOSITORY, useExisting: DrizzleHistoricalImportDryRunRepository },
+        { provide: EXERCISE_SLUG_RESOLVER, useExisting: DrizzleExerciseSlugResolver },
         { provide: EXERCISE_EXTERNAL_ID_RESOLVER, useExisting: DrizzleExerciseExternalIdResolver },
         {
             provide: BULK_CATALOG_RESOLVER,
@@ -888,6 +902,34 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
             provide: RECONCILE_IMPORT_STORAGE,
             useFactory: (readPort: ImportStorageReadPort) => new ReconcileImportStorage({ readPort }),
             inject: [IMPORT_STORAGE_READ_PORT],
+        },
+        {
+            provide: HISTORICAL_IMPORT_DRY_RUN,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: HistoricalImportDryRunRepository,
+                reconcile: ReconcileImportStorage,
+                resolver: BulkCatalogResolver,
+                slugResolver: ExerciseSlugResolver,
+                profileReader: ProfileReader,
+            ) =>
+                new HistoricalImportDryRun({
+                    unitOfWork,
+                    repository,
+                    reconcile,
+                    resolver,
+                    slugResolver,
+                    profileReader,
+                    generateId: randomUUID,
+                }),
+            inject: [
+                UNIT_OF_WORK,
+                HISTORICAL_IMPORT_DRY_RUN_REPOSITORY,
+                RECONCILE_IMPORT_STORAGE,
+                BULK_CATALOG_RESOLVER,
+                EXERCISE_SLUG_RESOLVER,
+                PROFILE_READER,
+            ],
         },
         {
             provide: TRAINING_MODULE_DEFINITION,

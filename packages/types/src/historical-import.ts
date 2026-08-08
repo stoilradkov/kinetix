@@ -1,7 +1,19 @@
 import { z } from "zod";
 
-import { bulkProgramInputSchema, bulkProposedExerciseSchema } from "#src/bulk-program";
+import {
+    bulkAffectedVersionSchema,
+    bulkDryRunErrorSchema,
+    bulkDryRunStateSchema,
+    bulkExerciseMappingSchema,
+    bulkNormalizedProgramSchema,
+    bulkProgramInputSchema,
+    bulkProposedExerciseSchema,
+    bulkProposedExercisePreviewSchema,
+} from "#src/bulk-program";
 import { cadenceSchema, distanceSchema, durationSchema, heartRateSchema } from "#src/measurements";
+import { planningWarningSchema } from "#src/program";
+import { importEntityTypeSchema } from "#src/import-batch";
+import { storagePlanCountsSchema, storageReconciliationPlanSchema } from "#src/storage-reconciliation";
 import {
     mappingRelationSchema,
     painSideSchema,
@@ -13,6 +25,7 @@ import {
     runStepTypeSchema,
     setFailureReasonSchema,
     setGroupTypeSchema,
+    trainingSessionResponseSchema,
 } from "#src/training-session";
 
 /**
@@ -441,3 +454,70 @@ export type HistoricalProgramMapping = z.infer<typeof historicalProgramMappingSc
 export type HistoricalCompletedSession = z.infer<typeof historicalCompletedSessionSchema>;
 export type HistoricalImportSource = z.infer<typeof historicalImportSourceSchema>;
 export type HistoricalImportEnvelope = z.infer<typeof historicalImportEnvelopeSchema>;
+
+// ---------------------------------------------------------------------------------------------
+// Dry-run response (issue #58, HI4; design §14.2)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The normalized authoritative tree a commit would store for one completed historical session. It is
+ * the live {@link trainingSessionResponseSchema} tree (activities, pain records, and planned/actual
+ * mappings, all with minted UUIDs) minus the aggregate `version` — a dry-run has not persisted anything,
+ * so no version exists yet — plus the caller's stable `externalId` so the preview stays addressable.
+ */
+export const historicalNormalizedSessionSchema = trainingSessionResponseSchema
+    .omit({ version: true })
+    .extend({ externalId: externalIdSchema })
+    .strict();
+
+/**
+ * A concise entity/count summary of the whole import (design §14.2). `operations` totals the storage
+ * plan by resolved operation; `entityTypeCounts` lists how many addressable entities of each kind the
+ * payload carries, in a deterministic sorted order so the summary is stable across retries.
+ */
+export const historicalImportSummarySchema = z
+    .object({
+        programs: z.number().int().nonnegative(),
+        completedSessions: z.number().int().nonnegative(),
+        entities: z.number().int().nonnegative(),
+        operations: storagePlanCountsSchema,
+        entityTypeCounts: z.array(
+            z.object({ entityType: importEntityTypeSchema, count: z.number().int().nonnegative() }).strict(),
+        ),
+    })
+    .strict();
+
+/**
+ * The result of previewing an already-normalized historical import (design §14.2; issue #58, HI4).
+ * Mirrors the single-program {@link bulkDryRunResponseSchema} but carries **many** normalized program
+ * trees together with completed-session trees, plus the deterministic {@link storageReconciliationPlan}
+ * (#57) stating a create / update / skip-identical / conflict outcome for every import-addressable
+ * entity. No authoritative catalog, program, or session state is written; only the expiring artifact is
+ * stored, keyed by `dryRunId` and guarded by `approvalToken` + `referenceHash` for a later commit.
+ */
+export const historicalImportDryRunResponseSchema = z
+    .object({
+        dryRunId: z.string().uuid(),
+        approvalToken: z.string(),
+        referenceHash: z.string(),
+        schemaVersion: z.literal(1),
+        mode: z.enum(["create", "upsert"]),
+        source: z.object({ namespace: z.string(), generatedBy: z.string().nullable() }).strict(),
+        state: bulkDryRunStateSchema,
+        createdAt: z.string(),
+        expiresAt: z.string(),
+        programs: z.array(bulkNormalizedProgramSchema),
+        completedSessions: z.array(historicalNormalizedSessionSchema),
+        storagePlan: storageReconciliationPlanSchema,
+        summary: historicalImportSummarySchema,
+        warnings: z.array(planningWarningSchema),
+        errors: z.array(bulkDryRunErrorSchema),
+        mappings: z.array(bulkExerciseMappingSchema),
+        proposedExercises: z.array(bulkProposedExercisePreviewSchema),
+        affectedVersions: z.array(bulkAffectedVersionSchema),
+    })
+    .strict();
+
+export type HistoricalNormalizedSession = z.infer<typeof historicalNormalizedSessionSchema>;
+export type HistoricalImportSummary = z.infer<typeof historicalImportSummarySchema>;
+export type HistoricalImportDryRunResponse = z.infer<typeof historicalImportDryRunResponseSchema>;

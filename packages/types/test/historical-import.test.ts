@@ -5,6 +5,7 @@ import {
     bulkProgramInputSchema,
     historicalCompletedSessionSchema,
     historicalExerciseReferenceSchema,
+    historicalImportDryRunResponseSchema,
     historicalImportEnvelopeSchema,
 } from "#src/index";
 
@@ -339,5 +340,89 @@ describe("historicalImportEnvelopeSchema — wire publication & compatibility", 
         // The same object accepted by the shipped single-program contract is accepted here as one program.
         expect(bulkProgramInputSchema.safeParse(programInput()).success).toBe(true);
         expect(historicalImportEnvelopeSchema.safeParse(envelope({ completedSessions: undefined })).success).toBe(true);
+    });
+});
+
+describe("historicalImportDryRunResponseSchema — HI4 preview contract", () => {
+    function dryRunResponse(overrides: Record<string, unknown> = {}) {
+        return {
+            dryRunId: "0198a4db-d8da-7000-8000-0000000000f0",
+            approvalToken: "token-abc",
+            referenceHash: "b".repeat(64),
+            schemaVersion: 1,
+            mode: "create",
+            source: { namespace: "coach-app", generatedBy: null },
+            state: "ready",
+            createdAt: "2026-08-01T10:00:00.000Z",
+            expiresAt: "2026-08-01T11:00:00.000Z",
+            programs: [],
+            completedSessions: [],
+            storagePlan: {
+                namespace: "coach-app",
+                mode: "create",
+                entries: [],
+                counts: { create: 0, update: 0, "skip-identical": 0, conflict: 0 },
+                conflicts: [],
+                hasConflicts: false,
+            },
+            summary: {
+                programs: 0,
+                completedSessions: 0,
+                entities: 0,
+                operations: { create: 0, update: 0, "skip-identical": 0, conflict: 0 },
+                entityTypeCounts: [],
+            },
+            warnings: [],
+            errors: [],
+            mappings: [],
+            proposedExercises: [],
+            affectedVersions: [],
+            ...overrides,
+        };
+    }
+
+    it("accepts a minimal ready preview and round-trips", () => {
+        const once = historicalImportDryRunResponseSchema.parse(dryRunResponse());
+        const twice = historicalImportDryRunResponseSchema.parse(JSON.parse(JSON.stringify(once)));
+        expect(twice).toEqual(once);
+    });
+
+    it("accepts a storage plan entry carrying a conflict outcome", () => {
+        const response = dryRunResponse({
+            state: "needs_mapping",
+            storagePlan: {
+                namespace: "coach-app",
+                mode: "create",
+                entries: [
+                    {
+                        path: ["completedSessions", 0],
+                        entityType: "training-session",
+                        externalId: "ts-1",
+                        operation: "conflict",
+                        currentEntityId: "0198a4db-d8da-7000-8000-0000000000f1",
+                        currentVersion: 2,
+                        conflictCode: "EXTERNAL_ID_EXISTS",
+                    },
+                ],
+                counts: { create: 0, update: 0, "skip-identical": 0, conflict: 1 },
+                conflicts: [
+                    {
+                        path: ["completedSessions", 0],
+                        entityType: "training-session",
+                        externalId: "ts-1",
+                        operation: "conflict",
+                        currentEntityId: "0198a4db-d8da-7000-8000-0000000000f1",
+                        currentVersion: 2,
+                        conflictCode: "EXTERNAL_ID_EXISTS",
+                    },
+                ],
+                hasConflicts: true,
+            },
+        });
+        expect(historicalImportDryRunResponseSchema.safeParse(response).success).toBe(true);
+    });
+
+    it("rejects an unknown top-level field", () => {
+        expect(historicalImportDryRunResponseSchema.safeParse(dryRunResponse({ smuggled: true })).success).toBe(false);
     });
 });
