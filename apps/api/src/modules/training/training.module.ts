@@ -148,11 +148,17 @@ import {
     EXERCISE_EXTERNAL_ID_RESOLVER,
     DRY_RUN_BULK_PROGRAM,
     COMMIT_BULK_PROGRAM,
+    IMPORT_BATCH_REPOSITORY,
+    REGISTER_IMPORT_BATCH,
+    IMPORT_BATCH_QUERY_SERVICE,
     BulkCatalogResolver,
     DryRunBulkProgram,
     CommitBulkProgram,
+    RegisterImportBatch,
+    ImportBatchQueryService,
     type BulkDryRunRepository,
     type BulkExternalIdRegistry,
+    type ImportBatchRepository,
     type ExerciseExternalIdResolver,
     type TrainingExerciseCatalogPort,
 } from "#src/modules/training/application/index";
@@ -172,6 +178,7 @@ import { PROFILE_READER, ProfileModule, type ProfileReader } from "#src/modules/
 import { DrizzleTrainingCatalogRepository } from "#src/modules/training/infrastructure/drizzle-training-catalog-repository";
 import { DrizzleBulkDryRunRepository } from "#src/modules/training/infrastructure/drizzle-bulk-dry-run-repository";
 import { DrizzleBulkExternalIdRegistry } from "#src/modules/training/infrastructure/drizzle-bulk-external-id-registry";
+import { DrizzleImportBatchRepository } from "#src/modules/training/infrastructure/drizzle-import-batch-repository";
 import { DrizzleExerciseExternalIdResolver } from "#src/modules/training/infrastructure/drizzle-exercise-external-id-resolver";
 import { DrizzleTrainingProfileRepository } from "#src/modules/training/infrastructure/drizzle-training-profile-repository";
 import { TrainingProfileRevisionRegistrar } from "#src/modules/training/infrastructure/training-profile-revision-registrar";
@@ -221,6 +228,7 @@ import {
     TrainingSessionController,
     RunController,
     BulkProgramController,
+    ImportBatchController,
 } from "#src/modules/training/presentation/index";
 import {
     OUTBOX_WRITER,
@@ -254,6 +262,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         TrainingSessionController,
         RunController,
         BulkProgramController,
+        ImportBatchController,
     ],
     providers: [
         DrizzleTrainingCatalogRepository,
@@ -792,9 +801,11 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         ProgramRevisionRegistrar,
         DrizzleBulkDryRunRepository,
         DrizzleBulkExternalIdRegistry,
+        DrizzleImportBatchRepository,
         DrizzleExerciseExternalIdResolver,
         { provide: BULK_DRY_RUN_REPOSITORY, useExisting: DrizzleBulkDryRunRepository },
         { provide: BULK_EXTERNAL_ID_REGISTRY, useExisting: DrizzleBulkExternalIdRegistry },
+        { provide: IMPORT_BATCH_REPOSITORY, useExisting: DrizzleImportBatchRepository },
         { provide: EXERCISE_EXTERNAL_ID_RESOLVER, useExisting: DrizzleExerciseExternalIdResolver },
         {
             provide: BULK_CATALOG_RESOLVER,
@@ -850,6 +861,21 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                 PROGRAM_MEMBERSHIP_REPOSITORY,
                 PROFILE_READER,
             ],
+        },
+        {
+            provide: REGISTER_IMPORT_BATCH,
+            useFactory: (unitOfWork: UnitOfWork, repository: ImportBatchRepository, profileReader: ProfileReader) =>
+                new RegisterImportBatch({ unitOfWork, repository, profileReader, generateId: randomUUID }),
+            inject: [UNIT_OF_WORK, IMPORT_BATCH_REPOSITORY, PROFILE_READER],
+        },
+        {
+            provide: IMPORT_BATCH_QUERY_SERVICE,
+            useFactory: (
+                repository: ImportBatchRepository,
+                externalIds: BulkExternalIdRegistry,
+                profileReader: ProfileReader,
+            ) => new ImportBatchQueryService({ repository, externalIds, profileReader }),
+            inject: [IMPORT_BATCH_REPOSITORY, BULK_EXTERNAL_ID_REGISTRY, PROFILE_READER],
         },
         {
             provide: TRAINING_MODULE_DEFINITION,

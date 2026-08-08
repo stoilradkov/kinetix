@@ -25,3 +25,4 @@ export * from "#src/modules/training/application/running-activities";
 export * from "#src/modules/training/application/session-to-prescription";
 export * from "#src/modules/training/application/programs";
 export * from "#src/modules/training/application/bulk-program";
+export * from "#src/modules/training/application/import-batches";

@@ -15,3 +15,4 @@ export { TrainingSessionController } from "#src/modules/training/presentation/tr
 export { RunController } from "#src/modules/training/presentation/run.controller";
 
 export { BulkProgramController } from "#src/modules/training/presentation/bulk-program.controller";
+export { ImportBatchController } from "#src/modules/training/presentation/import-batch.controller";

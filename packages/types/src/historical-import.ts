@@ -1,0 +1,443 @@
+import { z } from "zod";
+
+import { bulkProgramInputSchema, bulkProposedExerciseSchema } from "#src/bulk-program";
+import { cadenceSchema, distanceSchema, durationSchema, heartRateSchema } from "#src/measurements";
+import {
+    mappingRelationSchema,
+    painSideSchema,
+    performedSetMeasurementsRequestSchema,
+    performedSetStatusSchema,
+    performedSetTypeSchema,
+    postWorkoutRatingsRequestSchema,
+    preWorkoutReadinessRequestSchema,
+    runStepTypeSchema,
+    setFailureReasonSchema,
+    setGroupTypeSchema,
+} from "#src/training-session";
+
+/**
+ * Versioned canonical historical-import contract (issue #55, design §14; ADR 0001 and 0003). Where
+ * {@link bulkProgramInputSchema} carries exactly one already-normalized program, this envelope is the
+ * missing historical boundary: it carries **multiple** normalized program trees **together with**
+ * completed {@link TrainingSession}s, so a multi-year archive commits as one deterministic payload.
+ *
+ * The caller has already resolved names, dates, units, RPE, bodyweight/load semantics, exclusions,
+ * duplicates, and same-day session identity upstream. Kinetix therefore accepts an authoritative,
+ * already-normalized payload and interprets nothing: no spreadsheet parsing, no fuzzy exercise
+ * matching, no effort/load/date inference (all explicitly out of scope for #55). Every value is
+ * treated as authoritative input subject only to normal domain validation.
+ *
+ * Design invariants preserved from the live contracts:
+ *  - Plans and performances stay separate aggregates (design decision 2). Programs reuse the shipped
+ *    {@link bulkProgramInputSchema}; completed sessions are an independent tree connected only through
+ *    explicit optional {@link historicalProgramMappingSchema} mappings.
+ *  - Canonical measurements are entered `{ value, unit }` objects normalized downstream to canonical
+ *    columns (ADR 0001); JSON numbers appear only at this validated boundary.
+ *  - The omitted / explicit-`null` / known-zero distinction is preserved everywhere: an omitted
+ *    property means "no value / no update", explicit `null` clears, and `0` is a known zero.
+ *  - Every import-addressable aggregate carries a stable string `externalId` so retries and later
+ *    idempotent upserts address the same entity deterministically.
+ *
+ * Exercise references here are **canonical only** — a catalog `id`, `slug`, or provider `externalId`.
+ * Unlike the plan-side bulk contract there is deliberately no alias/name variant: a name Kinetix would
+ * have to resolve is an "unresolved name" and is rejected. A not-yet-catalogued exercise may be carried
+ * only as an explicit, complete {@link bulkProposedExerciseSchema} definition.
+ */
+
+// ---------------------------------------------------------------------------------------------
+// Shared leaves
+// ---------------------------------------------------------------------------------------------
+
+const externalIdSchema = z.string().trim().min(1).max(200);
+const externalRefSchema = z.string().trim().min(1).max(200);
+const titleSchema = z.string().trim().min(1).max(160);
+const notesSchema = z.string().max(4_000);
+const slugSchema = z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Must be a lowercase kebab-case slug");
+const timeZoneSchema = z.string().trim().min(1).max(80);
+const tagSchema = z.string().trim().min(1).max(80);
+const scale1to5 = z.number().int().min(1).max(5);
+const painSeveritySchema = z.number().int().min(0).max(10);
+
+/**
+ * A calendar date with no time component. The pattern rejects date *ranges* ("2021-2022"),
+ * placeholders ("TBD", "??"), and spreadsheet artifacts; the refinement additionally rejects
+ * impossible calendar days ("2021-02-30") so a normalized archive cannot smuggle an invalid date.
+ */
+const localDateSchema = z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be a single YYYY-MM-DD calendar date")
+    .refine(value => {
+        const year = Number(value.slice(0, 4));
+        const month = Number(value.slice(5, 7));
+        const day = Number(value.slice(8, 10));
+        const date = new Date(Date.UTC(year, month - 1, day));
+        return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+    }, "Must be a real calendar date");
+
+/**
+ * An absolute UTC instant (matching the live session contract). `.datetime()` rejects date-only
+ * values, date ranges, and placeholder strings; the session's IANA `timeZone` is carried separately.
+ */
+const instantSchema = z.string().datetime();
+
+// ---------------------------------------------------------------------------------------------
+// Canonical exercise reference (no fuzzy/name resolution)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * A reference to an already-resolved catalog exercise. Only canonical selectors are accepted — a
+ * catalog `id`, a stable `slug`, or a provider-scoped `externalId`. There is intentionally no
+ * `alias`/name variant: an unresolved name is rejected at the contract boundary (#55: "Kinetix
+ * provides no fuzzy mapping or naming suggestions").
+ */
+export const historicalExerciseReferenceSchema = z
+    .discriminatedUnion("by", [
+        z.object({ by: z.literal("id"), exerciseId: z.string().uuid() }).strict(),
+        z.object({ by: z.literal("slug"), slug: slugSchema }).strict(),
+        z
+            .object({
+                by: z.literal("externalId"),
+                provider: z.string().trim().min(1).max(120),
+                externalId: z.string().trim().min(1).max(500),
+            })
+            .strict(),
+    ])
+    .describe("A canonical, already-resolved reference to a catalog exercise");
+
+// ---------------------------------------------------------------------------------------------
+// Completed strength detail (performed occurrences, set groups, sets)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * A performed set. `measurements` reuse the live session contract (entered `{ value, unit }` loads and
+ * durations, scalar RPE in 0.5 increments), so an imported set is validated identically to one logged
+ * in the app. Load fields keep the omitted/null/zero distinction: an omitted load is "not recorded",
+ * explicit `null` clears, and `{ value: 0 }` is a known zero — there is no missing-load placeholder.
+ */
+export const historicalPerformedSetSchema = z
+    .object({
+        externalId: externalIdSchema,
+        setGroupRef: externalRefSchema.nullable().optional(),
+        round: z.number().int().positive().nullable().optional(),
+        position: z.number().int().nonnegative(),
+        setType: performedSetTypeSchema,
+        status: performedSetStatusSchema,
+        measurements: performedSetMeasurementsRequestSchema.optional(),
+        failureReason: setFailureReasonSchema.nullable().optional(),
+        technique: scale1to5.nullable().optional(),
+        discomfort: scale1to5.nullable().optional(),
+        pump: scale1to5.nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+    })
+    .strict();
+
+export const historicalExerciseOccurrenceSchema = z
+    .object({
+        externalId: externalIdSchema,
+        reference: historicalExerciseReferenceSchema,
+        proposed: bulkProposedExerciseSchema.optional(),
+        position: z.number().int().nonnegative(),
+        purpose: z.string().max(200).nullable().optional(),
+        technique: scale1to5.nullable().optional(),
+        discomfort: scale1to5.nullable().optional(),
+        pump: scale1to5.nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+        performedSets: z.array(historicalPerformedSetSchema),
+    })
+    .strict();
+
+export const historicalSetGroupSchema = z
+    .object({
+        externalId: externalIdSchema,
+        parentGroupRef: externalRefSchema.nullable().optional(),
+        type: setGroupTypeSchema,
+        position: z.number().int().nonnegative(),
+        rounds: z.number().int().positive().nullable().optional(),
+        restMs: z.number().int().nonnegative().nullable().optional(),
+        members: z
+            .array(z.object({ occurrenceRef: externalRefSchema, position: z.number().int().nonnegative() }).strict())
+            .optional(),
+    })
+    .strict();
+
+export const historicalStrengthActivitySchema = z
+    .object({
+        occurrences: z.array(historicalExerciseOccurrenceSchema).min(1),
+        setGroups: z.array(historicalSetGroupSchema).optional(),
+    })
+    .strict();
+
+// ---------------------------------------------------------------------------------------------
+// Completed running detail (performed steps + splits)
+// ---------------------------------------------------------------------------------------------
+
+/** Achieved measurements for a performed run step, in entered units normalized downstream (ADR 0001). */
+const historicalRunStepMeasurementsSchema = z
+    .object({
+        distance: distanceSchema.nullable().optional(),
+        duration: durationSchema.nullable().optional(),
+        averageHeartRate: heartRateSchema.nullable().optional(),
+        maxHeartRate: heartRateSchema.nullable().optional(),
+        averageCadence: cadenceSchema.nullable().optional(),
+        maxCadence: cadenceSchema.nullable().optional(),
+        elevationGain: distanceSchema.nullable().optional(),
+        elevationLoss: distanceSchema.nullable().optional(),
+    })
+    .strict();
+
+export const historicalRunStepSchema = z
+    .object({
+        externalId: externalIdSchema,
+        parentStepRef: externalRefSchema.nullable().optional(),
+        type: runStepTypeSchema,
+        position: z.number().int().nonnegative(),
+        repeatCount: z.number().int().min(1).max(10_000).nullable().optional(),
+        measurements: historicalRunStepMeasurementsSchema.optional(),
+        notes: z.string().max(500).nullable().optional(),
+    })
+    .strict();
+
+export const historicalRunSplitSchema = z
+    .object({
+        externalId: externalIdSchema,
+        position: z.number().int().nonnegative(),
+        distance: distanceSchema.nullable().optional(),
+        movingTime: durationSchema.nullable().optional(),
+        elapsedTime: durationSchema.nullable().optional(),
+        averageHeartRate: heartRateSchema.nullable().optional(),
+        maxHeartRate: heartRateSchema.nullable().optional(),
+    })
+    .strict();
+
+/**
+ * A completed running activity: canonical summary metrics plus the performed step/split trees keyed by
+ * `externalId`. This is a bounded first-version subset of the live running contract (zones, routes, and
+ * gear are deferred to a later schema version); strength — the primary #55 surface — is carried in full.
+ */
+export const historicalRunningActivitySchema = z
+    .object({
+        distance: distanceSchema.nullable().optional(),
+        movingTime: durationSchema.nullable().optional(),
+        elapsedTime: durationSchema.nullable().optional(),
+        averageHeartRate: heartRateSchema.nullable().optional(),
+        maxHeartRate: heartRateSchema.nullable().optional(),
+        averageCadence: cadenceSchema.nullable().optional(),
+        maxCadence: cadenceSchema.nullable().optional(),
+        elevationGain: distanceSchema.nullable().optional(),
+        elevationLoss: distanceSchema.nullable().optional(),
+        indoor: z.boolean().optional(),
+        treadmill: z.boolean().optional(),
+        runTags: z.array(slugSchema).optional(),
+        steps: z.array(historicalRunStepSchema).optional(),
+        splits: z.array(historicalRunSplitSchema).optional(),
+    })
+    .strict();
+
+// ---------------------------------------------------------------------------------------------
+// Completed session activity envelope
+// ---------------------------------------------------------------------------------------------
+
+/** One typed activity within a completed session: a strength block or a running block. */
+export const historicalSessionActivitySchema = z.discriminatedUnion("type", [
+    z
+        .object({
+            type: z.literal("strength"),
+            externalId: externalIdSchema,
+            position: z.number().int().nonnegative(),
+            startedAt: instantSchema.nullable().optional(),
+            endedAt: instantSchema.nullable().optional(),
+            durationSeconds: z.number().int().nonnegative().nullable().optional(),
+            rpe: z.number().int().min(0).max(10).nullable().optional(),
+            feeling: z.string().max(2_000).nullable().optional(),
+            notes: notesSchema.nullable().optional(),
+            tags: z.array(tagSchema).optional(),
+            strength: historicalStrengthActivitySchema,
+        })
+        .strict(),
+    z
+        .object({
+            type: z.literal("running"),
+            externalId: externalIdSchema,
+            position: z.number().int().nonnegative(),
+            startedAt: instantSchema.nullable().optional(),
+            endedAt: instantSchema.nullable().optional(),
+            durationSeconds: z.number().int().nonnegative().nullable().optional(),
+            rpe: z.number().int().min(0).max(10).nullable().optional(),
+            feeling: z.string().max(2_000).nullable().optional(),
+            notes: notesSchema.nullable().optional(),
+            tags: z.array(tagSchema).optional(),
+            running: historicalRunningActivitySchema,
+        })
+        .strict(),
+]);
+
+export const historicalPainRecordSchema = z
+    .object({
+        externalId: externalIdSchema,
+        activityRef: externalRefSchema.nullable().optional(),
+        occurrenceRef: externalRefSchema.nullable().optional(),
+        performedSetRef: externalRefSchema.nullable().optional(),
+        bodyArea: z.string().trim().min(1).max(120),
+        side: painSideSchema,
+        severity: painSeveritySchema,
+        painType: z.string().max(120).nullable().optional(),
+        onsetDuringSession: z.boolean().optional(),
+        stoppedActivity: z.boolean().optional(),
+        notes: notesSchema.nullable().optional(),
+    })
+    .strict();
+
+// ---------------------------------------------------------------------------------------------
+// Completed-session → imported-program mappings (explicit, optional)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Optional link from a completed session to the imported program/planned-session it was performed
+ * against, by their payload `externalId`s. Plans and performances stay separate aggregates (design
+ * decision 2); this mapping is the only connection, and it is always optional — a historical session
+ * with no surviving plan is fully valid.
+ */
+export const historicalSessionPlannedLinkSchema = z
+    .object({
+        programExternalId: externalRefSchema,
+        plannedSessionExternalId: externalRefSchema,
+    })
+    .strict();
+
+const historicalActivityMappingSchema = z
+    .object({
+        prescribedActivityExternalId: externalRefSchema.nullable().optional(),
+        actualActivityRef: externalRefSchema,
+        relation: mappingRelationSchema,
+        reason: z.string().max(500).nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+    })
+    .strict();
+
+const historicalOccurrenceMappingSchema = z
+    .object({
+        prescribedExerciseExternalId: externalRefSchema.nullable().optional(),
+        occurrenceRef: externalRefSchema,
+        relation: mappingRelationSchema,
+        reason: z.string().max(500).nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+    })
+    .strict();
+
+const historicalSetMappingSchema = z
+    .object({
+        prescribedSetExternalId: externalRefSchema.nullable().optional(),
+        performedSetRef: externalRefSchema,
+        relation: mappingRelationSchema,
+        portion: z.string().max(120).nullable().optional(),
+        reason: z.string().max(500).nullable().optional(),
+        notes: notesSchema.nullable().optional(),
+    })
+    .strict();
+
+/** Explicit planned/actual mappings for one completed session (design §11.4). Every part is optional. */
+export const historicalProgramMappingSchema = z
+    .object({
+        plannedLink: historicalSessionPlannedLinkSchema.nullable().optional(),
+        activities: z.array(historicalActivityMappingSchema).optional(),
+        occurrences: z.array(historicalOccurrenceMappingSchema).optional(),
+        sets: z.array(historicalSetMappingSchema).optional(),
+    })
+    .strict();
+
+// ---------------------------------------------------------------------------------------------
+// Completed session
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * A completed historical TrainingSession. Identity is the payload `externalId`, never the timestamp, so
+ * two distinct sessions on the same `localDate`/`startedAt` remain distinct (#55 acceptance: "Completed
+ * sessions may remain distinct on the same timestamp/date"). `status` is fixed to `completed`; draft and
+ * in-progress placeholders are not a historical import concern.
+ */
+export const historicalCompletedSessionSchema = z
+    .object({
+        externalId: externalIdSchema,
+        status: z.literal("completed").optional(),
+        title: titleSchema.nullable().optional(),
+        localDate: localDateSchema,
+        timeZone: timeZoneSchema,
+        startedAt: instantSchema.nullable().optional(),
+        endedAt: instantSchema.nullable().optional(),
+        durationMinutes: z.number().int().nonnegative().nullable().optional(),
+        readiness: preWorkoutReadinessRequestSchema.optional(),
+        postWorkout: postWorkoutRatingsRequestSchema.optional(),
+        notes: notesSchema.nullable().optional(),
+        tags: z.array(tagSchema).optional(),
+        activities: z.array(historicalSessionActivitySchema).min(1),
+        painRecords: z.array(historicalPainRecordSchema).optional(),
+        programMapping: historicalProgramMappingSchema.nullable().optional(),
+    })
+    .strict();
+
+// ---------------------------------------------------------------------------------------------
+// Envelope
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Payload identity for deterministic retries (#55: "payload ID/checksum ... for deterministic
+ * retries"). `payloadId` is the caller's stable identifier for this exact archive; `checksum` is the
+ * SHA-256 hex digest the caller computed over the canonical payload, which the ingestion boundary
+ * re-verifies so a retried or resumed import is provably the same bytes.
+ */
+export const historicalImportSourceSchema = z
+    .object({
+        namespace: z.string().trim().min(1).max(120),
+        generatedBy: z.string().trim().min(1).max(200).optional(),
+        payloadId: z.string().trim().min(1).max(200),
+        checksum: z.string().regex(/^[0-9a-f]{64}$/, "Must be a lowercase hex SHA-256 digest"),
+    })
+    .strict();
+
+/**
+ * Top-level versioned historical-import envelope (design §14). Carries any number of already-normalized
+ * program trees and completed sessions in one payload; at least one aggregate of either kind must be
+ * present. `mode` mirrors the bulk contract: `create` refuses to touch existing external IDs, `upsert`
+ * addresses them by `(namespace, externalId)`.
+ */
+export const historicalImportEnvelopeSchema = z
+    .object({
+        schemaVersion: z.literal(1),
+        source: historicalImportSourceSchema,
+        mode: z.enum(["create", "upsert"]),
+        createMissingExercises: z.boolean().optional(),
+        programs: z.array(bulkProgramInputSchema).max(200).optional(),
+        completedSessions: z.array(historicalCompletedSessionSchema).max(20_000).optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+        const programCount = value.programs?.length ?? 0;
+        const sessionCount = value.completedSessions?.length ?? 0;
+        if (programCount + sessionCount === 0)
+            ctx.addIssue({
+                code: "custom",
+                message: "A historical import must contain at least one program or completed session",
+                path: [],
+            });
+    });
+
+export type HistoricalExerciseReference = z.infer<typeof historicalExerciseReferenceSchema>;
+export type HistoricalPerformedSet = z.infer<typeof historicalPerformedSetSchema>;
+export type HistoricalExerciseOccurrence = z.infer<typeof historicalExerciseOccurrenceSchema>;
+export type HistoricalSetGroup = z.infer<typeof historicalSetGroupSchema>;
+export type HistoricalStrengthActivity = z.infer<typeof historicalStrengthActivitySchema>;
+export type HistoricalRunStep = z.infer<typeof historicalRunStepSchema>;
+export type HistoricalRunSplit = z.infer<typeof historicalRunSplitSchema>;
+export type HistoricalRunningActivity = z.infer<typeof historicalRunningActivitySchema>;
+export type HistoricalSessionActivity = z.infer<typeof historicalSessionActivitySchema>;
+export type HistoricalPainRecord = z.infer<typeof historicalPainRecordSchema>;
+export type HistoricalSessionPlannedLink = z.infer<typeof historicalSessionPlannedLinkSchema>;
+export type HistoricalProgramMapping = z.infer<typeof historicalProgramMappingSchema>;
+export type HistoricalCompletedSession = z.infer<typeof historicalCompletedSessionSchema>;
+export type HistoricalImportSource = z.infer<typeof historicalImportSourceSchema>;
+export type HistoricalImportEnvelope = z.infer<typeof historicalImportEnvelopeSchema>;

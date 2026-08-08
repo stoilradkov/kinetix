@@ -13,6 +13,8 @@ export const applicationErrorCodes = [
     "DRY_RUN_TOKEN_INVALID",
     "EXTERNAL_ID_CONFLICT",
     "CATALOG_MAPPING_REQUIRED",
+    "IMPORT_PAYLOAD_CONFLICT",
+    "PAYLOAD_TOO_LARGE",
     "PROGRESSION_CONFLICT",
     "PROGRESSION_STALE",
     "JOB_FAILED",
@@ -128,5 +130,29 @@ export class ExternalIdConflictError extends ApplicationError {
             entityType,
             externalId,
         });
+    }
+}
+
+/** A payload ID was reused within a namespace with different canonical content (design §14.5, HI2). */
+export class ImportPayloadConflictError extends ApplicationError {
+    constructor(
+        readonly namespace: string,
+        readonly payloadId: string,
+        readonly existingChecksum: string,
+        readonly incomingChecksum: string,
+    ) {
+        super(
+            "IMPORT_PAYLOAD_CONFLICT",
+            "This payload ID is already registered in this namespace with different canonical content",
+            undefined,
+            { namespace, payloadId, existingChecksum, incomingChecksum },
+        );
+    }
+}
+
+/** A declared import payload exceeds the bounded per-archive limits (design §14.4, HI2). */
+export class PayloadTooLargeError extends ApplicationError {
+    constructor(message: string, fieldErrors?: FieldErrors, context?: ErrorContext) {
+        super("PAYLOAD_TOO_LARGE", message, fieldErrors, context);
     }
 }

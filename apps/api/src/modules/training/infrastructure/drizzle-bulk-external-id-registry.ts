@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 
 import { bulkExternalIds, type Database } from "@kinetix/db";
 
@@ -8,6 +8,7 @@ import { ExternalIdConflictError } from "#src/platform/application/index";
 import type {
     BulkExternalEntityType,
     BulkExternalIdEntry,
+    BulkExternalIdMapping,
     BulkExternalIdRegistry,
 } from "#src/modules/training/application/index";
 
@@ -23,7 +24,12 @@ export class DrizzleBulkExternalIdRegistry implements BulkExternalIdRegistry {
     constructor(@Inject(DatabaseService) private readonly database: DatabaseService) {}
 
     async register(
-        input: { profileId: string; namespace: string; entries: readonly BulkExternalIdEntry[] },
+        input: {
+            profileId: string;
+            namespace: string;
+            importBatchId?: string | null;
+            entries: readonly BulkExternalIdEntry[];
+        },
         transaction: unknown,
     ): Promise<void> {
         if (input.entries.length === 0) return;
@@ -33,6 +39,7 @@ export class DrizzleBulkExternalIdRegistry implements BulkExternalIdRegistry {
                 .values(
                     input.entries.map(entry => ({
                         profileId: input.profileId,
+                        importBatchId: input.importBatchId ?? null,
                         sourceNamespace: input.namespace,
                         entityType: entry.entityType,
                         externalId: entry.externalId,
@@ -64,6 +71,23 @@ export class DrizzleBulkExternalIdRegistry implements BulkExternalIdRegistry {
                 .limit(1)
         )[0];
         return row?.entityId ?? null;
+    }
+
+    async listByBatch(importBatchId: string, transaction?: unknown): Promise<readonly BulkExternalIdMapping[]> {
+        const rows = await this.executor(transaction)
+            .select({
+                entityType: bulkExternalIds.entityType,
+                externalId: bulkExternalIds.externalId,
+                entityId: bulkExternalIds.entityId,
+            })
+            .from(bulkExternalIds)
+            .where(eq(bulkExternalIds.importBatchId, importBatchId))
+            .orderBy(asc(bulkExternalIds.entityType), asc(bulkExternalIds.externalId));
+        return rows.map(row => ({
+            entityType: row.entityType as BulkExternalEntityType,
+            externalId: row.externalId,
+            entityId: row.entityId,
+        }));
     }
 
     private executor(transaction: unknown): Database {

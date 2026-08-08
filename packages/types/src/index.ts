@@ -19,6 +19,8 @@ export * from "#src/planned-session";
 export * from "#src/training-session";
 export * from "#src/program";
 export * from "#src/bulk-program";
+export * from "#src/historical-import";
+export * from "#src/import-batch";
 
 export const healthResponseSchema = z.object({
     status: z.enum(["ok", "error"]),
@@ -41,6 +43,8 @@ export const apiErrorCodeSchema = z.enum([
     "DRY_RUN_TOKEN_INVALID",
     "EXTERNAL_ID_CONFLICT",
     "CATALOG_MAPPING_REQUIRED",
+    "IMPORT_PAYLOAD_CONFLICT",
+    "PAYLOAD_TOO_LARGE",
     "PROGRESSION_CONFLICT",
     "PROGRESSION_STALE",
     "JOB_FAILED",

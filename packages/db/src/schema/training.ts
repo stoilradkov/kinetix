@@ -2260,16 +2260,62 @@ export const bulkDryRuns = pgTable(
 export type BulkDryRunRow = typeof bulkDryRuns.$inferSelect;
 
 /**
+ * Durable import-batch identity and ownership for a submitted historical archive (design §14.4–14.5;
+ * issue #56, HI2). A batch pins one already-normalized payload — keyed by `(source_namespace,
+ * payload_id)` and its canonical `checksum` — to a lifecycle (`pending → committed | failed`), so a
+ * retried import resolves to the same batch and every committed entity (below) is traceable to it. Only
+ * bounded opaque source references are stored: `payload_id`, `checksum`, `generated_by`, and free-text
+ * `description`; no source workbook or parsing policy is persisted.
+ */
+export const importBatches = pgTable(
+    "import_batches",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        sourceNamespace: text("source_namespace").notNull(),
+        payloadId: text("payload_id").notNull(),
+        schemaVersion: smallint("schema_version").notNull().default(1),
+        checksum: text("checksum").notNull(),
+        generatedBy: text("generated_by"),
+        description: text("description"),
+        state: text("state").notNull().default("pending"),
+        resultChecksum: text("result_checksum"),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        committedAt: timestamp("committed_at", { withTimezone: true }),
+    },
+    table => [
+        check("import_batches_schema_version_valid", sql`${table.schemaVersion} = 1`),
+        check("import_batches_state_valid", sql`${table.state} IN ('pending', 'committed', 'failed')`),
+        check("import_batches_checksum_valid", sql`${table.checksum} ~ '^[0-9a-f]{64}$'`),
+        check(
+            "import_batches_result_checksum_valid",
+            sql`${table.resultChecksum} IS NULL OR ${table.resultChecksum} ~ '^[0-9a-f]{64}$'`,
+        ),
+        check("import_batches_namespace_valid", sql`length(btrim(${table.sourceNamespace})) BETWEEN 1 AND 120`),
+        check("import_batches_payload_id_valid", sql`length(btrim(${table.payloadId})) BETWEEN 1 AND 200`),
+        // Payload identity is unique per namespace: re-registering the same (namespace, payload_id)
+        // resolves to this row; reusing it with different content is rejected as a conflict upstream.
+        uniqueIndex("import_batches_namespace_payload_unique").on(table.sourceNamespace, table.payloadId),
+        index("import_batches_profile_idx").on(table.profileId, table.createdAt),
+    ],
+);
+
+export type ImportBatchRow = typeof importBatches.$inferSelect;
+
+/**
  * Namespaced registry mapping a caller's stable external ID to the authoritative Training entity it
- * addresses (design 14.1/14.3). Unique per `(source_namespace, entity_type, external_id)`, so a
- * repeated bulk import cannot silently create a duplicate entity and a later upsert can resolve the
- * existing target. Not a foreign key: entity_id spans several aggregate tables.
+ * addresses (design 14.1/14.3, §14.4). Unique per `(source_namespace, entity_type, external_id)`, so a
+ * repeated bulk/historical import cannot silently create a duplicate entity and a later upsert can
+ * resolve the existing target. `entity_id` is not a foreign key: it spans several aggregate tables.
+ * `import_batch_id` links an entry to the batch that created it (nullable — the single-program bulk
+ * commit registers without a batch), so every imported entity is traceable to a batch and external ID.
  */
 export const bulkExternalIds = pgTable(
     "bulk_external_ids",
     {
         id: uuid("id").defaultRandom().primaryKey(),
         profileId: uuid("profile_id").notNull(),
+        importBatchId: uuid("import_batch_id").references(() => importBatches.id, { onDelete: "cascade" }),
         sourceNamespace: text("source_namespace").notNull(),
         entityType: text("entity_type").notNull(),
         externalId: text("external_id").notNull(),
@@ -2279,7 +2325,7 @@ export const bulkExternalIds = pgTable(
     table => [
         check(
             "bulk_external_ids_entity_type_valid",
-            sql`${table.entityType} IN ('program', 'planned-session', 'program-block')`,
+            sql`${table.entityType} IN ('program', 'program-block', 'planned-session', 'planned-activity', 'planned-exercise', 'planned-set', 'training-session', 'session-activity', 'occurrence', 'set-group', 'performed-set', 'run-step', 'run-split', 'pain-record')`,
         ),
         check("bulk_external_ids_namespace_valid", sql`length(btrim(${table.sourceNamespace})) BETWEEN 1 AND 120`),
         check("bulk_external_ids_value_valid", sql`length(btrim(${table.externalId})) BETWEEN 1 AND 200`),
@@ -2289,6 +2335,7 @@ export const bulkExternalIds = pgTable(
             table.externalId,
         ),
         index("bulk_external_ids_entity_idx").on(table.entityId),
+        index("bulk_external_ids_batch_idx").on(table.importBatchId),
     ],
 );
 

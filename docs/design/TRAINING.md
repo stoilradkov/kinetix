@@ -838,6 +838,135 @@ Commit:
 No partial program is visible. A changed catalog/reference invalidates the dry-run
 and requires a new preview.
 
+### 14.4 Historical import envelope
+
+The bulk-program envelope (14.1) carries exactly one already-normalized program. The
+_historical import_ envelope is the boundary for archiving multiple normalized program
+trees **and** completed `TrainingSession`s together — a multi-year archive committed as
+one deterministic payload (issue #55, epic HI). Kinetix accepts an authoritative,
+already-normalized payload and interprets nothing: no spreadsheet parsing, no fuzzy
+exercise matching, no effort/load/date inference. The caller has already resolved names,
+dates, units, RPE, bodyweight/load semantics, exclusions, duplicates, and same-day
+session identity upstream.
+
+```ts
+interface HistoricalImportEnvelopeV1 {
+    schemaVersion: 1;
+    source: {
+        namespace: string;
+        generatedBy?: string;
+        payloadId: string; // caller's stable id for this exact archive
+        checksum: string; // lowercase hex SHA-256 the boundary re-verifies for deterministic retries
+    };
+    mode: "create" | "upsert";
+    createMissingExercises?: boolean;
+    programs?: BulkProgramInputV1[]; // reuses 14.1 — existing single-program inputs stay valid
+    completedSessions?: HistoricalCompletedSessionV1[];
+}
+```
+
+Contract rules (published as Zod in `@kinetix/types` `historical-import.ts`, all schemas
+`.strict()` so any source-specific spreadsheet field — cell coordinates, sheet rows — is
+rejected):
+
+- **Separate aggregates (decision 2).** Programs reuse `BulkProgramInputV1`; completed
+  sessions are an independent tree. The only connection is an explicit, always-optional
+  `programMapping` per session, carrying a planned link plus activity/occurrence/set
+  planned↔actual mappings addressed entirely by `externalId` and reusing the §11.4
+  `mappingRelation` vocabulary.
+- **Stable external IDs.** Every import-addressable aggregate (program, block, planned
+  session/activity/exercise/set, training session, activity, occurrence, set group,
+  performed set, run step/split, pain record) carries a string `externalId`, so retries
+  and later idempotent upserts address the same entity deterministically.
+- **Canonical exercise references only.** A completed occurrence references an exercise by
+  catalog `id`, `slug`, or provider `externalId` — there is deliberately no alias/name
+  variant, so an unresolved name is rejected. A not-yet-catalogued exercise may appear only
+  as a complete, validated proposed definition (reusing the bulk proposed-exercise shape).
+- **Canonical measurements (ADR 0001).** Loads/durations/distances are entered
+  `{ value, unit }` objects, RPE is a scalar in 0.5 increments, reps are non-negative
+  integers, timestamps are UTC ISO-8601, and `localDate` is a single real calendar day.
+  Date ranges, placeholders, word-scale effort, and missing-load sentinels are rejected.
+  The omitted / explicit-`null` / known-`0` distinction is preserved on every optional
+  value.
+- **Same-day distinctness.** Session identity is `externalId`, never the timestamp, so two
+  sessions may share a `localDate`/`startedAt`.
+- **Bounded size.** The envelope caps programs and completed sessions; per-session limits
+  live in the domain (`HISTORICAL_IMPORT_LIMITS`).
+
+Cross-node invariants the wire schema cannot express live in the pure domain module
+`training/domain/historical-import.ts` (`validateHistoricalImportIdentities`): per
+entity-type `externalId` uniqueness, bounded per-session counts, and resolution of every
+mapping and intra-session structural reference (set-group parents, group members,
+performed-set → set-group, run-step parents, pain-record targets) against IDs present in
+the payload. It throws a path-anchored `DomainValidationError`.
+
+**Identity mapping onto existing storage (infrastructure).** The historical contract reuses
+the shipped bulk machinery rather than a parallel one:
+
+- External IDs register in `bulk_external_ids`, keyed `(source_namespace, entity_type,
+external_id)`. The plan-side program/block/planned-session rows map unchanged; persisting
+  completed sessions (issue HI2/#56) extends the `entity_type` CHECK to add
+  `training-session` (and any performed sub-entities addressed for upsert). Contract-level
+  duplicate detection mirrors this DB uniqueness so collisions fail deterministically before
+  a commit.
+- Payload identity (`payloadId` + `checksum`) reuses `request-hash.ts` canonicalization and
+  the `Idempotency-Key`/`idempotency_records` flow (14.3) so a retried or resumed import is
+  provably the same bytes; the checksum is the caller-supplied digest the boundary
+  re-verifies.
+- Revisions and outbox events are emitted by the same aggregate commands as hand-authored
+  programs and sessions, with `revisionSource = "import"` recording provenance.
+
+**Backward compatibility.** `programs[]` reuses `BulkProgramInputV1` verbatim, so any input
+valid for the single-program `POST /bulk/programs` boundary is valid here as one program
+entry; the migration path from a single-program payload is simply wrapping it as
+`{ programs: [<program>] }`. The dry-run and commit endpoints for historical payloads are a
+later epic increment (HI4/HI5); this section fixes only the versioned contract and its pure
+validation.
+
+### 14.5 Import batch identity and ownership
+
+A clean payload (14.4) still needs durable ownership: which payload was approved, which
+authoritative entities it created, and how retries map the same external IDs to the same
+stored aggregates. That is the _import batch_ (issue #56, HI2). An import is a **write
+source**, not a parallel domain model — batches add identity and ownership without touching
+Training aggregates, their revisions, or their history.
+
+**Immutable payload identity.** A batch is keyed by `(source_namespace, payload_id)` and
+pinned to a canonical `checksum` (the caller's lowercase-hex SHA-256 over the canonical
+payload). Registration is _open-or-resolve_ and deterministic under retry:
+
+- no batch for the identity → open a fresh `pending` batch;
+- an existing batch with the **same** `checksum` → resolve to it unchanged (a byte-identical
+  retry is a no-op, `resolved: true`);
+- an existing batch with a **different** `checksum` → `IMPORT_PAYLOAD_CONFLICT` (409): the
+  payload changed under a claimed identity.
+
+`payload_id`, `checksum`, `generated_by`, and free-text `description` are bounded, opaque
+values Kinetix stores and never parses — no source workbook or parsing policy is a domain
+concept. A declared payload exceeding the 14.4 per-archive limits is rejected as
+`PAYLOAD_TOO_LARGE` (413) before any persistence work.
+
+**Lifecycle.** `pending → committed` once authoritative entities are written and a result
+checksum recorded, or `pending → failed`. Only the lifecycle is mutable; identity is fixed at
+open. The pure aggregate (`training/domain/import-batch.ts`) owns the states and identity
+reconciliation; the application `RegisterImportBatch` use case runs open-or-resolve in one
+transaction, converging concurrent first-time registrations of the same identity on a single
+batch via `INSERT … ON CONFLICT (source_namespace, payload_id) DO NOTHING`.
+
+**Storage.** `import_batches` holds identity + lifecycle (unique on `(source_namespace,
+payload_id)`). The shipped `bulk_external_ids` registry is generalized for HI2: its
+`entity_type` CHECK covers every import-addressable kind (program, block, planned
+session/activity/exercise/set, training session, activity, occurrence, set group, performed
+set, run step/split, pain record), and a nullable `import_batch_id` FK links each mapping to
+the batch that created it — so every imported entity is traceable to a batch and caller
+external ID. The single-program bulk commit (14.3) registers without a batch (null link),
+unchanged.
+
+**Read surface.** `POST /training/imports/batches` registers (open-or-resolve);
+`GET /training/imports/batches/:id` reads identity + lifecycle; `GET …/:id/mappings` lists the
+deterministic `(entity_type, external_id) → entity_id` mappings, sorted for stable output. The
+dry-run/commit execution that populates a batch's entities is a later increment (HI4/HI5).
+
 ## 15. Progression rule engine
 
 ### 15.1 AST

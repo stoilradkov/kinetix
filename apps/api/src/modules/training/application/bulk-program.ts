@@ -21,6 +21,7 @@ import {
     expandProgramSchedule,
     normalizeRunStepTargets,
     normalizeStrengthSetTargets,
+    type ImportEntityType,
     type EnteredRunStepTargets,
     type EnteredStrengthTargets,
     type ExerciseClassification,
@@ -368,7 +369,12 @@ export interface BulkDryRunRepository<Transaction = unknown> {
 export const BULK_EXTERNAL_ID_REGISTRY = Symbol("BULK_EXTERNAL_ID_REGISTRY");
 export const COMMIT_BULK_PROGRAM = Symbol("COMMIT_BULK_PROGRAM");
 
-export type BulkExternalEntityType = "program" | "planned-session" | "program-block";
+/**
+ * The registry addresses every import-addressable aggregate kind (design §14.4), not just the plan
+ * side. The single-program bulk commit (14.3) uses the `program`/`program-block`/`planned-session`
+ * subset; historical import (HI2/#56) adds the completed-session performance entities.
+ */
+export type BulkExternalEntityType = ImportEntityType;
 
 export interface BulkExternalIdEntry {
     readonly entityType: BulkExternalEntityType;
@@ -376,14 +382,28 @@ export interface BulkExternalIdEntry {
     readonly entityId: string;
 }
 
+/** One persisted external-ID → Kinetix-ID mapping, as read back for a batch. */
+export interface BulkExternalIdMapping {
+    readonly entityType: BulkExternalEntityType;
+    readonly externalId: string;
+    readonly entityId: string;
+}
+
 /**
  * Namespaced registry mapping a caller's stable external ID to the authoritative entity it addresses
- * (design 14.1/14.3). `register` enforces `(namespace, entityType, externalId)` uniqueness at the DB
- * level so a repeated import cannot silently duplicate an entity; `resolve` powers upsert addressing.
+ * (design 14.1/14.3, §14.4). `register` enforces `(namespace, entityType, externalId)` uniqueness at
+ * the DB level so a repeated import cannot silently duplicate an entity; `resolve` powers upsert
+ * addressing; `listByBatch` reads back a batch's deterministic mappings. An entry may be owned by an
+ * `importBatchId`, so every committed entity is traceable to the batch that created it.
  */
 export interface BulkExternalIdRegistry<Transaction = unknown> {
     register(
-        input: { profileId: string; namespace: string; entries: readonly BulkExternalIdEntry[] },
+        input: {
+            profileId: string;
+            namespace: string;
+            importBatchId?: string | null;
+            entries: readonly BulkExternalIdEntry[];
+        },
         transaction: Transaction,
     ): Promise<void>;
     resolve(
@@ -392,6 +412,7 @@ export interface BulkExternalIdRegistry<Transaction = unknown> {
         externalId: string,
         transaction: Transaction,
     ): Promise<string | null>;
+    listByBatch(importBatchId: string, transaction?: Transaction): Promise<readonly BulkExternalIdMapping[]>;
 }
 
 // ---------------------------------------------------------------------------------------------

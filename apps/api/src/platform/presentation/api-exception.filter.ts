@@ -96,6 +96,8 @@ function statusForCode(code: string, fallback = HttpStatus.INTERNAL_SERVER_ERROR
         case "CATALOG_MAPPING_REQUIRED":
         case "JOB_FAILED":
             return HttpStatus.UNPROCESSABLE_ENTITY;
+        case "PAYLOAD_TOO_LARGE":
+            return HttpStatus.PAYLOAD_TOO_LARGE;
         case "NOT_FOUND":
             return HttpStatus.NOT_FOUND;
         case "PRECONDITION_REQUIRED":
@@ -108,6 +110,7 @@ function statusForCode(code: string, fallback = HttpStatus.INTERNAL_SERVER_ERROR
         case "DRY_RUN_CONSUMED":
         case "DRY_RUN_TOKEN_INVALID":
         case "EXTERNAL_ID_CONFLICT":
+        case "IMPORT_PAYLOAD_CONFLICT":
         case "PROGRESSION_CONFLICT":
         case "PROGRESSION_STALE":
             return HttpStatus.CONFLICT;
