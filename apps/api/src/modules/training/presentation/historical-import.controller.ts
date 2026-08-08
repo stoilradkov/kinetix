@@ -8,18 +8,26 @@ import {
     historicalImportCommitResponseSchema,
     historicalImportDryRunResponseSchema,
     historicalImportEnvelopeSchema,
+    historicalImportListResponseSchema,
+    historicalImportReportResponseSchema,
+    historicalImportRevertResponseSchema,
     type HistoricalImportCommitResponse,
     type HistoricalImportDryRunResponse,
+    type HistoricalImportListResponse,
+    type HistoricalImportReportResponse,
+    type HistoricalImportRevertResponse,
 } from "@kinetix/types";
 
 import {
     COMMIT_HISTORICAL_IMPORT,
     HISTORICAL_IMPORT_COMMIT_QUERY_SERVICE,
     HISTORICAL_IMPORT_DRY_RUN,
+    REVERT_HISTORICAL_IMPORT,
     type CommitHistoricalImport,
     type HistoricalImportCommitQueryService,
     type HistoricalImportDryRun,
     type HistoricalImportEnvelopeInput,
+    type RevertHistoricalImport,
 } from "#src/modules/training/application/index";
 import {
     IDEMPOTENT_COMMAND_EXECUTOR,
@@ -48,6 +56,8 @@ export class HistoricalImportController {
         private readonly commit: CommitHistoricalImport,
         @Inject(HISTORICAL_IMPORT_COMMIT_QUERY_SERVICE)
         private readonly commits: HistoricalImportCommitQueryService,
+        @Inject(REVERT_HISTORICAL_IMPORT)
+        private readonly revert: RevertHistoricalImport,
         @Optional()
         @Inject(IDEMPOTENT_COMMAND_EXECUTOR)
         private readonly idempotency?: IdempotentCommandExecutor,
@@ -128,11 +138,57 @@ export class HistoricalImportController {
         return body;
     }
 
+    /** List every historical import (commit run) for the active profile, newest first (design §14.7). */
+    @Get("commits")
+    @ApiOperation({ summary: "List the active profile's historical imports" })
+    async listCommits(): Promise<HistoricalImportListResponse> {
+        return historicalImportListResponseSchema.parse(await this.commits.list());
+    }
+
     /** Read the durable status, counts, and (on failure) the path-anchored failure of a commit run. */
     @Get("commits/:id")
     @ApiOperation({ summary: "Read the status and result of a historical import commit run" })
     async readCommit(@Param("id") id: string): Promise<HistoricalImportCommitResponse> {
         return historicalImportCommitResponseSchema.parse(await this.commits.findById(id));
+    }
+
+    /**
+     * Generate the immutable storage audit for one committed import (design §14.7). It traces the payload
+     * checksum through the storage plan to every stored Kinetix entity and its current revision, records
+     * the created/updated/skipped/conflicted counts and any batch failure, and shows whether the import
+     * was later reverted. It is a read-only projection over immutable durable records — no side effects.
+     */
+    @Get("commits/:id/report")
+    @ApiOperation({ summary: "Generate the immutable storage audit for a committed historical import" })
+    async report(@Param("id") id: string): Promise<HistoricalImportReportResponse> {
+        return historicalImportReportResponseSchema.parse(await this.commits.report(id));
+    }
+
+    /**
+     * Revert a committed import by scoped, history-preserving compensation (design §14.7). It archives the
+     * import's own program/planned-session/training-session aggregates (restorable, never hard-deleted) and
+     * refuses the whole revert with `IMPORT_REVERT_BLOCKED` (409) if any was edited after the import. The
+     * run is durable, idempotent, and resumable — re-posting resumes or replays the same run.
+     */
+    @Post("commits/:id/reverts")
+    @ApiOperation({ summary: "Revert a committed historical import through scoped, history-preserving archival" })
+    async createRevert(
+        @Param("id") id: string,
+        @Headers("x-correlation-id") rawCorrelationId: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<HistoricalImportRevertResponse> {
+        const body = historicalImportRevertResponseSchema.parse(
+            await this.revert.execute(id, this.metadata(rawCorrelationId)),
+        );
+        response.setHeader("X-Revert-Id", body.revertId);
+        return body;
+    }
+
+    /** Read the durable revert run for a committed import (`GET …/commits/:id/reverts`); 404 if none exists. */
+    @Get("commits/:id/reverts")
+    @ApiOperation({ summary: "Read the status and result of a historical import revert run" })
+    async readRevert(@Param("id") id: string): Promise<HistoricalImportRevertResponse> {
+        return historicalImportRevertResponseSchema.parse(await this.commits.revertStatus(id));
     }
 
     /** Resume a failed or interrupted commit run from its last committed checkpoint (design §14.7). */

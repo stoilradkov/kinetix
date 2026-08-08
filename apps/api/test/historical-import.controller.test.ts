@@ -5,9 +5,16 @@ import type {
     CommitHistoricalImport,
     HistoricalImportCommitQueryService,
     HistoricalImportDryRun,
+    RevertHistoricalImport,
 } from "#src/modules/training/application/index";
 import { HistoricalImportController } from "#src/modules/training/presentation/index";
-import type { HistoricalImportCommitResponse, HistoricalImportDryRunResponse } from "@kinetix/types";
+import type {
+    HistoricalImportCommitResponse,
+    HistoricalImportDryRunResponse,
+    HistoricalImportListResponse,
+    HistoricalImportReportResponse,
+    HistoricalImportRevertResponse,
+} from "@kinetix/types";
 
 const dryRunId = "0198a4db-d8da-7000-8000-0000000000d1";
 const commitId = "0198a4db-d8da-7000-8000-0000000000e1";
@@ -105,6 +112,87 @@ function commitResponse(overrides: Partial<HistoricalImportCommitResponse> = {})
     };
 }
 
+function listResponse(): HistoricalImportListResponse {
+    return {
+        items: [
+            {
+                commitId,
+                dryRunId,
+                importBatchId: "0198a4db-d8da-7000-8000-0000000000e2",
+                state: "succeeded",
+                mode: "create",
+                source: { namespace: "coach-app", generatedBy: null },
+                programs: 1,
+                completedSessions: 1,
+                attempts: 1,
+                reverted: false,
+                createdAt: "2026-08-08T10:00:00.000Z",
+                startedAt: "2026-08-08T10:00:00.000Z",
+                completedAt: "2026-08-08T10:00:01.000Z",
+            },
+        ],
+        count: 1,
+    };
+}
+
+function reportResponse(): HistoricalImportReportResponse {
+    return {
+        commitId,
+        dryRunId,
+        importBatchId: "0198a4db-d8da-7000-8000-0000000000e2",
+        schemaVersion: 1,
+        source: { namespace: "coach-app", generatedBy: null },
+        payloadId: "archive-1",
+        checksum: "a".repeat(64),
+        mode: "create",
+        state: "succeeded",
+        programs: 1,
+        completedSessions: 1,
+        counts: { created: 4, updated: 0, skipped: 0, conflicted: 0 },
+        storagePlan: {
+            namespace: "coach-app",
+            mode: "create",
+            entries: [],
+            counts: { create: 4, update: 0, "skip-identical": 0, conflict: 0 },
+            conflicts: [],
+            hasConflicts: false,
+        },
+        entities: [
+            {
+                entityType: "program",
+                externalId: "prog-1",
+                entityId: "0198a4db-d8da-7000-8000-0000000000c1",
+                currentVersion: 1,
+                archived: false,
+            },
+        ],
+        affectedVersions: [],
+        warnings: [],
+        failure: null,
+        revert: null,
+        createdAt: "2026-08-08T10:00:00.000Z",
+        startedAt: "2026-08-08T10:00:00.000Z",
+        completedAt: "2026-08-08T10:00:01.000Z",
+    };
+}
+
+function revertResponse(overrides: Partial<HistoricalImportRevertResponse> = {}): HistoricalImportRevertResponse {
+    return {
+        revertId: "0198a4db-d8da-7000-8000-0000000000f1",
+        commitId,
+        importBatchId: "0198a4db-d8da-7000-8000-0000000000e2",
+        state: "succeeded",
+        counts: { archived: 2, blocked: 0, skipped: 0 },
+        archivedEntities: [],
+        blockedEntities: [],
+        failure: null,
+        createdAt: "2026-08-09T10:00:00.000Z",
+        startedAt: "2026-08-09T10:00:00.000Z",
+        completedAt: "2026-08-09T10:00:01.000Z",
+        ...overrides,
+    };
+}
+
 function headers() {
     return { setHeader: vi.fn() };
 }
@@ -114,14 +202,28 @@ function controller(execute = vi.fn().mockResolvedValue(response())) {
     const commitExecute = vi.fn().mockResolvedValue(commitResponse());
     const commitRetry = vi.fn().mockResolvedValue(commitResponse());
     const commitFindById = vi.fn().mockResolvedValue(commitResponse());
+    const commitList = vi.fn().mockResolvedValue(listResponse());
+    const commitReport = vi.fn().mockResolvedValue(reportResponse());
+    const commitRevertStatus = vi.fn().mockResolvedValue(revertResponse());
+    const revertExecute = vi.fn().mockResolvedValue(revertResponse());
     const commit = { execute: commitExecute, retry: commitRetry } as unknown as CommitHistoricalImport;
-    const commits = { findById: commitFindById } as unknown as HistoricalImportCommitQueryService;
+    const commits = {
+        findById: commitFindById,
+        list: commitList,
+        report: commitReport,
+        revertStatus: commitRevertStatus,
+    } as unknown as HistoricalImportCommitQueryService;
+    const revert = { execute: revertExecute } as unknown as RevertHistoricalImport;
     return {
-        controller: new HistoricalImportController(dryRun, commit, commits),
+        controller: new HistoricalImportController(dryRun, commit, commits, revert),
         execute,
         commitExecute,
         commitRetry,
         commitFindById,
+        commitList,
+        commitReport,
+        commitRevertStatus,
+        revertExecute,
     };
 }
 
@@ -213,5 +315,39 @@ describe("HistoricalImportController — commit", () => {
         expect(body.commitId).toBe(commitId);
         expect(commitRetry).toHaveBeenCalledWith(commitId, expect.objectContaining({ source: "agent" }));
         expect(response_.setHeader).toHaveBeenCalledWith("X-Commit-Id", commitId);
+    });
+});
+
+describe("HistoricalImportController — list, report, revert", () => {
+    it("lists the profile's historical imports", async () => {
+        const { controller: subject, commitList } = controller();
+        const body = await subject.listCommits();
+        expect(body.count).toBe(1);
+        expect(body.items[0]?.commitId).toBe(commitId);
+        expect(commitList).toHaveBeenCalledTimes(1);
+    });
+
+    it("generates the immutable storage audit for a commit", async () => {
+        const { controller: subject, commitReport } = controller();
+        const body = await subject.report(commitId);
+        expect(body.checksum).toBe("a".repeat(64));
+        expect(body.entities[0]?.entityType).toBe("program");
+        expect(commitReport).toHaveBeenCalledWith(commitId);
+    });
+
+    it("starts a revert by commit id and sets the revert-id header", async () => {
+        const { controller: subject, revertExecute } = controller();
+        const response_ = headers();
+        const body = await subject.createRevert(commitId, undefined, response_);
+        expect(body.state).toBe("succeeded");
+        expect(revertExecute).toHaveBeenCalledWith(commitId, expect.objectContaining({ source: "agent" }));
+        expect(response_.setHeader).toHaveBeenCalledWith("X-Revert-Id", body.revertId);
+    });
+
+    it("reads a revert run status by commit id", async () => {
+        const { controller: subject, commitRevertStatus } = controller();
+        const body = await subject.readRevert(commitId);
+        expect(body.commitId).toBe(commitId);
+        expect(commitRevertStatus).toHaveBeenCalledWith(commitId);
     });
 });

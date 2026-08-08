@@ -9,6 +9,9 @@ import {
     historicalImportCommitResponseSchema,
     historicalImportDryRunResponseSchema,
     historicalImportEnvelopeSchema,
+    historicalImportListResponseSchema,
+    historicalImportReportResponseSchema,
+    historicalImportRevertResponseSchema,
 } from "#src/index";
 
 // ---------------------------------------------------------------------------------------------
@@ -503,5 +506,200 @@ describe("historicalImportCommitResponseSchema — HI5 commit run resource", () 
 
     it("rejects an unknown top-level field", () => {
         expect(historicalImportCommitResponseSchema.safeParse(commitResponse({ smuggled: true })).success).toBe(false);
+    });
+});
+
+// ---------------------------------------------------------------------------------------------
+// HI6 (#60) — list, audit report, and revert contracts
+// ---------------------------------------------------------------------------------------------
+
+describe("historicalImportListResponseSchema — HI6 profile import list", () => {
+    function listItem(overrides: Record<string, unknown> = {}) {
+        return {
+            commitId: "0198a4db-d8da-7000-8000-0000000000e0",
+            dryRunId: "0198a4db-d8da-7000-8000-0000000000f0",
+            importBatchId: "0198a4db-d8da-7000-8000-0000000000e1",
+            state: "succeeded",
+            mode: "create",
+            source: { namespace: "coach-app", generatedBy: null },
+            programs: 1,
+            completedSessions: 2,
+            attempts: 1,
+            reverted: false,
+            createdAt: "2026-08-01T10:00:00.000Z",
+            startedAt: "2026-08-01T10:00:00.000Z",
+            completedAt: "2026-08-01T10:00:01.000Z",
+            ...overrides,
+        };
+    }
+
+    it("accepts a list of imports and round-trips", () => {
+        const once = historicalImportListResponseSchema.parse({
+            items: [listItem(), listItem({ commitId: "0198a4db-d8da-7000-8000-0000000000e2", reverted: true })],
+            count: 2,
+        });
+        const twice = historicalImportListResponseSchema.parse(JSON.parse(JSON.stringify(once)));
+        expect(twice).toEqual(once);
+    });
+
+    it("accepts an empty list", () => {
+        expect(historicalImportListResponseSchema.safeParse({ items: [], count: 0 }).success).toBe(true);
+    });
+
+    it("rejects an unknown field on a list item", () => {
+        expect(
+            historicalImportListResponseSchema.safeParse({ items: [listItem({ smuggled: true })], count: 1 }).success,
+        ).toBe(false);
+    });
+});
+
+describe("historicalImportReportResponseSchema — HI6 immutable storage audit", () => {
+    function report(overrides: Record<string, unknown> = {}) {
+        return {
+            commitId: "0198a4db-d8da-7000-8000-0000000000e0",
+            dryRunId: "0198a4db-d8da-7000-8000-0000000000f0",
+            importBatchId: "0198a4db-d8da-7000-8000-0000000000e1",
+            schemaVersion: 1,
+            source: { namespace: "coach-app", generatedBy: "coach-export@2.1" },
+            payloadId: "payload-2024",
+            checksum: "a".repeat(64),
+            mode: "create",
+            state: "succeeded",
+            programs: 1,
+            completedSessions: 1,
+            counts: { created: 4, updated: 0, skipped: 0, conflicted: 0 },
+            storagePlan: {
+                namespace: "coach-app",
+                mode: "create",
+                entries: [],
+                counts: { create: 4, update: 0, "skip-identical": 0, conflict: 0 },
+                conflicts: [],
+                hasConflicts: false,
+            },
+            entities: [
+                {
+                    entityType: "program",
+                    externalId: "prog-1",
+                    entityId: "0198a4db-d8da-7000-8000-0000000000c1",
+                    currentVersion: 1,
+                    archived: false,
+                },
+            ],
+            affectedVersions: [],
+            warnings: [],
+            failure: null,
+            revert: null,
+            createdAt: "2026-08-01T10:00:00.000Z",
+            startedAt: "2026-08-01T10:00:00.000Z",
+            completedAt: "2026-08-01T10:00:01.000Z",
+            ...overrides,
+        };
+    }
+
+    it("traces a payload checksum through to a stored entity and its current revision", () => {
+        const once = historicalImportReportResponseSchema.parse(report());
+        expect(once.entities[0]?.currentVersion).toBe(1);
+        const twice = historicalImportReportResponseSchema.parse(JSON.parse(JSON.stringify(once)));
+        expect(twice).toEqual(once);
+    });
+
+    it("accepts a report whose entity was archived by a revert", () => {
+        const parsed = historicalImportReportResponseSchema.parse(
+            report({
+                entities: [
+                    {
+                        entityType: "program",
+                        externalId: "prog-1",
+                        entityId: "0198a4db-d8da-7000-8000-0000000000c1",
+                        currentVersion: 2,
+                        archived: true,
+                    },
+                ],
+                revert: {
+                    revertId: "0198a4db-d8da-7000-8000-0000000000d0",
+                    state: "succeeded",
+                    archived: 4,
+                    blocked: 0,
+                    completedAt: "2026-08-02T10:00:00.000Z",
+                },
+            }),
+        );
+        expect(parsed.revert?.state).toBe("succeeded");
+    });
+
+    it("allows a null current version for an entity that no longer resolves", () => {
+        expect(
+            historicalImportReportResponseSchema.safeParse(
+                report({
+                    entities: [
+                        {
+                            entityType: "training-session",
+                            externalId: "ts-1",
+                            entityId: "0198a4db-d8da-7000-8000-0000000000a2",
+                            currentVersion: null,
+                            archived: false,
+                        },
+                    ],
+                }),
+            ).success,
+        ).toBe(true);
+    });
+});
+
+describe("historicalImportRevertResponseSchema — HI6 scoped revert run", () => {
+    function revert(overrides: Record<string, unknown> = {}) {
+        return {
+            revertId: "0198a4db-d8da-7000-8000-0000000000d0",
+            commitId: "0198a4db-d8da-7000-8000-0000000000e0",
+            importBatchId: "0198a4db-d8da-7000-8000-0000000000e1",
+            state: "succeeded",
+            counts: { archived: 2, blocked: 0, skipped: 0 },
+            archivedEntities: [
+                {
+                    entityType: "program",
+                    entityId: "0198a4db-d8da-7000-8000-0000000000c1",
+                    externalId: "prog-1",
+                    version: 1,
+                },
+            ],
+            blockedEntities: [],
+            failure: null,
+            createdAt: "2026-08-02T10:00:00.000Z",
+            startedAt: "2026-08-02T10:00:00.000Z",
+            completedAt: "2026-08-02T10:00:01.000Z",
+            ...overrides,
+        };
+    }
+
+    it("accepts a succeeded revert and round-trips", () => {
+        const once = historicalImportRevertResponseSchema.parse(revert());
+        const twice = historicalImportRevertResponseSchema.parse(JSON.parse(JSON.stringify(once)));
+        expect(twice).toEqual(once);
+    });
+
+    it("accepts a blocked revert that archived nothing and lists the offending aggregates", () => {
+        const parsed = historicalImportRevertResponseSchema.parse(
+            revert({
+                state: "blocked",
+                counts: { archived: 0, blocked: 1, skipped: 0 },
+                archivedEntities: [],
+                completedAt: null,
+                blockedEntities: [
+                    {
+                        entityType: "training-session",
+                        entityId: "0198a4db-d8da-7000-8000-0000000000a2",
+                        externalId: "ts-1",
+                        currentVersion: 3,
+                        reason: "edited-after-import",
+                    },
+                ],
+            }),
+        );
+        expect(parsed.state).toBe("blocked");
+        expect(parsed.archivedEntities).toHaveLength(0);
+    });
+
+    it("rejects an unknown top-level field", () => {
+        expect(historicalImportRevertResponseSchema.safeParse(revert({ smuggled: true })).success).toBe(false);
     });
 });

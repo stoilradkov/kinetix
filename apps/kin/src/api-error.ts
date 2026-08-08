@@ -40,6 +40,8 @@ export function cliExitCode(error: unknown): number {
         case "IMPORT_PAYLOAD_CONFLICT":
         case "PROGRESSION_CONFLICT":
         case "PROGRESSION_STALE":
+        case "IMPORT_NOT_REVERTIBLE":
+        case "IMPORT_REVERT_BLOCKED":
             return 5;
         case "JOB_FAILED":
             return 6;

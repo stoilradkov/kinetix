@@ -2449,6 +2449,47 @@ export const historicalImportCommits = pgTable(
 
 export type HistoricalImportCommitRow = typeof historicalImportCommits.$inferSelect;
 
+/**
+ * Durable revert-run record (issue #60, HI6; design §14.7). A committed historical import is reverted by
+ * exactly one scoped, history-preserving compensation run: it archives the import's own program /
+ * planned-session / training-session aggregates and checkpoints each archived entity so an interruption
+ * resumes without re-archiving. `blocked_entities` records aggregates that were edited after the import
+ * and refused the whole revert (state `blocked`, nothing archived). Keyed uniquely on `commit_id`.
+ */
+export const historicalImportReverts = pgTable(
+    "historical_import_reverts",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        commitId: uuid("commit_id")
+            .notNull()
+            .references(() => historicalImportCommits.id, { onDelete: "cascade" }),
+        dryRunId: uuid("dry_run_id").notNull(),
+        profileId: uuid("profile_id").notNull(),
+        importBatchId: uuid("import_batch_id").references(() => importBatches.id, { onDelete: "set null" }),
+        state: text("state").notNull().default("pending"),
+        archivedEntities: jsonb("archived_entities").$type<Record<string, unknown>[]>().notNull().default([]),
+        blockedEntities: jsonb("blocked_entities").$type<Record<string, unknown>[]>().notNull().default([]),
+        attempts: integer("attempts").notNull().default(0),
+        failure: jsonb("failure").$type<Record<string, unknown>>(),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        startedAt: timestamp("started_at", { withTimezone: true }),
+        completedAt: timestamp("completed_at", { withTimezone: true }),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check(
+            "historical_import_reverts_state_valid",
+            sql`${table.state} IN ('pending', 'running', 'succeeded', 'failed', 'blocked')`,
+        ),
+        check("historical_import_reverts_attempts_valid", sql`${table.attempts} >= 0`),
+        uniqueIndex("historical_import_reverts_commit_unique").on(table.commitId),
+        index("historical_import_reverts_profile_idx").on(table.profileId, table.createdAt),
+        index("historical_import_reverts_batch_idx").on(table.importBatchId),
+    ],
+);
+
+export type HistoricalImportRevertRow = typeof historicalImportReverts.$inferSelect;
+
 export type WorkoutTemplateRow = typeof workoutTemplates.$inferSelect;
 export type WorkoutTemplatePrescriptionRow = typeof workoutTemplatePrescriptions.$inferSelect;
 export type ProgramRow = typeof programs.$inferSelect;

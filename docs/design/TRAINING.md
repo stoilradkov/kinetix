@@ -1042,6 +1042,43 @@ increment. Because the commit checkpoints each aggregate independently and can r
 and the durable job queue (ADR 0004) are not required for it; the run executes inline but is fully
 durable and idempotent through its own record.
 
+### 14.8 Historical import delivery, audit, and revert
+
+The dry-run (14.6) and commit (14.7) are the write path; issue #60 (HI6) delivers the operational surface
+around them — list, monitor, audit, and recover — as a scriptable receiver workflow. Kinetix still accepts
+only an already-normalized payload and interprets nothing: HI6 adds no prepare, spreadsheet, name-mapping,
+or inference command.
+
+**Commit run as the import identity.** The durable `historical_import_commits` run (14.7) _is_ the
+operational import. `GET …/commits` lists every run for the profile (newest first, program/session counts
+projected from the run's checkpoint); `GET …/commits/:id` is the status poll; `POST …/commits/:id/retries`
+resumes a failed/interrupted run. All survive process restart because the run record is durable.
+
+**Immutable storage audit.** `GET …/commits/:id/report` assembles the audit as a deterministic read-only
+projection over already-immutable durable records — never a live re-derivation, never a write. It joins the
+commit run, the dry-run artifact (payload `checksum`/`payloadId`, storage plan, warnings, affected
+versions), and the append-only `bulk_external_ids` registry, then resolves each import-owned root's current
+version/archived state, so the audit traces the canonical payload through to every stored Kinetix id and
+its revision. It records the created/updated/skipped/conflicted counts, any batch failure, and whether the
+import was later reverted. No separate audit table is needed: its sources are append-only, so the
+projection is itself immutable.
+
+**Recoverable revert.** `POST …/commits/:id/reverts` reverts a committed import by scoped, history-
+preserving compensation. It undoes only the import's own writes — the program, planned-session, and
+training-session aggregates it created — by **archiving** them through the ordinary aggregate archive
+commands, so every archived aggregate is restorable and nothing is hard-deleted; it never touches unrelated
+data or the shared exercise catalog. Safety is absolute and pre-checked: the import creates each aggregate
+at version 1, so a current version `> 1` means a later user edit or restore, and if **any** import-owned
+aggregate was edited the whole revert is refused (`IMPORT_REVERT_BLOCKED`, 409) with the offending
+aggregates listed and nothing archived — a revert can never overwrite a later edit. Like the commit, the
+revert is durable, idempotent, and resumable: it is keyed uniquely by `commit_id` on
+`historical_import_reverts` (migration 0030), archives each aggregate in its own transaction, and
+checkpoints the archived entity, so an interruption resumes from exactly the aggregates still to archive.
+`GET …/commits/:id/reverts` reads the run; reverting a run that never succeeded is `IMPORT_NOT_REVERTIBLE`
+(409). `kin training imports dry-run|commit|status|show|list|report|retry|revert` mirror the endpoints with
+concise human output plus complete `--json`, and map API error codes to deterministic exit codes for
+automation.
+
 ## 15. Progression rule engine
 
 ### 15.1 AST
@@ -1439,6 +1476,7 @@ kin training exercises list|show|create|update|archive|restore|merge
 kin training templates list|show|create|update
 kin training programs list|show|create|update|activate|archive|restore
 kin training programs dry-run|commit --file <path>
+kin training imports dry-run|commit|status|show|list|report|retry|revert
 kin training sessions list|show|create|start|update|complete|reopen
 kin training sets add|update|complete
 kin run add|update|show|list

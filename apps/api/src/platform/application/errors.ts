@@ -17,6 +17,8 @@ export const applicationErrorCodes = [
     "PAYLOAD_TOO_LARGE",
     "PROGRESSION_CONFLICT",
     "PROGRESSION_STALE",
+    "IMPORT_NOT_REVERTIBLE",
+    "IMPORT_REVERT_BLOCKED",
     "JOB_FAILED",
 ] as const;
 
@@ -154,5 +156,43 @@ export class ImportPayloadConflictError extends ApplicationError {
 export class PayloadTooLargeError extends ApplicationError {
     constructor(message: string, fieldErrors?: FieldErrors, context?: ErrorContext) {
         super("PAYLOAD_TOO_LARGE", message, fieldErrors, context);
+    }
+}
+
+/**
+ * A revert was requested for an import that is not in a revertible state — the commit never succeeded, so
+ * there are no authoritative aggregates to compensate (design §14.7, HI6). A 409 (CLI exit 5).
+ */
+export class ImportNotRevertibleError extends ApplicationError {
+    constructor(
+        readonly commitId: string,
+        readonly state: string,
+    ) {
+        super(
+            "IMPORT_NOT_REVERTIBLE",
+            `Historical import commit ${commitId} is ${state} and cannot be reverted; only a succeeded commit is revertible`,
+            undefined,
+            { commitId, state },
+        );
+    }
+}
+
+/**
+ * A scoped revert was refused because one or more import-owned aggregates were edited (or restored) after
+ * the import, so archiving them would overwrite later user edits (design §14.7, HI6). The revert is
+ * history-preserving and never partial: nothing is archived, and the blocked aggregates are reported so
+ * an operator can resolve them first. A 409 (CLI exit 5).
+ */
+export class ImportRevertBlockedError extends ApplicationError {
+    constructor(
+        readonly commitId: string,
+        readonly blocked: ReadonlyArray<{ readonly entityType: string; readonly entityId: string }>,
+    ) {
+        super(
+            "IMPORT_REVERT_BLOCKED",
+            `Historical import commit ${commitId} cannot be safely reverted: ${blocked.length} aggregate(s) were edited after the import`,
+            undefined,
+            { commitId, blocked: blocked.map(entry => ({ ...entry })) },
+        );
     }
 }

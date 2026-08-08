@@ -113,6 +113,8 @@ function statusForCode(code: string, fallback = HttpStatus.INTERNAL_SERVER_ERROR
         case "IMPORT_PAYLOAD_CONFLICT":
         case "PROGRESSION_CONFLICT":
         case "PROGRESSION_STALE":
+        case "IMPORT_NOT_REVERTIBLE":
+        case "IMPORT_REVERT_BLOCKED":
             return HttpStatus.CONFLICT;
         case "INTERNAL_ERROR":
             return HttpStatus.INTERNAL_SERVER_ERROR;

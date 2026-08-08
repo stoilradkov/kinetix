@@ -14,6 +14,11 @@ import {
     type HistoricalImportCommitResponse,
     historicalImportDryRunResponseSchema,
     historicalImportEnvelopeSchema,
+    historicalImportListResponseSchema,
+    historicalImportReportResponseSchema,
+    type HistoricalImportReportResponse,
+    historicalImportRevertResponseSchema,
+    type HistoricalImportRevertResponse,
     healthResponseSchema,
     coreProfileResponseSchema,
     createProfileRequestSchema,
@@ -1372,7 +1377,7 @@ function registerImportCommands(training: Command, dependencies: ProgramDependen
         );
 
     imports
-        .command("commit-status")
+        .command("status")
         .description("Read the status and result of a historical import commit run")
         .requiredOption("--id <id>", "The commit run id")
         .option("--api-url <url>", "Override the Kinetix API URL")
@@ -1381,14 +1386,99 @@ function registerImportCommands(training: Command, dependencies: ProgramDependen
             const result = historicalImportCommitResponseSchema.parse(
                 await responseJson(
                     dependencies,
-                    `${resolveApiUrl(options.apiUrl)}/training/imports/commits/${options.id}`,
+                    `${resolveApiUrl(options.apiUrl)}/training/imports/commits/${encodeURIComponent(options.id)}`,
                 ),
             );
             printCommitResult(dependencies, result, options.json);
         });
 
     imports
-        .command("commit-retry")
+        .command("show")
+        .description("Show one historical import commit run and its committed entities")
+        .requiredOption("--id <id>", "The commit run id")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { id: string; apiUrl?: string; json?: boolean }) => {
+            const result = historicalImportCommitResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/imports/commits/${encodeURIComponent(options.id)}`,
+                ),
+            );
+            printCommitResult(dependencies, result, options.json);
+        });
+
+    imports
+        .command("list")
+        .description("List the active profile's historical imports, newest first")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { apiUrl?: string; json?: boolean }) => {
+            const result = historicalImportListResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/imports/commits`),
+            );
+            if (options.json) {
+                dependencies.output(JSON.stringify(result));
+                return;
+            }
+            dependencies.output(`imports\t${result.count}`);
+            for (const item of result.items)
+                dependencies.output(
+                    `${item.commitId}\t${item.state}${item.reverted ? " (reverted)" : ""}\tprograms=${item.programs}\tsessions=${item.completedSessions}\tcreated=${item.createdAt}`,
+                );
+        });
+
+    imports
+        .command("report")
+        .description("Generate the immutable storage audit for a committed historical import")
+        .requiredOption("--id <id>", "The commit run id")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { id: string; apiUrl?: string; json?: boolean }) => {
+            const result = historicalImportReportResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/imports/commits/${encodeURIComponent(options.id)}/report`,
+                ),
+            );
+            printReportResult(dependencies, result, options.json);
+        });
+
+    imports
+        .command("revert")
+        .description("Revert a committed historical import through scoped, history-preserving archival")
+        .requiredOption("--id <id>", "The commit run id to revert")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { id: string; apiUrl?: string; json?: boolean }) => {
+            const result = historicalImportRevertResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/imports/commits/${encodeURIComponent(options.id)}/reverts`,
+                    mutationRequest("POST", {}, undefined, undefined),
+                ),
+            );
+            printRevertResult(dependencies, result, options.json);
+        });
+
+    imports
+        .command("revert-status")
+        .description("Read the status and result of a historical import revert run")
+        .requiredOption("--id <id>", "The commit run id")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { id: string; apiUrl?: string; json?: boolean }) => {
+            const result = historicalImportRevertResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/imports/commits/${encodeURIComponent(options.id)}/reverts`,
+                ),
+            );
+            printRevertResult(dependencies, result, options.json);
+        });
+
+    imports
+        .command("retry")
         .description("Resume a failed or interrupted historical import commit from its checkpoint")
         .requiredOption("--id <id>", "The commit run id")
         .option("--api-url <url>", "Override the Kinetix API URL")
@@ -1397,12 +1487,68 @@ function registerImportCommands(training: Command, dependencies: ProgramDependen
             const result = historicalImportCommitResponseSchema.parse(
                 await responseJson(
                     dependencies,
-                    `${resolveApiUrl(options.apiUrl)}/training/imports/commits/${options.id}/retries`,
+                    `${resolveApiUrl(options.apiUrl)}/training/imports/commits/${encodeURIComponent(options.id)}/retries`,
                     mutationRequest("POST", {}, undefined, undefined),
                 ),
             );
             printCommitResult(dependencies, result, options.json);
         });
+}
+
+function printReportResult(
+    dependencies: ProgramDependencies,
+    result: HistoricalImportReportResponse,
+    json: boolean | undefined,
+): void {
+    if (json) {
+        dependencies.output(JSON.stringify(result));
+        return;
+    }
+    const counts = result.counts;
+    dependencies.output(
+        `${result.commitId}\t${result.state}\tprograms=${result.programs}\tsessions=${result.completedSessions}`,
+    );
+    dependencies.output(`payload\t${result.source.namespace}\t${result.payloadId}\tchecksum=${result.checksum}`);
+    dependencies.output(
+        `counts\tcreated=${counts.created}\tupdated=${counts.updated}\tskipped=${counts.skipped}\tconflicted=${counts.conflicted}`,
+    );
+    for (const entity of result.entities)
+        dependencies.output(
+            `entity\t${entity.entityType}\t${entity.externalId}\t${entity.entityId}\tversion=${entity.currentVersion ?? "-"}${entity.archived ? "\tarchived" : ""}`,
+        );
+    for (const warning of result.warnings) dependencies.output(`warning\t${warning.code}\t${warning.message}`);
+    if (result.failure)
+        dependencies.output(
+            `failure\t${result.failure.code}\t${result.failure.path.join(".")}\t${result.failure.message}`,
+        );
+    if (result.revert)
+        dependencies.output(
+            `revert\t${result.revert.state}\tarchived=${result.revert.archived}\tblocked=${result.revert.blocked}`,
+        );
+}
+
+function printRevertResult(
+    dependencies: ProgramDependencies,
+    result: HistoricalImportRevertResponse,
+    json: boolean | undefined,
+): void {
+    if (json) {
+        dependencies.output(JSON.stringify(result));
+        return;
+    }
+    const counts = result.counts;
+    dependencies.output(`${result.revertId}\t${result.state}\tcommit=${result.commitId}`);
+    dependencies.output(`counts\tarchived=${counts.archived}\tblocked=${counts.blocked}\tskipped=${counts.skipped}`);
+    for (const entity of result.archivedEntities)
+        dependencies.output(`archived\t${entity.entityType}\t${entity.externalId}\t${entity.entityId}`);
+    for (const entity of result.blockedEntities)
+        dependencies.output(
+            `blocked\t${entity.entityType}\t${entity.externalId}\t${entity.entityId}\t${entity.reason}`,
+        );
+    if (result.failure)
+        dependencies.output(
+            `failure\t${result.failure.code}\t${result.failure.path.join(".")}\t${result.failure.message}`,
+        );
 }
 
 function printCommitResult(

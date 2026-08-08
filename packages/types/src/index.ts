@@ -48,6 +48,8 @@ export const apiErrorCodeSchema = z.enum([
     "PAYLOAD_TOO_LARGE",
     "PROGRESSION_CONFLICT",
     "PROGRESSION_STALE",
+    "IMPORT_NOT_REVERTIBLE",
+    "IMPORT_REVERT_BLOCKED",
     "JOB_FAILED",
     "INTERNAL_ERROR",
 ]);

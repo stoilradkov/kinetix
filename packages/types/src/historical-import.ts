@@ -623,3 +623,182 @@ export type HistoricalImportCommitCounts = z.infer<typeof historicalImportCommit
 export type HistoricalImportCommitEntity = z.infer<typeof historicalImportCommitEntitySchema>;
 export type HistoricalImportCommitFailure = z.infer<typeof historicalImportCommitFailureSchema>;
 export type HistoricalImportCommitResponse = z.infer<typeof historicalImportCommitResponseSchema>;
+
+// ---------------------------------------------------------------------------------------------
+// List and audit report (issue #60, HI6; design §14.7)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Lifecycle of a durable revert run (hoisted so the audit report can embed it). `pending`/`running` are
+ * in-flight, `succeeded` archived every import-owned aggregate, `failed` stopped on an archive error
+ * (resumable from its checkpoint), and `blocked` refused the whole revert because an aggregate was edited
+ * after the import — the safe, history-preserving outcome that archives nothing.
+ */
+export const historicalImportRevertStateSchema = z.enum(["pending", "running", "succeeded", "failed", "blocked"]);
+
+/**
+ * One row in the active profile's historical-import list. Projected from the durable commit-run record
+ * (never a live re-derivation), so listing is a cheap profile-scoped read: `programs`/`completedSessions`
+ * are counted from the run's committed checkpoint, and `reverted` reflects whether a succeeded revert run
+ * exists for the commit.
+ */
+export const historicalImportListItemSchema = z
+    .object({
+        commitId: z.string().uuid(),
+        dryRunId: z.string().uuid(),
+        importBatchId: z.string().uuid().nullable(),
+        state: historicalImportCommitStateSchema,
+        mode: z.enum(["create", "upsert"]),
+        source: z.object({ namespace: z.string(), generatedBy: z.string().nullable() }).strict(),
+        programs: z.number().int().nonnegative(),
+        completedSessions: z.number().int().nonnegative(),
+        attempts: z.number().int().nonnegative(),
+        reverted: z.boolean(),
+        createdAt: z.string(),
+        startedAt: z.string().nullable(),
+        completedAt: z.string().nullable(),
+    })
+    .strict();
+
+/** The active profile's historical imports, newest first (design §14.7; issue #60, HI6). */
+export const historicalImportListResponseSchema = z
+    .object({
+        items: z.array(historicalImportListItemSchema),
+        count: z.number().int().nonnegative(),
+    })
+    .strict();
+
+/**
+ * One audited import-owned entity: its caller `externalId` bound to the stored Kinetix `entityId`, plus
+ * the entity's current aggregate version and whether it is archived. `currentVersion` is `null` when the
+ * entity no longer resolves (deleted out-of-band). This is the external-ID → Kinetix-ID → revision trace
+ * the acceptance criteria require.
+ */
+export const historicalImportAuditEntitySchema = z
+    .object({
+        entityType: importEntityTypeSchema,
+        externalId: externalIdSchema,
+        entityId: z.string().uuid(),
+        currentVersion: z.number().int().positive().nullable(),
+        archived: z.boolean(),
+    })
+    .strict();
+
+/** A compact revert summary embedded in the audit report so `report` shows whether an import was reverted. */
+export const historicalImportRevertSummarySchema = z
+    .object({
+        revertId: z.string().uuid(),
+        state: historicalImportRevertStateSchema,
+        archived: z.number().int().nonnegative(),
+        blocked: z.number().int().nonnegative(),
+        completedAt: z.string().nullable(),
+    })
+    .strict();
+
+/**
+ * The immutable storage audit for one committed historical import (design §14.7; issue #60, HI6). It is a
+ * deterministic on-demand projection over already-immutable durable records — the commit run, the dry-run
+ * artifact (payload checksum, storage plan, warnings, affected versions), and the append-only external-ID
+ * registry — so it never mutates state and re-reads identically. It traces the canonical payload
+ * (`checksum`, `payloadId`) through the storage plan to every stored Kinetix entity and its current
+ * revision, records the created/updated/skipped/conflicted counts and any batch failure, and surfaces
+ * whether the import was later reverted.
+ */
+export const historicalImportReportResponseSchema = z
+    .object({
+        commitId: z.string().uuid(),
+        dryRunId: z.string().uuid(),
+        importBatchId: z.string().uuid().nullable(),
+        schemaVersion: z.literal(1),
+        source: z.object({ namespace: z.string(), generatedBy: z.string().nullable() }).strict(),
+        payloadId: z.string(),
+        checksum: z.string(),
+        mode: z.enum(["create", "upsert"]),
+        state: historicalImportCommitStateSchema,
+        programs: z.number().int().nonnegative(),
+        completedSessions: z.number().int().nonnegative(),
+        counts: historicalImportCommitCountsSchema,
+        storagePlan: storageReconciliationPlanSchema,
+        entities: z.array(historicalImportAuditEntitySchema),
+        affectedVersions: z.array(bulkAffectedVersionSchema),
+        warnings: z.array(planningWarningSchema),
+        failure: historicalImportCommitFailureSchema.nullable(),
+        revert: historicalImportRevertSummarySchema.nullable(),
+        createdAt: z.string(),
+        startedAt: z.string().nullable(),
+        completedAt: z.string().nullable(),
+    })
+    .strict();
+
+export type HistoricalImportListItem = z.infer<typeof historicalImportListItemSchema>;
+export type HistoricalImportListResponse = z.infer<typeof historicalImportListResponseSchema>;
+export type HistoricalImportAuditEntity = z.infer<typeof historicalImportAuditEntitySchema>;
+export type HistoricalImportRevertSummary = z.infer<typeof historicalImportRevertSummarySchema>;
+export type HistoricalImportReportResponse = z.infer<typeof historicalImportReportResponseSchema>;
+
+// ---------------------------------------------------------------------------------------------
+// Revert (issue #60, HI6; design §14.7)
+// ---------------------------------------------------------------------------------------------
+
+/** One aggregate the revert archived, with the version it was at when archived (history-preserving). */
+export const historicalImportRevertedEntitySchema = z
+    .object({
+        entityType: importEntityTypeSchema,
+        entityId: z.string().uuid(),
+        externalId: externalIdSchema,
+        version: z.number().int().positive(),
+    })
+    .strict();
+
+/**
+ * One aggregate that blocked the revert because it was edited (or restored) after the import — archiving
+ * it would overwrite a later user edit. `currentVersion` is its version now (`> 1`, or `null` if it no
+ * longer resolves); `reason` names why it is unsafe.
+ */
+export const historicalImportBlockedEntitySchema = z
+    .object({
+        entityType: importEntityTypeSchema,
+        entityId: z.string().uuid(),
+        externalId: externalIdSchema,
+        currentVersion: z.number().int().positive().nullable(),
+        reason: z.string(),
+    })
+    .strict();
+
+export const historicalImportRevertCountsSchema = z
+    .object({
+        archived: z.number().int().nonnegative(),
+        blocked: z.number().int().nonnegative(),
+        skipped: z.number().int().nonnegative(),
+    })
+    .strict();
+
+/**
+ * The durable revert run resource (design §14.7; issue #60, HI6). It is the result of
+ * `POST …/commits/:id/reverts` and the body of `GET …/commits/:id/reverts`, so start, resume, and status
+ * share one shape. A revert is keyed uniquely by its commit, so re-posting resumes or replays the same
+ * run rather than starting a second. On a `blocked` state `archivedEntities` is empty and
+ * `blockedEntities` lists what must be resolved first; on `failed` the path-anchored `failure` names the
+ * aggregate that stopped the compensation.
+ */
+export const historicalImportRevertResponseSchema = z
+    .object({
+        revertId: z.string().uuid(),
+        commitId: z.string().uuid(),
+        importBatchId: z.string().uuid().nullable(),
+        state: historicalImportRevertStateSchema,
+        counts: historicalImportRevertCountsSchema,
+        archivedEntities: z.array(historicalImportRevertedEntitySchema),
+        blockedEntities: z.array(historicalImportBlockedEntitySchema),
+        failure: historicalImportCommitFailureSchema.nullable(),
+        createdAt: z.string(),
+        startedAt: z.string().nullable(),
+        completedAt: z.string().nullable(),
+    })
+    .strict();
+
+export type HistoricalImportRevertState = z.infer<typeof historicalImportRevertStateSchema>;
+export type HistoricalImportRevertedEntity = z.infer<typeof historicalImportRevertedEntitySchema>;
+export type HistoricalImportBlockedEntity = z.infer<typeof historicalImportBlockedEntitySchema>;
+export type HistoricalImportRevertCounts = z.infer<typeof historicalImportRevertCountsSchema>;
+export type HistoricalImportRevertResponse = z.infer<typeof historicalImportRevertResponseSchema>;

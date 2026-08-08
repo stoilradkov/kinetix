@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 import { historicalImportCommits, type Database, type HistoricalImportCommitRow } from "@kinetix/db";
 
@@ -107,6 +107,15 @@ export class DrizzleHistoricalImportCommitRepository implements HistoricalImport
                 .limit(1)
         )[0];
         return row ? hydrate(row) : null;
+    }
+
+    async listByProfile(profileId: string, transaction?: unknown): Promise<readonly StoredHistoricalImportCommit[]> {
+        const rows = await this.executor(transaction)
+            .select()
+            .from(historicalImportCommits)
+            .where(eq(historicalImportCommits.profileId, profileId))
+            .orderBy(desc(historicalImportCommits.createdAt));
+        return rows.map(hydrate);
     }
 
     private executor(transaction: unknown): Database {

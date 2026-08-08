@@ -210,7 +210,7 @@ describe("kin training imports commit", () => {
         const request = vi.fn(async () => Response.json(failed));
         const program = createProgram({ fetch: request, output });
 
-        await program.parseAsync(["node", "kin", "training", "imports", "commit-status", "--id", commitId]);
+        await program.parseAsync(["node", "kin", "training", "imports", "status", "--id", commitId]);
 
         const [url, init] = request.mock.calls[0]!;
         expect(url).toContain(`/training/imports/commits/${commitId}`);
@@ -218,15 +218,187 @@ describe("kin training imports commit", () => {
         expect(output).toHaveBeenCalledWith("failure\tEXTERNAL_ID_CONFLICT\tcompletedSessions.0\talready exists");
     });
 
+    it("shows a commit run and its committed entities", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () => Response.json(commitResponse()));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync(["node", "kin", "training", "imports", "show", "--id", commitId]);
+
+        const [url, init] = request.mock.calls[0]!;
+        expect(url).toContain(`/training/imports/commits/${commitId}`);
+        expect(init?.method ?? "GET").toBe("GET");
+        expect(output).toHaveBeenCalledWith("entity\ttraining-session\tts-1\t0198a4db-d8da-7000-8000-0000000000a1");
+    });
+
     it("resumes a commit run via the retry endpoint", async () => {
         const output = vi.fn();
         const request = vi.fn(async () => Response.json(commitResponse()));
         const program = createProgram({ fetch: request, output });
 
-        await program.parseAsync(["node", "kin", "training", "imports", "commit-retry", "--id", commitId]);
+        await program.parseAsync(["node", "kin", "training", "imports", "retry", "--id", commitId]);
 
         const [url, init] = request.mock.calls[0]!;
         expect(url).toContain(`/training/imports/commits/${commitId}/retries`);
         expect(init?.method).toBe("POST");
+    });
+});
+
+function listResponse() {
+    return {
+        items: [
+            {
+                commitId,
+                dryRunId,
+                importBatchId: "0198a4db-d8da-7000-8000-0000000000e2",
+                state: "succeeded",
+                mode: "create",
+                source: { namespace: "coach-app", generatedBy: null },
+                programs: 1,
+                completedSessions: 2,
+                attempts: 1,
+                reverted: true,
+                createdAt: "2026-08-08T10:00:00.000Z",
+                startedAt: "2026-08-08T10:00:00.000Z",
+                completedAt: "2026-08-08T10:00:01.000Z",
+            },
+        ],
+        count: 1,
+    };
+}
+
+function reportResponse(overrides: Record<string, unknown> = {}) {
+    return {
+        commitId,
+        dryRunId,
+        importBatchId: "0198a4db-d8da-7000-8000-0000000000e2",
+        schemaVersion: 1,
+        source: { namespace: "coach-app", generatedBy: null },
+        payloadId: "archive-1",
+        checksum: "a".repeat(64),
+        mode: "create",
+        state: "succeeded",
+        programs: 1,
+        completedSessions: 1,
+        counts: { created: 4, updated: 0, skipped: 0, conflicted: 0 },
+        storagePlan: {
+            namespace: "coach-app",
+            mode: "create",
+            entries: [],
+            counts: { create: 4, update: 0, "skip-identical": 0, conflict: 0 },
+            conflicts: [],
+            hasConflicts: false,
+        },
+        entities: [
+            {
+                entityType: "program",
+                externalId: "prog-1",
+                entityId: "0198a4db-d8da-7000-8000-0000000000c1",
+                currentVersion: 1,
+                archived: false,
+            },
+        ],
+        affectedVersions: [],
+        warnings: [],
+        failure: null,
+        revert: null,
+        createdAt: "2026-08-08T10:00:00.000Z",
+        startedAt: "2026-08-08T10:00:00.000Z",
+        completedAt: "2026-08-08T10:00:01.000Z",
+        ...overrides,
+    };
+}
+
+function revertResponse(overrides: Record<string, unknown> = {}) {
+    return {
+        revertId: "0198a4db-d8da-7000-8000-0000000000f1",
+        commitId,
+        importBatchId: "0198a4db-d8da-7000-8000-0000000000e2",
+        state: "succeeded",
+        counts: { archived: 2, blocked: 0, skipped: 0 },
+        archivedEntities: [
+            {
+                entityType: "program",
+                entityId: "0198a4db-d8da-7000-8000-0000000000c1",
+                externalId: "prog-1",
+                version: 1,
+            },
+        ],
+        blockedEntities: [],
+        failure: null,
+        createdAt: "2026-08-09T10:00:00.000Z",
+        startedAt: "2026-08-09T10:00:00.000Z",
+        completedAt: "2026-08-09T10:00:01.000Z",
+        ...overrides,
+    };
+}
+
+describe("kin training imports list / report / revert", () => {
+    it("lists imports and flags a reverted one", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () => Response.json(listResponse()));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync(["node", "kin", "training", "imports", "list"]);
+
+        const [url, init] = request.mock.calls[0]!;
+        expect(url).toContain("/training/imports/commits");
+        expect(init?.method ?? "GET").toBe("GET");
+        expect(output).toHaveBeenCalledWith("imports\t1");
+        expect(output).toHaveBeenCalledWith(
+            `${commitId}\tsucceeded (reverted)\tprograms=1\tsessions=2\tcreated=2026-08-08T10:00:00.000Z`,
+        );
+    });
+
+    it("prints the immutable storage audit with the payload checksum and entity trace", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () => Response.json(reportResponse()));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync(["node", "kin", "training", "imports", "report", "--id", commitId]);
+
+        const [url] = request.mock.calls[0]!;
+        expect(url).toContain(`/training/imports/commits/${commitId}/report`);
+        expect(output).toHaveBeenCalledWith(`payload\tcoach-app\tarchive-1\tchecksum=${"a".repeat(64)}`);
+        expect(output).toHaveBeenCalledWith("entity\tprogram\tprog-1\t0198a4db-d8da-7000-8000-0000000000c1\tversion=1");
+    });
+
+    it("POSTs a revert and prints the archived entities", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () => Response.json(revertResponse()));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync(["node", "kin", "training", "imports", "revert", "--id", commitId]);
+
+        const [url, init] = request.mock.calls[0]!;
+        expect(url).toContain(`/training/imports/commits/${commitId}/reverts`);
+        expect(init?.method).toBe("POST");
+        expect(output).toHaveBeenCalledWith("counts\tarchived=2\tblocked=0\tskipped=0");
+        expect(output).toHaveBeenCalledWith("archived\tprogram\tprog-1\t0198a4db-d8da-7000-8000-0000000000c1");
+    });
+
+    it("prints the blocked aggregates when a revert is refused", async () => {
+        const output = vi.fn();
+        const blocked = revertResponse({
+            state: "blocked",
+            counts: { archived: 0, blocked: 1, skipped: 0 },
+            archivedEntities: [],
+            completedAt: null,
+            blockedEntities: [
+                {
+                    entityType: "training-session",
+                    entityId: "0198a4db-d8da-7000-8000-0000000000a1",
+                    externalId: "ts-1",
+                    currentVersion: 3,
+                    reason: "edited-after-import",
+                },
+            ],
+        });
+        const request = vi.fn(async () => Response.json(blocked));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync(["node", "kin", "training", "imports", "revert", "--id", commitId, "--json"]);
+
+        expect(output).toHaveBeenCalledWith(JSON.stringify(blocked));
     });
 });

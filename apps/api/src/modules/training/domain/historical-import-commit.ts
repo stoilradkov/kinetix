@@ -134,6 +134,24 @@ export function tallyCommitCounts(input: {
     };
 }
 
+/**
+ * Count how many program and completed-session aggregates a run has durably committed, straight from its
+ * checkpoint keys (design §14.7; issue #60, HI6). The key encodes the batch kind (`<kind>#<index>`), so a
+ * profile-scoped import list can report programs/sessions without re-loading the dry-run's storage plan.
+ */
+export function summarizeCommittedKinds(committedBatchKeys: readonly string[]): {
+    readonly programs: number;
+    readonly completedSessions: number;
+} {
+    let programs = 0;
+    let completedSessions = 0;
+    for (const key of committedBatchKeys) {
+        if (key.startsWith("program#")) programs += 1;
+        else if (key.startsWith("completed-session#")) completedSessions += 1;
+    }
+    return { programs, completedSessions };
+}
+
 /** The external-id entries a program batch registers, derived from the normalized program tree. */
 export interface CommitRegistration {
     readonly entityType: ImportEntityType;

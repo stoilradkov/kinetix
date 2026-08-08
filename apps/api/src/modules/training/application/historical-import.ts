@@ -8,6 +8,8 @@ import {
     DryRunStaleError,
     DryRunTokenInvalidError,
     IdempotencyInProgressError,
+    ImportNotRevertibleError,
+    ImportRevertBlockedError,
     hashRequest,
     type CommandContext,
     type UnitOfWork,
@@ -17,6 +19,7 @@ import {
     collectHistoricalStorageRequests,
     partitionCommitBatches,
     planCommitBatches,
+    summarizeCommittedKinds,
     tallyCommitCounts,
     validateHistoricalImportIdentities,
     type CommitBatch,
@@ -915,6 +918,8 @@ export interface HistoricalImportCommitRepository<Transaction = unknown> {
     lockById(id: string, profileId: string, transaction: Transaction): Promise<StoredHistoricalImportCommit | null>;
     insertIfAbsent(record: StoredHistoricalImportCommit, transaction: Transaction): Promise<boolean>;
     findById(id: string, profileId: string, transaction?: Transaction): Promise<StoredHistoricalImportCommit | null>;
+    /** Every commit run for the profile, newest first — the read side of `GET …/commits` (issue #60, HI6). */
+    listByProfile(profileId: string, transaction?: Transaction): Promise<readonly StoredHistoricalImportCommit[]>;
     save(record: StoredHistoricalImportCommit, transaction: Transaction): Promise<void>;
 }
 
@@ -1418,16 +1423,22 @@ export class CommitHistoricalImport<Transaction = unknown> {
 }
 
 /**
- * Read side of the commit surface: resolve a durable commit run's status/failure/counts for a status
- * poll (`GET …/commits/:id`). Scoped to the active profile; reuses the same result shape the commit
- * itself returns so start, status, and retry are indistinguishable to a caller.
+ * Read side of the commit surface (issue #59 status + issue #60 list/report). `findById` resolves a
+ * durable commit run's status/failure/counts for a poll (`GET …/commits/:id`); `list` projects every
+ * commit run for the profile (`GET …/commits`); `report` assembles the immutable storage audit
+ * (`GET …/commits/:id/report`); `revertStatus` reads a commit's revert run (`GET …/commits/:id/reverts`).
+ * Every read is a deterministic projection over already-immutable durable records — the commit run, the
+ * dry-run artifact, the append-only external-ID registry, and the revert run — and is scoped to the
+ * active profile.
  */
 export class HistoricalImportCommitQueryService {
     constructor(
         private readonly runtime: {
             readonly commits: HistoricalImportCommitRepository;
             readonly dryRuns: HistoricalImportDryRunRepository;
+            readonly reverts: HistoricalImportRevertRepository;
             readonly externalIds: Pick<BulkExternalIdRegistry, "listByBatch">;
+            readonly inspector: HistoricalImportEntityInspector;
             readonly profileReader: Pick<ProfileReader, "requireActiveProfileId">;
         },
     ) {}
@@ -1440,6 +1451,108 @@ export class HistoricalImportCommitQueryService {
         if (!dryRun) throw new HistoricalImportDryRunNotFoundError(commit.dryRunId);
         const entities = commit.importBatchId ? await this.runtime.externalIds.listByBatch(commit.importBatchId) : [];
         return assembleCommitResult(commit, dryRun, entities);
+    }
+
+    /** List every historical import (commit run) for the active profile, newest first (design §14.7). */
+    async list(): Promise<HistoricalImportListResult> {
+        const profileId = await this.runtime.profileReader.requireActiveProfileId();
+        const commits = await this.runtime.commits.listByProfile(profileId);
+        const reverts = await this.runtime.reverts.listByProfile(profileId);
+        const succeededReverts = new Set(
+            reverts.filter(revert => revert.state === "succeeded").map(revert => revert.commitId),
+        );
+        const items = commits.map(commit => {
+            const kinds = summarizeCommittedKinds(commit.committedBatchKeys);
+            return {
+                commitId: commit.id,
+                dryRunId: commit.dryRunId,
+                importBatchId: commit.importBatchId,
+                state: commit.state,
+                mode: commit.mode,
+                source: { namespace: commit.sourceNamespace, generatedBy: commit.sourceGeneratedBy },
+                programs: kinds.programs,
+                completedSessions: kinds.completedSessions,
+                attempts: commit.attempts,
+                reverted: succeededReverts.has(commit.id),
+                createdAt: commit.createdAt.toISOString(),
+                startedAt: commit.startedAt?.toISOString() ?? null,
+                completedAt: commit.completedAt?.toISOString() ?? null,
+            };
+        });
+        return { items, count: items.length };
+    }
+
+    /** Assemble the immutable storage audit for one committed historical import (design §14.7). */
+    async report(commitId: string): Promise<HistoricalImportReportResult> {
+        const profileId = await this.runtime.profileReader.requireActiveProfileId();
+        const commit = await this.runtime.commits.findById(commitId, profileId);
+        if (!commit) throw new HistoricalImportCommitNotFoundError(commitId);
+        const dryRun = await this.runtime.dryRuns.findById(commit.dryRunId);
+        if (!dryRun) throw new HistoricalImportDryRunNotFoundError(commit.dryRunId);
+        const mappings = commit.importBatchId ? await this.runtime.externalIds.listByBatch(commit.importBatchId) : [];
+
+        // Resolve each import-owned aggregate's current version/archived state — the "revisions" trace. Only
+        // versioned roots resolve; child entity types (blocks, occurrences, sets) are tracked under a root.
+        const entities: HistoricalImportAuditEntity[] = [];
+        for (const mapping of mappings) {
+            const state = isRevertibleEntityType(mapping.entityType)
+                ? await this.runtime.inspector.inspect(mapping.entityType, mapping.entityId)
+                : null;
+            entities.push({
+                entityType: mapping.entityType,
+                externalId: mapping.externalId,
+                entityId: mapping.entityId,
+                currentVersion: state?.version ?? null,
+                archived: state?.archived ?? false,
+            });
+        }
+
+        const revert = await this.runtime.reverts.findByCommitId(commitId, profileId);
+        const commitResult = assembleCommitResult(commit, dryRun, mappings);
+        return {
+            commitId: commit.id,
+            dryRunId: commit.dryRunId,
+            importBatchId: commit.importBatchId,
+            schemaVersion: 1,
+            source: { namespace: dryRun.sourceNamespace, generatedBy: dryRun.sourceGeneratedBy },
+            payloadId: dryRun.payloadId,
+            checksum: dryRun.checksum,
+            mode: commit.mode,
+            state: commit.state,
+            programs: commitResult.programs,
+            completedSessions: commitResult.completedSessions,
+            counts: commitResult.counts,
+            storagePlan: dryRun.storagePlan,
+            entities,
+            affectedVersions: [...dryRun.affectedVersions],
+            warnings: [...dryRun.warnings],
+            failure: commit.failure,
+            revert: revert
+                ? {
+                      revertId: revert.id,
+                      state: revert.state,
+                      archived: revert.archivedEntities.length,
+                      blocked: revert.blockedEntities.length,
+                      completedAt: revert.completedAt?.toISOString() ?? null,
+                  }
+                : null,
+            createdAt: commit.createdAt.toISOString(),
+            startedAt: commit.startedAt?.toISOString() ?? null,
+            completedAt: commit.completedAt?.toISOString() ?? null,
+        };
+    }
+
+    /** Read the durable revert run for a commit (`GET …/commits/:id/reverts`); 404 if none exists yet. */
+    async revertStatus(commitId: string): Promise<HistoricalImportRevertResult> {
+        const profileId = await this.runtime.profileReader.requireActiveProfileId();
+        const commit = await this.runtime.commits.findById(commitId, profileId);
+        if (!commit) throw new HistoricalImportCommitNotFoundError(commitId);
+        const revert = await this.runtime.reverts.findByCommitId(commitId, profileId);
+        if (!revert) throw new HistoricalImportRevertNotFoundError(commitId);
+        const total = commit.importBatchId
+            ? countRevertibleEntities(await this.runtime.externalIds.listByBatch(commit.importBatchId))
+            : 0;
+        return assembleRevertResult(revert, total);
     }
 }
 
@@ -1513,4 +1626,478 @@ function slugify(name: string): string {
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "");
     return slug.length > 0 ? slug : "exercise";
+}
+
+// =============================================================================================
+// List / audit report result types (issue #60, HI6; design §14.7)
+// =============================================================================================
+
+/** One row of the profile's historical-import list — projected from a durable commit run. */
+export interface HistoricalImportListItem {
+    readonly commitId: string;
+    readonly dryRunId: string;
+    readonly importBatchId: string | null;
+    readonly state: HistoricalImportCommitState;
+    readonly mode: "create" | "upsert";
+    readonly source: { readonly namespace: string; readonly generatedBy: string | null };
+    readonly programs: number;
+    readonly completedSessions: number;
+    readonly attempts: number;
+    readonly reverted: boolean;
+    readonly createdAt: string;
+    readonly startedAt: string | null;
+    readonly completedAt: string | null;
+}
+
+export interface HistoricalImportListResult {
+    readonly items: readonly HistoricalImportListItem[];
+    readonly count: number;
+}
+
+/** One audited import-owned entity: caller external id → stored Kinetix id + current revision/archived. */
+export interface HistoricalImportAuditEntity {
+    readonly entityType: ImportEntityType;
+    readonly externalId: string;
+    readonly entityId: string;
+    readonly currentVersion: number | null;
+    readonly archived: boolean;
+}
+
+export interface HistoricalImportReportResult {
+    readonly commitId: string;
+    readonly dryRunId: string;
+    readonly importBatchId: string | null;
+    readonly schemaVersion: 1;
+    readonly source: { readonly namespace: string; readonly generatedBy: string | null };
+    readonly payloadId: string;
+    readonly checksum: string;
+    readonly mode: "create" | "upsert";
+    readonly state: HistoricalImportCommitState;
+    readonly programs: number;
+    readonly completedSessions: number;
+    readonly counts: CommitCounts;
+    readonly storagePlan: StorageReconciliationPlan;
+    readonly entities: readonly HistoricalImportAuditEntity[];
+    readonly affectedVersions: readonly BulkAffectedVersion[];
+    readonly warnings: readonly PlanningWarning[];
+    readonly failure: HistoricalImportCommitFailure | null;
+    readonly revert: {
+        readonly revertId: string;
+        readonly state: HistoricalImportRevertState;
+        readonly archived: number;
+        readonly blocked: number;
+        readonly completedAt: string | null;
+    } | null;
+    readonly createdAt: string;
+    readonly startedAt: string | null;
+    readonly completedAt: string | null;
+}
+
+// =============================================================================================
+// Revert (issue #60, HI6; design §14.7)
+// =============================================================================================
+
+export const HISTORICAL_IMPORT_REVERT_REPOSITORY = Symbol("HISTORICAL_IMPORT_REVERT_REPOSITORY");
+export const HISTORICAL_IMPORT_ENTITY_INSPECTOR = Symbol("HISTORICAL_IMPORT_ENTITY_INSPECTOR");
+export const REVERT_HISTORICAL_IMPORT = Symbol("REVERT_HISTORICAL_IMPORT");
+
+/** Lifecycle of a durable revert run (mirrors the wire `historicalImportRevertStateSchema`). */
+export type HistoricalImportRevertState = "pending" | "running" | "succeeded" | "failed" | "blocked";
+
+/** The three import-owned aggregate roots a revert compensates; child rows are owned by their root. */
+export const REVERTIBLE_ENTITY_TYPES = ["program", "planned-session", "training-session"] as const;
+export type RevertibleEntityType = (typeof REVERTIBLE_ENTITY_TYPES)[number];
+
+function isRevertibleEntityType(entityType: ImportEntityType): entityType is RevertibleEntityType {
+    return (REVERTIBLE_ENTITY_TYPES as readonly string[]).includes(entityType);
+}
+
+/** One aggregate the revert archived, with the version it held when archived (history-preserving). */
+export interface HistoricalImportRevertedEntity {
+    readonly entityType: RevertibleEntityType;
+    readonly entityId: string;
+    readonly externalId: string;
+    readonly version: number;
+}
+
+/** One aggregate that blocked the revert because it was edited after the import. */
+export interface HistoricalImportBlockedEntity {
+    readonly entityType: RevertibleEntityType;
+    readonly entityId: string;
+    readonly externalId: string;
+    readonly currentVersion: number | null;
+    readonly reason: string;
+}
+
+/**
+ * The durable revert-run record — the source of truth for revert status, idempotent replay, and resume.
+ * Keyed by `commitId` (a commit is reverted by exactly one run), it persists the archived-entity
+ * checkpoint (so a resumed run never re-archives), the blocked entities that refused the revert, attempt
+ * count, and a path-anchored failure. Written in the same transaction as each aggregate it archives.
+ */
+export interface StoredHistoricalImportRevert {
+    readonly id: string;
+    readonly commitId: string;
+    readonly dryRunId: string;
+    readonly profileId: string;
+    readonly importBatchId: string | null;
+    readonly state: HistoricalImportRevertState;
+    readonly archivedEntities: readonly HistoricalImportRevertedEntity[];
+    readonly blockedEntities: readonly HistoricalImportBlockedEntity[];
+    readonly attempts: number;
+    readonly failure: HistoricalImportCommitFailure | null;
+    readonly createdAt: Date;
+    readonly startedAt: Date | null;
+    readonly completedAt: Date | null;
+    readonly updatedAt: Date;
+}
+
+export interface HistoricalImportRevertCounts {
+    readonly archived: number;
+    readonly blocked: number;
+    readonly skipped: number;
+}
+
+export interface HistoricalImportRevertResult {
+    readonly revertId: string;
+    readonly commitId: string;
+    readonly importBatchId: string | null;
+    readonly state: HistoricalImportRevertState;
+    readonly counts: HistoricalImportRevertCounts;
+    readonly archivedEntities: readonly HistoricalImportRevertedEntity[];
+    readonly blockedEntities: readonly HistoricalImportBlockedEntity[];
+    readonly failure: HistoricalImportCommitFailure | null;
+    readonly createdAt: string;
+    readonly startedAt: string | null;
+    readonly completedAt: string | null;
+}
+
+/** The current version + archived flag of an import-owned aggregate, or `null` if it no longer resolves. */
+export interface ImportedEntityState {
+    readonly version: number;
+    readonly archived: boolean;
+}
+
+/**
+ * Read the current state of an import-owned aggregate root by its Kinetix id (design §14.7, HI6). Used to
+ * detect post-import edits before a revert (a version `> 1` means the aggregate was edited or restored
+ * since the import created it at version 1) and to trace current revisions in the audit report. Returns
+ * `null` when the entity no longer resolves. No raw SQL in the use case (ADR 0003).
+ */
+export interface HistoricalImportEntityInspector<Transaction = unknown> {
+    inspect(
+        entityType: RevertibleEntityType,
+        entityId: string,
+        transaction?: Transaction,
+    ): Promise<ImportedEntityState | null>;
+}
+
+/**
+ * Persistence port over the durable revert-run store. `lockByCommitId` serializes concurrent reverts of
+ * the same commit (SELECT … FOR UPDATE); `insertIfAbsent` (INSERT … ON CONFLICT (commit_id) DO NOTHING)
+ * converges concurrent first-time starts on one run; `save` rewrites the mutable lifecycle fields.
+ * Identity is fixed at insert. No raw SQL in the use case (ADR 0003).
+ */
+export interface HistoricalImportRevertRepository<Transaction = unknown> {
+    lockByCommitId(
+        commitId: string,
+        profileId: string,
+        transaction: Transaction,
+    ): Promise<StoredHistoricalImportRevert | null>;
+    insertIfAbsent(record: StoredHistoricalImportRevert, transaction: Transaction): Promise<boolean>;
+    findByCommitId(
+        commitId: string,
+        profileId: string,
+        transaction?: Transaction,
+    ): Promise<StoredHistoricalImportRevert | null>;
+    listByProfile(profileId: string, transaction?: Transaction): Promise<readonly StoredHistoricalImportRevert[]>;
+    save(record: StoredHistoricalImportRevert, transaction: Transaction): Promise<void>;
+}
+
+/** A revert-status read against a commit that was never reverted. */
+export class HistoricalImportRevertNotFoundError extends ApplicationNotFoundError {
+    constructor(readonly commitId: string) {
+        super(`Historical import commit ${commitId} has not been reverted`, { commitId });
+        this.name = "HistoricalImportRevertNotFoundError";
+    }
+}
+
+interface RevertRuntime<Transaction> {
+    readonly unitOfWork: UnitOfWork<Transaction>;
+    readonly commits: HistoricalImportCommitRepository<Transaction>;
+    readonly reverts: HistoricalImportRevertRepository<Transaction>;
+    readonly externalIds: Pick<BulkExternalIdRegistry<Transaction>, "listByBatch">;
+    readonly inspector: HistoricalImportEntityInspector<Transaction>;
+    readonly programCommands: Pick<ProgramCommands<Transaction>, "archive">;
+    readonly plannedSessions: Pick<PlannedSessionCommands<Transaction>, "archive">;
+    readonly trainingSessions: Pick<TrainingSessionCommands<Transaction>, "archive">;
+    readonly profileReader: Pick<ProfileReader, "requireActiveProfileId">;
+    readonly clock?: Clock;
+    readonly generateId?: () => string;
+}
+
+/**
+ * Revert a committed historical import by scoped, history-preserving compensation (design §14.7; issue
+ * #60, HI6). A revert undoes only the import's own writes — the program, planned-session, and
+ * training-session aggregates the commit created — by **archiving** them through the ordinary aggregate
+ * archive commands, so history is preserved (an archived aggregate is restorable) and nothing is
+ * hard-deleted. It never touches unrelated data or the shared exercise catalog.
+ *
+ * Safety is absolute: before archiving anything, the revert inspects every import-owned aggregate. Import
+ * creates each at version 1, so a current version `> 1` means the user edited (or restored) it after the
+ * import — archiving it would overwrite that later edit. If **any** aggregate was edited, the whole revert
+ * is refused ({@link ImportRevertBlockedError}) with the offending aggregates listed and nothing archived.
+ *
+ * Like the commit, the revert is durable, idempotent, and resumable: it is keyed uniquely by `commitId`,
+ * archives each aggregate in its own transaction, and checkpoints the archived entity before moving on, so
+ * an interruption resumes from exactly the aggregates still to archive and a replay returns the same run.
+ */
+export class RevertHistoricalImport<Transaction = unknown> {
+    private readonly clock: Clock;
+    private readonly generateId: () => string;
+
+    constructor(private readonly runtime: RevertRuntime<Transaction>) {
+        this.clock = runtime.clock ?? { now: () => new Date() };
+        this.generateId =
+            runtime.generateId ??
+            (() => {
+                throw new Error("Historical import revert ID generation is not configured");
+            });
+    }
+
+    /** Start (or resume/replay) the scoped revert of a committed historical import. */
+    async execute(commitId: string, metadata: CommandContext): Promise<HistoricalImportRevertResult> {
+        const profileId = await this.runtime.profileReader.requireActiveProfileId();
+        const claim = await this.claim(commitId, profileId);
+        if (claim.done) {
+            const total = countRevertibleEntities(await this.listBatchEntities(claim.commit));
+            return assembleRevertResult(claim.revert, total);
+        }
+        return this.run(claim.revert, claim.commit, metadata);
+    }
+
+    // ---- Gate + claim (one transaction) --------------------------------------------------------
+
+    private claim(
+        commitId: string,
+        profileId: string,
+    ): Promise<{ revert: StoredHistoricalImportRevert; commit: StoredHistoricalImportCommit; done: boolean }> {
+        return this.runtime.unitOfWork.execute(async transaction => {
+            const commit = await this.runtime.commits.lockById(commitId, profileId, transaction);
+            if (!commit) throw new HistoricalImportCommitNotFoundError(commitId);
+            if (commit.state !== "succeeded") throw new ImportNotRevertibleError(commitId, commit.state);
+
+            let revert = await this.runtime.reverts.lockByCommitId(commitId, profileId, transaction);
+            if (revert?.state === "succeeded") return { revert, commit, done: true };
+            if (revert?.state === "running") throw new IdempotencyInProgressError("training.imports.revert", commitId);
+
+            const now = this.clock.now();
+            if (!revert) {
+                const record = this.newRecord(commit, profileId, now);
+                const inserted = await this.runtime.reverts.insertIfAbsent(record, transaction);
+                revert = inserted
+                    ? record
+                    : await this.runtime.reverts.lockByCommitId(commitId, profileId, transaction);
+                if (!revert) throw new HistoricalImportRevertNotFoundError(commitId);
+                if (revert.state === "succeeded") return { revert, commit, done: true };
+                if (revert.state === "running")
+                    throw new IdempotencyInProgressError("training.imports.revert", commitId);
+            }
+
+            const running: StoredHistoricalImportRevert = {
+                ...revert,
+                importBatchId: commit.importBatchId,
+                state: "running",
+                attempts: revert.attempts + 1,
+                startedAt: revert.startedAt ?? now,
+                failure: null,
+                updatedAt: now,
+            };
+            await this.runtime.reverts.save(running, transaction);
+            return { revert: running, commit, done: false };
+        });
+    }
+
+    // ---- Compensation (one transaction per archived aggregate) ---------------------------------
+
+    private async run(
+        revert: StoredHistoricalImportRevert,
+        commit: StoredHistoricalImportCommit,
+        metadata: CommandContext,
+    ): Promise<HistoricalImportRevertResult> {
+        const writeMeta: CommandContext = { ...metadata, source: "import" };
+        const reason = `historical-import-revert:${commit.id}`;
+        const mappings = await this.listBatchEntities(commit);
+        const total = countRevertibleEntities(mappings);
+
+        // Skip aggregates a prior attempt already archived (the durable checkpoint).
+        const archivedIds = new Set(revert.archivedEntities.map(entity => entity.entityId));
+        const targets = mappings
+            .filter(mapping => isRevertibleEntityType(mapping.entityType) && !archivedIds.has(mapping.entityId))
+            .map(mapping => ({ ...mapping, entityType: mapping.entityType as RevertibleEntityType }));
+
+        // Inspect every remaining aggregate before archiving any: a version > 1 means a post-import edit.
+        const pending: { mapping: (typeof targets)[number]; version: number }[] = [];
+        const blocked: HistoricalImportBlockedEntity[] = [];
+        for (const mapping of targets) {
+            const state = await this.runtime.inspector.inspect(mapping.entityType, mapping.entityId);
+            if (state === null || state.archived) continue; // already gone/archived out-of-band → skip
+            if (state.version > 1) {
+                blocked.push({
+                    entityType: mapping.entityType,
+                    entityId: mapping.entityId,
+                    externalId: mapping.externalId,
+                    currentVersion: state.version,
+                    reason: "edited-after-import",
+                });
+                continue;
+            }
+            pending.push({ mapping, version: state.version });
+        }
+
+        if (blocked.length > 0) {
+            const now = this.clock.now();
+            revert = { ...revert, state: "blocked", blockedEntities: blocked, updatedAt: now };
+            await this.runtime.unitOfWork.execute(transaction => this.runtime.reverts.save(revert, transaction));
+            throw new ImportRevertBlockedError(
+                commit.id,
+                blocked.map(entry => ({ entityType: entry.entityType, entityId: entry.entityId })),
+            );
+        }
+
+        // Archive innermost-first (training sessions, then planned sessions, then programs) so a program's
+        // membership links are never dangling before its sessions are archived.
+        pending.sort((a, b) => archiveRank(a.mapping.entityType) - archiveRank(b.mapping.entityType));
+
+        const archived = [...revert.archivedEntities];
+        for (const { mapping, version } of pending) {
+            try {
+                await this.runtime.unitOfWork.execute(async transaction => {
+                    await this.archiveEntity(
+                        mapping.entityType,
+                        mapping.entityId,
+                        version,
+                        reason,
+                        writeMeta,
+                        transaction,
+                    );
+                    archived.push({
+                        entityType: mapping.entityType,
+                        entityId: mapping.entityId,
+                        externalId: mapping.externalId,
+                        version,
+                    });
+                    revert = { ...revert, archivedEntities: [...archived], updatedAt: this.clock.now() };
+                    await this.runtime.reverts.save(revert, transaction);
+                });
+            } catch (error) {
+                const failure = failureForRevert(mapping, error);
+                const now = this.clock.now();
+                revert = { ...revert, state: "failed", failure, updatedAt: now };
+                await this.runtime.unitOfWork.execute(transaction => this.runtime.reverts.save(revert, transaction));
+                throw new HistoricalImportCommitFailedError(revert.id, failure);
+            }
+        }
+
+        const completedAt = this.clock.now();
+        revert = { ...revert, state: "succeeded", blockedEntities: [], completedAt, updatedAt: completedAt };
+        await this.runtime.unitOfWork.execute(transaction => this.runtime.reverts.save(revert, transaction));
+        return assembleRevertResult(revert, total);
+    }
+
+    private async archiveEntity(
+        entityType: RevertibleEntityType,
+        entityId: string,
+        version: number,
+        reason: string,
+        writeMeta: CommandContext,
+        transaction: Transaction,
+    ): Promise<void> {
+        const meta = { ...writeMeta, reason };
+        if (entityType === "program") await this.runtime.programCommands.archive(entityId, version, meta, transaction);
+        else if (entityType === "planned-session")
+            await this.runtime.plannedSessions.archive(entityId, version, meta, transaction);
+        else await this.runtime.trainingSessions.archive(entityId, version, meta, transaction);
+    }
+
+    private listBatchEntities(commit: StoredHistoricalImportCommit): Promise<readonly BulkExternalIdMapping[]> {
+        return commit.importBatchId ? this.runtime.externalIds.listByBatch(commit.importBatchId) : Promise.resolve([]);
+    }
+
+    private newRecord(
+        commit: StoredHistoricalImportCommit,
+        profileId: string,
+        now: Date,
+    ): StoredHistoricalImportRevert {
+        return {
+            id: this.generateId(),
+            commitId: commit.id,
+            dryRunId: commit.dryRunId,
+            profileId,
+            importBatchId: commit.importBatchId,
+            state: "pending",
+            archivedEntities: [],
+            blockedEntities: [],
+            attempts: 0,
+            failure: null,
+            createdAt: now,
+            startedAt: null,
+            completedAt: null,
+            updatedAt: now,
+        };
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Revert helpers
+// ---------------------------------------------------------------------------------------------
+
+/** Archive order rank: training sessions first, then planned sessions, then programs. */
+function archiveRank(entityType: RevertibleEntityType): number {
+    if (entityType === "training-session") return 0;
+    if (entityType === "planned-session") return 1;
+    return 2;
+}
+
+function countRevertibleEntities(mappings: readonly BulkExternalIdMapping[]): number {
+    return mappings.filter(mapping => isRevertibleEntityType(mapping.entityType)).length;
+}
+
+function assembleRevertResult(
+    revert: StoredHistoricalImportRevert,
+    totalRevertible: number,
+): HistoricalImportRevertResult {
+    const archived = revert.archivedEntities.length;
+    const blocked = revert.blockedEntities.length;
+    return {
+        revertId: revert.id,
+        commitId: revert.commitId,
+        importBatchId: revert.importBatchId,
+        state: revert.state,
+        counts: { archived, blocked, skipped: Math.max(0, totalRevertible - archived - blocked) },
+        archivedEntities: [...revert.archivedEntities],
+        blockedEntities: [...revert.blockedEntities],
+        failure: revert.failure,
+        createdAt: revert.createdAt.toISOString(),
+        startedAt: revert.startedAt?.toISOString() ?? null,
+        completedAt: revert.completedAt?.toISOString() ?? null,
+    };
+}
+
+/** Classify an archive failure into a path-anchored, machine-readable failure record (design §14.7). */
+function failureForRevert(mapping: BulkExternalIdMapping, error: unknown): HistoricalImportCommitFailure {
+    const message = error instanceof Error ? error.message : "Revert archive failed";
+    const code =
+        error instanceof ApplicationError
+            ? error.code
+            : error && typeof error === "object" && "code" in error && typeof error.code === "string"
+              ? error.code
+              : "INTERNAL_ERROR";
+    return {
+        path: ["reverts", mapping.entityType, mapping.externalId],
+        code,
+        message,
+        entityType: mapping.entityType,
+        externalId: mapping.externalId,
+    };
 }
