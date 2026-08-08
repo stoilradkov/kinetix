@@ -1036,11 +1036,12 @@ endpoints.
 
 **Scope (create-mode MVP, matching 14.3).** Fresh entities are created and their external IDs registered
 for safe retries; upsert commits `create` at this increment (external-ID uniqueness rejects duplicates
-rather than silently duplicating). Field-level upsert of pre-existing aggregates and planned↔actual
-mapping persistence require the dry-run to carry per-field diffs / normalized mappings and are a later
-increment. Because the commit checkpoints each aggregate independently and can resume, `WORKERS_ENABLED`
-and the durable job queue (ADR 0004) are not required for it; the run executes inline but is fully
-durable and idempotent through its own record.
+rather than silently duplicating). Explicit planned↔actual mappings in the approved dry-run are resolved
+to immutable prescription and performed-work row IDs, persisted with each completed session, and used to
+recompute the linked planned-session outcome. Field-level upsert of pre-existing aggregates remains a
+later increment. Because the commit checkpoints each aggregate independently and can resume,
+`WORKERS_ENABLED` and the durable job queue (ADR 0004) are not required for it; the run executes inline
+but is fully durable and idempotent through its own record.
 
 ### 14.8 Historical import delivery, audit, and revert
 
@@ -1069,8 +1070,10 @@ training-session aggregates it created — by **archiving** them through the ord
 commands, so every archived aggregate is restorable and nothing is hard-deleted; it never touches unrelated
 data or the shared exercise catalog. Safety is absolute and pre-checked: the import creates each aggregate
 at version 1, so a current version `> 1` means a later user edit or restore, and if **any** import-owned
-aggregate was edited the whole revert is refused (`IMPORT_REVERT_BLOCKED`, 409) with the offending
-aggregates listed and nothing archived — a revert can never overwrite a later edit. Like the commit, the
+aggregate has any post-creation revision not owned by the import workflow, the whole revert is refused
+(`IMPORT_REVERT_BLOCKED`, 409) with the offending aggregates listed and nothing archived. Import-owned
+follow-up revisions such as planned-outcome recomputation remain revertible, while a revert can never
+overwrite a later user, agent, system, or restore edit. Like the commit, the
 revert is durable, idempotent, and resumable: it is keyed uniquely by `commit_id` on
 `historical_import_reverts` (migration 0030), archives each aggregate in its own transaction, and
 checkpoints the archived entity, so an interruption resumes from exactly the aggregates still to archive.

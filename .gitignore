@@ -6,6 +6,9 @@ coverage/
 .DS_Store
 *.log
 
+# Local historical-import sources and generated personal data. Never commit these.
+.local/
+
 .env
 .env.*
 !.env.example

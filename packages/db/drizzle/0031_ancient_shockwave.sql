@@ -1,0 +1,1 @@
+CREATE INDEX "training_sessions_list_idx" ON "training_sessions" USING btree ("local_date","id");

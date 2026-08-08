@@ -12,6 +12,7 @@ import {
 } from "#src/modules/training/application/index";
 import {
     SessionPrescription,
+    TrainingSession,
     type ExerciseSnapshotV1,
     type PlannedActualOutcome,
     type PublishPrescriptionDraft,
@@ -170,6 +171,88 @@ describe("training session planning services", () => {
         const completed = await fixture.repository.readSession(started.id as EntityId);
         await fixture.commands.reopen(completed!.id, completed!.version, metadata);
         expect(fixture.recompute.at(-1)).toEqual({ plannedSessionId: PLANNED, outcome: "partially_completed" });
+    });
+
+    it("recomputes the linked plan when a completed historical session is committed", async () => {
+        const planned = plannedPrescription({ loadKgMin: "60", loadKgMax: "60" });
+        const fixture = createFixture(planned);
+        const prescribedActivity = planned.activities[0]!;
+        const prescribedExercise = prescribedActivity.strength!.exercises[0]!;
+        const prescribedSet = prescribedExercise.sets[0]!;
+        const imported = TrainingSession.create(
+            {
+                id: id(0x500),
+                profileId: PROFILE,
+                localDate: "2024-03-04",
+                timeZone: "Europe/Sofia",
+                sourcePlannedSessionId: PLANNED,
+                activities: [
+                    {
+                        id: ACTIVITY,
+                        type: "strength",
+                        position: 0,
+                        strength: {
+                            occurrences: [
+                                {
+                                    id: OCCURRENCE,
+                                    exerciseId: SQUAT,
+                                    snapshot: snapshot(),
+                                    position: 0,
+                                    performedSets: [
+                                        {
+                                            id: SET,
+                                            position: 0,
+                                            setType: "working",
+                                            status: "completed",
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                ],
+                mappings: {
+                    plannedLinks: [
+                        {
+                            plannedSessionId: PLANNED,
+                            sourcePrescriptionId: planned.id,
+                            resolvedPrescriptionId: planned.id,
+                        },
+                    ],
+                    activityMappings: [
+                        {
+                            id: id(0x501),
+                            prescribedActivityId: prescribedActivity.id,
+                            actualActivityId: ACTIVITY,
+                            relation: "matched",
+                        },
+                    ],
+                    occurrenceMappings: [
+                        {
+                            id: id(0x502),
+                            prescribedExerciseId: prescribedExercise.id,
+                            occurrenceId: OCCURRENCE,
+                            relation: "matched",
+                        },
+                    ],
+                    setMappings: [
+                        {
+                            id: id(0x503),
+                            prescribedSetId: prescribedSet.id,
+                            performedSetId: SET,
+                            relation: "matched",
+                        },
+                    ],
+                },
+            },
+            now,
+        )
+            .start(now)
+            .complete({}, now).state;
+
+        await fixture.commands.commitPreparedState(imported, { ...metadata, source: "import" }, transaction);
+
+        expect(fixture.recompute).toEqual([{ plannedSessionId: PLANNED, outcome: "completed" }]);
     });
 });
 

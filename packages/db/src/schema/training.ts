@@ -1511,8 +1511,8 @@ export const trainingSessions = pgTable(
         postNotes: text("post_notes"),
         notes: text("notes"),
         tags: jsonb("tags").$type<string[]>().notNull().default([]),
-        // Nullable link to the originating planned session. The full planned/actual mapping tree
-        // (design 11.4) is introduced by a later issue, so this is not a foreign key yet.
+        // Nullable convenience link to the originating planned session. The normalized mapping tables
+        // below hold the immutable prescription-row and performed-work relationships (design 11.4).
         sourcePlannedSessionId: uuid("source_planned_session_id"),
         version: integer("version").notNull().default(1),
         archivedAt: timestamp("archived_at", { withTimezone: true }),
@@ -1552,6 +1552,9 @@ export const trainingSessions = pgTable(
         index("training_sessions_profile_idx").on(table.profileId, table.status),
         index("training_sessions_date_idx").on(table.profileId, table.localDate),
         index("training_sessions_active_idx").on(table.profileId, table.archivedAt),
+        // Backs the newest-first keyset list ordering `(local_date DESC, id DESC)` and its cursor
+        // predicate (UX1); a plain btree on the pair is scanned backward for the descending page.
+        index("training_sessions_list_idx").on(table.localDate, table.id),
     ],
 );
 

@@ -573,6 +573,64 @@ export interface BulkProgramNormalizeOptions {
     /** The payload location this program sits at, so errors/mappings anchor correctly (e.g. `["program"]`). */
     readonly basePath: readonly (string | number)[];
     readonly createMissingExercises: boolean;
+    readonly proposedExerciseRegistry?: ProposedExerciseRegistry;
+}
+
+interface RegisteredProposedExercise {
+    readonly definitionFingerprint: string;
+    readonly snapshot: ExerciseSnapshotV1;
+    readonly preview: BulkProposedExercisePreview;
+    readonly firstPath: readonly (string | number)[];
+}
+
+export type ProposedExerciseRegistration =
+    | {
+          readonly status: "created";
+          readonly snapshot: ExerciseSnapshotV1;
+          readonly preview: BulkProposedExercisePreview;
+      }
+    | { readonly status: "reused"; readonly snapshot: ExerciseSnapshotV1 }
+    | { readonly status: "conflict"; readonly identity: string; readonly firstPath: readonly (string | number)[] };
+
+/**
+ * Payload-scoped registry for not-yet-catalogued exercises. A canonical proposed slug is minted once
+ * and reused by every program/session occurrence; conflicting definitions are rejected deterministically.
+ */
+export class ProposedExerciseRegistry {
+    private readonly entries = new Map<string, RegisteredProposedExercise>();
+
+    constructor(private readonly generateId: () => string) {}
+
+    register(
+        proposed: BulkProposedExercise,
+        provenance: { readonly exerciseRef: string; readonly sessionExternalId: string },
+        path: readonly (string | number)[],
+        now: Date,
+    ): ProposedExerciseRegistration {
+        const identity = proposed.slug ?? slugify(proposed.name);
+        const definitionFingerprint = hashRequest(canonicalProposedExercise(proposed, identity));
+        const existing = this.entries.get(identity);
+        if (existing) {
+            if (existing.definitionFingerprint !== definitionFingerprint)
+                return { status: "conflict", identity, firstPath: existing.firstPath };
+            return { status: "reused", snapshot: existing.snapshot };
+        }
+
+        const snapshot = proposeExerciseSnapshot({ ...proposed, slug: identity }, this.generateId, now);
+        const preview: BulkProposedExercisePreview = {
+            exerciseId: snapshot.exerciseId,
+            exerciseRef: provenance.exerciseRef,
+            sessionExternalId: provenance.sessionExternalId,
+            definition: { ...proposed, slug: identity },
+        };
+        this.entries.set(identity, {
+            definitionFingerprint,
+            snapshot,
+            preview,
+            firstPath: [...path],
+        });
+        return { status: "created", snapshot, preview };
+    }
 }
 
 /**
@@ -611,6 +669,8 @@ export class BulkProgramNormalizer {
         const mappings: BulkExerciseMapping[] = [];
         const proposedExercises: BulkProposedExercisePreview[] = [];
         const affected = new Map<string, BulkAffectedVersion>();
+        const proposedExerciseRegistry =
+            options.proposedExerciseRegistry ?? new ProposedExerciseRegistry(this.generateId);
 
         // ---- Resolve every exercise reference across all sessions (design 14.2 step 4-5) -----
         const resolutionBySession = new Map<string, SessionResolution>();
@@ -635,7 +695,7 @@ export class BulkProgramNormalizer {
                         path,
                         options.createMissingExercises,
                         now,
-                        { errors, mappings, proposedExercises, affected },
+                        { errors, mappings, proposedExercises, affected, proposedExerciseRegistry },
                     );
                     if (resolved) perRef.set(exercise.ref, resolved);
                 }
@@ -732,6 +792,7 @@ export class BulkProgramNormalizer {
             mappings: BulkExerciseMapping[];
             proposedExercises: BulkProposedExercisePreview[];
             affected: Map<string, BulkAffectedVersion>;
+            proposedExerciseRegistry: ProposedExerciseRegistry;
         },
     ): Promise<ResolvedRef | null> {
         const typedExercise = exercise;
@@ -748,14 +809,22 @@ export class BulkProgramNormalizer {
         // Missing and the caller asked to create it with an explicit definition → propose it (BI-5).
         if (resolution.status === "missing" && createMissing && typedExercise.proposed) {
             try {
-                const proposed = this.proposeExercise(typedExercise.proposed, now);
-                sink.proposedExercises.push({
-                    exerciseId: proposed.snapshot.exerciseId,
-                    exerciseRef: typedExercise.ref,
-                    sessionExternalId: session.externalId,
-                    definition: typedExercise.proposed,
-                });
-                return { exerciseId: proposed.snapshot.exerciseId, snapshot: proposed.snapshot, proposed: true };
+                const registration = sink.proposedExerciseRegistry.register(
+                    typedExercise.proposed,
+                    { exerciseRef: typedExercise.ref, sessionExternalId: session.externalId },
+                    path,
+                    now,
+                );
+                if (registration.status === "conflict") {
+                    sink.errors.push(proposedExerciseConflict([...path, "proposed"], registration));
+                    return null;
+                }
+                if (registration.status === "created") sink.proposedExercises.push(registration.preview);
+                return {
+                    exerciseId: registration.snapshot.exerciseId,
+                    snapshot: registration.snapshot,
+                    proposed: true,
+                };
             } catch (error) {
                 sink.errors.push(toError([...path, "proposed"], error));
                 return null;
@@ -779,10 +848,6 @@ export class BulkProgramNormalizer {
                     : `Exercise reference '${typedExercise.ref}' matched multiple catalog exercises`,
         });
         return null;
-    }
-
-    private proposeExercise(proposed: BulkProposedExercise, now: Date): { snapshot: ExerciseSnapshotV1 } {
-        return { snapshot: proposeExerciseSnapshot(proposed, this.generateId, now) };
     }
 
     private sessionFullyResolved(session: BulkProgramSession, perRef: SessionResolution): boolean {
@@ -1360,6 +1425,29 @@ function toError(path: (string | number)[], error: unknown): BulkDryRunError {
             ? error.code
             : "VALIDATION_FAILED";
     return { path, code, message };
+}
+
+function canonicalProposedExercise(proposed: BulkProposedExercise, slug: string): unknown {
+    return {
+        ...proposed,
+        slug,
+        supportedMeasurements: [...proposed.supportedMeasurements].sort(),
+        muscles: [...(proposed.muscles ?? [])].sort(
+            (left, right) =>
+                left.muscleGroupId.localeCompare(right.muscleGroupId) || left.role.localeCompare(right.role),
+        ),
+    };
+}
+
+export function proposedExerciseConflict(
+    path: (string | number)[],
+    conflict: Extract<ProposedExerciseRegistration, { status: "conflict" }>,
+): BulkDryRunError {
+    return {
+        path,
+        code: "PROPOSED_EXERCISE_CONFLICT",
+        message: `Proposed exercise '${conflict.identity}' conflicts with its first definition at ${JSON.stringify(conflict.firstPath)}`,
+    };
 }
 
 function slugify(name: string): string {

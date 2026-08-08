@@ -1,0 +1,28 @@
+{
+    "name": "@kinetix/workout-importer",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "imports": {
+        "#src/*": {
+            "types": "./src/*.ts",
+            "development": "./src/*.ts",
+            "default": "./dist/*.js"
+        }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "scripts": {
+        "analyze": "tsx src/cli.ts analyze",
+        "generate": "tsx src/cli.ts generate",
+        "build": "tsc -p tsconfig.json",
+        "typecheck": "tsc -p tsconfig.json --noEmit",
+        "test": "vitest run"
+    },
+    "dependencies": {
+        "@kinetix/types": "workspace:*"
+    },
+    "devDependencies": {
+        "tsx": "^4.23.0"
+    }
+}

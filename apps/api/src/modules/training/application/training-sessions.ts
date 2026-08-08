@@ -43,11 +43,13 @@ import {
     type SessionPlannedLinkInput,
     type SessionPrescriptionState,
     type SessionActivityInput,
+    type SessionActivityType,
     type SetGroupInput,
     type SetMappingInput,
     type StrengthActivityInput,
     type TargetResolutionContext,
     type TrainingSessionState,
+    type TrainingSessionStatus,
     type UpdateTrainingSessionInput,
 } from "#src/modules/training/domain/index";
 import type { ExerciseSnapshotV1 } from "#src/modules/training/domain/exercise-definition";
@@ -79,7 +81,11 @@ export interface TrainingSessionResource extends TrainingSessionState {
     readonly version: number;
 }
 
-/** Bounded list projection: scalar metadata + version + child counts, without the nested trees. */
+/**
+ * Bounded list projection: scalar metadata + version + child counts, without the nested trees. Also
+ * carries read-only linkage (originating program) and a compact content summary (distinct activity
+ * kinds + total performed-set count) so list rows differentiate without a detail fetch.
+ */
 export interface TrainingSessionSummary extends Omit<
     TrainingSessionState,
     | "activities"
@@ -93,10 +99,31 @@ export interface TrainingSessionSummary extends Omit<
     readonly version: number;
     readonly activityCount: number;
     readonly painRecordCount: number;
+    readonly programId: string | null;
+    readonly programName: string | null;
+    readonly activityKinds: readonly SessionActivityType[];
+    readonly totalSetCount: number;
 }
 
+/**
+ * Server-side filter + keyset page request for the sessions list (design 11.6; UX1). The `cursor` is
+ * the opaque token minted by a previous page; `from`/`to` bound `localDate` (inclusive, YYYY-MM-DD)
+ * and `search` matches title or notes. All filtering is applied read-only in SQL.
+ */
 export interface TrainingSessionListFilter {
     readonly includeArchived?: boolean;
+    readonly limit?: number;
+    readonly cursor?: string;
+    readonly status?: TrainingSessionStatus;
+    readonly from?: string;
+    readonly to?: string;
+    readonly search?: string;
+}
+
+/** One bounded, newest-first page of session summaries plus the cursor to fetch the next one. */
+export interface TrainingSessionListPage {
+    readonly items: readonly TrainingSessionSummary[];
+    readonly nextCursor: string | null;
 }
 
 /** Capability port over the versioned training-session root plus its activity/pain child tree. */
@@ -105,7 +132,7 @@ export interface TrainingSessionRepository<Transaction = unknown> extends Curren
     Transaction
 > {
     readSession(id: EntityId, transaction?: Transaction): Promise<TrainingSessionResource | null>;
-    listSessions(filter?: TrainingSessionListFilter): Promise<readonly TrainingSessionSummary[]>;
+    listSessions(filter?: TrainingSessionListFilter): Promise<TrainingSessionListPage>;
 }
 
 export interface TrainingSessionMutationMetadata extends CommandContext {
@@ -1230,6 +1257,7 @@ export class TrainingSessionCommands<Transaction = unknown> {
             events: [this.event("completed", validated, 1, metadata, now)],
             transaction,
         });
+        await this.recomputeLinkedPlans(validated, "complete", metadata, transaction);
         return { ...validated, version: 1 };
     }
 

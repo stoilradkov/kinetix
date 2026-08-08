@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, isNull, lt, lte, or, sql, type SQL } from "drizzle-orm";
 
 import {
     activityMappings,
@@ -8,6 +8,8 @@ import {
     painRecords,
     performedRunSteps,
     performedSets,
+    programPlannedSessions,
+    programs,
     runSplits,
     runStepMappings,
     runZoneTimes,
@@ -41,6 +43,7 @@ import { DatabaseService } from "#src/database/database.service";
 import {
     TRAINING_SESSION_ENTITY_TYPE,
     type TrainingSessionListFilter,
+    type TrainingSessionListPage,
     type TrainingSessionRepository,
     type TrainingSessionResource,
     type TrainingSessionSummary,
@@ -91,7 +94,7 @@ import {
     type TrainingSessionState,
     type TrainingSessionStatus,
 } from "#src/modules/training/domain/index";
-import { VersionConflictError } from "#src/platform/application/index";
+import { ApplicationValidationError, VersionConflictError } from "#src/platform/application/index";
 import type { EntityId } from "#src/platform/domain/index";
 
 @Injectable()
@@ -106,18 +109,64 @@ export class DrizzleTrainingSessionRepository implements TrainingSessionReposito
         return { ...hydrate(row, children), version: row.version };
     }
 
-    async listSessions(filter?: TrainingSessionListFilter): Promise<readonly TrainingSessionSummary[]> {
+    async listSessions(filter?: TrainingSessionListFilter): Promise<TrainingSessionListPage> {
+        const limit = clampLimit(filter?.limit);
+        const conditions = this.listConditions(filter);
+        // Fetch one extra row to detect whether a further page exists without a second count query.
         const rows = await this.database.db
             .select()
             .from(trainingSessions)
-            .where(filter?.includeArchived ? undefined : isNull(trainingSessions.archivedAt))
-            .orderBy(asc(trainingSessions.localDate), asc(trainingSessions.createdAt), asc(trainingSessions.id));
-        const ids = rows.map(row => row.id);
-        const [activityCounts, painCounts] = await Promise.all([
-            this.childCounts(sessionActivities.sessionId, sessionActivities, ids),
+            .where(conditions.length > 0 ? and(...conditions) : undefined)
+            .orderBy(desc(trainingSessions.localDate), desc(trainingSessions.id))
+            .limit(limit + 1);
+        const hasMore = rows.length > limit;
+        const page = hasMore ? rows.slice(0, limit) : rows;
+        const ids = page.map(row => row.id);
+        const [activities, painCounts, setCounts, programsBySession] = await Promise.all([
+            this.activitySummaries(ids),
             this.childCounts(painRecords.sessionId, painRecords, ids),
+            this.setCounts(ids),
+            this.programsBySession(ids),
         ]);
-        return rows.map(row => summary(row, activityCounts.get(row.id) ?? 0, painCounts.get(row.id) ?? 0));
+        const items = page.map(row => {
+            const activity = activities.get(row.id);
+            return summary(row, {
+                activityCount: activity?.count ?? 0,
+                activityKinds: activity?.kinds ?? [],
+                painRecordCount: painCounts.get(row.id) ?? 0,
+                totalSetCount: setCounts.get(row.id) ?? 0,
+                program: programsBySession.get(row.id) ?? null,
+            });
+        });
+        const last = page.at(-1);
+        return { items, nextCursor: hasMore && last ? encodeSessionCursor(last.localDate, last.id) : null };
+    }
+
+    /**
+     * Read-only filter + keyset predicate over `(local_date DESC, id DESC)`. The cursor decodes to the
+     * last row of the previous page; the strict `<` comparison walks strictly older sessions so newly
+     * inserted rows never shift or duplicate an in-flight pagination (keyset stability).
+     */
+    private listConditions(filter?: TrainingSessionListFilter): SQL[] {
+        const conditions: SQL[] = [];
+        if (!filter?.includeArchived) conditions.push(isNull(trainingSessions.archivedAt));
+        if (filter?.status) conditions.push(eq(trainingSessions.status, filter.status));
+        if (filter?.from) conditions.push(gte(trainingSessions.localDate, filter.from));
+        if (filter?.to) conditions.push(lte(trainingSessions.localDate, filter.to));
+        if (filter?.search) {
+            const pattern = `%${escapeLike(filter.search)}%`;
+            conditions.push(or(ilike(trainingSessions.title, pattern), ilike(trainingSessions.notes, pattern))!);
+        }
+        if (filter?.cursor) {
+            const { localDate, id } = decodeSessionCursor(filter.cursor);
+            conditions.push(
+                or(
+                    lt(trainingSessions.localDate, localDate),
+                    and(eq(trainingSessions.localDate, localDate), lt(trainingSessions.id, id)),
+                )!,
+            );
+        }
+        return conditions;
     }
 
     async loadForUpdate(
@@ -414,6 +463,67 @@ export class DrizzleTrainingSessionRepository implements TrainingSessionReposito
         return new Map(rows.map(row => [row.sessionId, row.total]));
     }
 
+    /** Per-session activity count plus the distinct, sorted set of activity kinds for the list summary. */
+    private async activitySummaries(
+        ids: readonly string[],
+    ): Promise<Map<string, { count: number; kinds: SessionActivityType[] }>> {
+        if (ids.length === 0) return new Map();
+        const rows = await this.database.db
+            .select({ sessionId: sessionActivities.sessionId, type: sessionActivities.type })
+            .from(sessionActivities)
+            .where(inArray(sessionActivities.sessionId, [...ids]));
+        const result = new Map<string, { count: number; kinds: SessionActivityType[] }>();
+        for (const row of rows) {
+            const entry = result.get(row.sessionId) ?? { count: 0, kinds: [] };
+            entry.count += 1;
+            const kind = checkedActivityType(row.type);
+            if (!entry.kinds.includes(kind)) entry.kinds.push(kind);
+            result.set(row.sessionId, entry);
+        }
+        for (const entry of result.values()) entry.kinds.sort();
+        return result;
+    }
+
+    /** Total performed sets per session, walking performed_sets → occurrences → activities. */
+    private async setCounts(ids: readonly string[]): Promise<Map<string, number>> {
+        if (ids.length === 0) return new Map();
+        const rows = await this.database.db
+            .select({
+                sessionId: sessionActivities.sessionId,
+                total: sql<number>`cast(count(${performedSets.id}) as int)`,
+            })
+            .from(performedSets)
+            .innerJoin(exerciseOccurrences, eq(performedSets.occurrenceId, exerciseOccurrences.id))
+            .innerJoin(sessionActivities, eq(exerciseOccurrences.activityId, sessionActivities.id))
+            .where(inArray(sessionActivities.sessionId, [...ids]))
+            .groupBy(sessionActivities.sessionId);
+        return new Map(rows.map(row => [row.sessionId, row.total]));
+    }
+
+    /**
+     * Originating program per session, resolved through the planned-session mapping (design 11.4):
+     * session_mappings → program_planned_sessions → programs. A session can map to several planned
+     * links; the deterministic name-then-id order picks a single stable program for the summary.
+     */
+    private async programsBySession(ids: readonly string[]): Promise<Map<string, { id: string; name: string }>> {
+        if (ids.length === 0) return new Map();
+        const rows = await this.database.db
+            .select({ sessionId: sessionMappings.sessionId, programId: programs.id, programName: programs.name })
+            .from(sessionMappings)
+            .innerJoin(
+                programPlannedSessions,
+                eq(sessionMappings.plannedSessionId, programPlannedSessions.plannedSessionId),
+            )
+            .innerJoin(programs, eq(programPlannedSessions.programId, programs.id))
+            .where(inArray(sessionMappings.sessionId, [...ids]))
+            .orderBy(asc(programs.name), asc(programs.id));
+        const result = new Map<string, { id: string; name: string }>();
+        for (const row of rows) {
+            if (!result.has(row.sessionId)) result.set(row.sessionId, { id: row.programId, name: row.programName });
+        }
+        return result;
+    }
+
     private executor(transaction: unknown): Database {
         return (transaction ?? this.database.db) as Database;
     }
@@ -501,7 +611,15 @@ function hydratePain(row: PainRecordRow): PainRecordState {
     };
 }
 
-function summary(row: TrainingSessionRow, activityCount: number, painRecordCount: number): TrainingSessionSummary {
+interface SummaryEnrichment {
+    readonly activityCount: number;
+    readonly painRecordCount: number;
+    readonly totalSetCount: number;
+    readonly activityKinds: readonly SessionActivityType[];
+    readonly program: { id: string; name: string } | null;
+}
+
+function summary(row: TrainingSessionRow, enrichment: SummaryEnrichment): TrainingSessionSummary {
     return {
         id: row.id,
         profileId: row.profileId,
@@ -535,9 +653,45 @@ function summary(row: TrainingSessionRow, activityCount: number, painRecordCount
         archivedAt: row.archivedAt === null ? null : row.archivedAt.toISOString(),
         createdAt: row.createdAt.toISOString(),
         updatedAt: row.updatedAt.toISOString(),
-        activityCount,
-        painRecordCount,
+        activityCount: enrichment.activityCount,
+        painRecordCount: enrichment.painRecordCount,
+        programId: enrichment.program?.id ?? null,
+        programName: enrichment.program?.name ?? null,
+        activityKinds: [...enrichment.activityKinds],
+        totalSetCount: enrichment.totalSetCount,
     };
+}
+
+const DEFAULT_LIST_LIMIT = 50;
+const MAX_LIST_LIMIT = 100;
+const LOCAL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function clampLimit(limit: number | undefined): number {
+    if (limit === undefined || !Number.isFinite(limit)) return DEFAULT_LIST_LIMIT;
+    return Math.min(MAX_LIST_LIMIT, Math.max(1, Math.trunc(limit)));
+}
+
+/** Escape LIKE wildcards so a user search matches them literally under the default `\` escape. */
+function escapeLike(value: string): string {
+    return value.replace(/[\\%_]/g, "\\$&");
+}
+
+/** Opaque keyset cursor = base64url of `localDate|id`; kept server-side so the wire token stays inert. */
+function encodeSessionCursor(localDate: string, id: string): string {
+    return Buffer.from(`${localDate}|${id}`, "utf8").toString("base64url");
+}
+
+function decodeSessionCursor(cursor: string): { localDate: string; id: string } {
+    const decoded = Buffer.from(cursor, "base64url").toString("utf8");
+    const separator = decoded.indexOf("|");
+    const localDate = separator === -1 ? "" : decoded.slice(0, separator);
+    const id = separator === -1 ? "" : decoded.slice(separator + 1);
+    if (!LOCAL_DATE_PATTERN.test(localDate) || !UUID_PATTERN.test(id))
+        throw new ApplicationValidationError("Invalid pagination cursor", {
+            cursor: ["Cursor is malformed or was not issued by this endpoint"],
+        });
+    return { localDate, id };
 }
 
 function rootValues(state: TrainingSessionState, version: number) {

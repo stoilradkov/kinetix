@@ -313,6 +313,43 @@ describe("DryRunBulkProgram", () => {
         expect(result.program.sessions[0]!.prescription).not.toBeNull();
     });
 
+    it("reuses one proposed exercise across repeated program prescriptions", async () => {
+        const repository = recordingRepository();
+        const resolver = new BulkCatalogResolver(fakeCatalog({ byAlias: {}, search: {} }), noExternalIds);
+        const payload = envelope();
+        payload.createMissingExercises = true;
+        const first = payload.program.sessions![0]!;
+        const activity = first.prescription.activities[0] as { exercises: { proposed?: unknown }[] };
+        activity.exercises[0]!.proposed = {
+            name: "Zercher Squat",
+            slug: "zercher-squat",
+            equipmentTypeId: EQUIPMENT,
+            movementPatternId: MOVEMENT,
+            classification: "compound",
+            laterality: "bilateral",
+            bodyPosition: "standing",
+            repetitionSemantics: "total",
+            loadModel: "external_only",
+            supportedMeasurements: ["repetitions", "external_load"],
+            muscles: [{ muscleGroupId: MUSCLE, role: "primary" }],
+        };
+        payload.program.sessions!.push({
+            ...structuredClone(first),
+            externalId: "sess-2",
+            sequence: 1,
+            relativeDay: 1,
+        });
+
+        const result = await useCase(resolver, repository).execute(payload, metadata);
+        expect(result.errors).toEqual([]);
+        expect(result.proposedExercises).toHaveLength(1);
+        const firstExerciseId =
+            result.program.sessions[0]!.prescription!.activities[0]!.strength!.exercises[0]!.exerciseId;
+        const secondExerciseId =
+            result.program.sessions[1]!.prescription!.activities[0]!.strength!.exercises[0]!.exerciseId;
+        expect(firstExerciseId).toBe(secondExerciseId);
+    });
+
     it("produces a stable reference fingerprint that changes when a referenced version changes", async () => {
         const build = async (version: number) => {
             const repository = recordingRepository();

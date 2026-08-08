@@ -1772,18 +1772,50 @@ function registerTrainingSessionCommands(training: Command, dependencies: Progra
 
     sessions
         .command("list")
-        .description("List training sessions, optionally including archived ones")
+        .description("List training sessions newest-first with keyset pagination and filters")
+        .option("--limit <count>", "Maximum sessions per page (1-100, default 50)")
+        .option("--cursor <cursor>", "Opaque cursor from a previous page's nextCursor")
+        .option("--status <status>", "Filter by lifecycle status (draft, in_progress, completed)")
+        .option("--from <date>", "Only sessions on or after this YYYY-MM-DD local date")
+        .option("--to <date>", "Only sessions on or before this YYYY-MM-DD local date")
+        .option("--search <text>", "Match session title or notes")
         .option("--include-archived", "Include archived sessions")
         .option("--api-url <url>", "Override the Kinetix API URL")
         .option("--json", "Emit machine-readable JSON")
-        .action(async (options: { includeArchived?: boolean; apiUrl?: string; json?: boolean }) => {
-            const query = options.includeArchived ? "?includeArchived=true" : "";
-            const result = trainingSessionListResponseSchema.parse(
-                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/sessions${query}`),
-            );
-            if (options.json) dependencies.output(JSON.stringify(result));
-            else for (const session of result.items) outputTrainingSession(dependencies.output, session, false);
-        });
+        .action(
+            async (options: {
+                limit?: string;
+                cursor?: string;
+                status?: string;
+                from?: string;
+                to?: string;
+                search?: string;
+                includeArchived?: boolean;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const params = new URLSearchParams();
+                if (options.limit !== undefined) params.set("limit", options.limit);
+                if (options.cursor !== undefined) params.set("cursor", options.cursor);
+                if (options.status !== undefined) params.set("status", options.status);
+                if (options.from !== undefined) params.set("from", options.from);
+                if (options.to !== undefined) params.set("to", options.to);
+                if (options.search !== undefined) params.set("search", options.search);
+                if (options.includeArchived) params.set("includeArchived", "true");
+                const query = params.toString();
+                const result = trainingSessionListResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/sessions${query ? `?${query}` : ""}`,
+                    ),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else {
+                    for (const session of result.items) outputTrainingSession(dependencies.output, session, false);
+                    if (result.nextCursor !== null) dependencies.output(`next-cursor\t${result.nextCursor}`);
+                }
+            },
+        );
 
     sessions
         .command("show")

@@ -218,6 +218,13 @@
       "when": 1786201045386,
       "tag": "0030_nifty_gargoyle",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1786214067352,
+      "tag": "0031_ancient_shockwave",
+      "breakpoints": true
     }
   ]
 }

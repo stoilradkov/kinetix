@@ -52,6 +52,26 @@ function planEntry(path: (string | number)[], entityType: string, externalId: st
     };
 }
 
+function proposedExercisePreview() {
+    return {
+        exerciseId: "0198a4db-d8da-7000-8000-0000000000e2",
+        exerciseRef: "first-occurrence",
+        sessionExternalId: "first-session",
+        definition: {
+            name: "Cable Chest Fly",
+            slug: "cable-chest-fly",
+            equipmentTypeId: EXERCISE,
+            movementPatternId: EXERCISE,
+            classification: "isolation" as const,
+            laterality: "bilateral" as const,
+            bodyPosition: "standing",
+            repetitionSemantics: "total" as const,
+            loadModel: "external_only" as const,
+            supportedMeasurements: ["repetitions", "external_load"] as const,
+        },
+    };
+}
+
 function storedDryRun(overrides: Partial<StoredHistoricalImportDryRun> = {}): StoredHistoricalImportDryRun {
     return {
         id: DRY_RUN,
@@ -166,10 +186,12 @@ function harness(options: HarnessOptions = {}) {
     const commitsById = new Map<string, StoredHistoricalImportCommit>();
     const commitsByDryRun = new Map<string, string>();
     const registered = new Set<string>();
+    const createdExercises = new Set<string>();
     const registeredEntries: (BulkExternalIdEntry & { batchId: string | null })[] = [];
     let idSeq = 0;
     let sessionCalls = 0;
     const calls = {
+        exerciseCreate: 0,
         programCreate: 0,
         sessionCommit: 0,
         register: [] as BulkExternalIdEntry[],
@@ -252,12 +274,14 @@ function harness(options: HarnessOptions = {}) {
         },
         catalog: {
             async resolveCurrentExercise(id: string) {
-                if (options.missingExercise) throw new ExerciseNotFoundError(id);
+                if (options.missingExercise && !createdExercises.has(id)) throw new ExerciseNotFoundError(id);
                 return { resolvedExerciseId: id, exercise: { version: options.currentVersion ?? 3 } };
             },
         },
         exercises: {
-            async create() {
+            async create(input: { id: string }) {
+                calls.exerciseCreate += 1;
+                createdExercises.add(input.id);
                 return {};
             },
         },
@@ -378,6 +402,21 @@ describe("CommitHistoricalImport — commit", () => {
         expect(calls.sessionCommit).toBe(1);
         expect(calls.markConsumed).toBe(1);
     });
+
+    it("creates one unique proposed exercise once across commit replay", async () => {
+        const { commit, calls } = harness({
+            missingExercise: true,
+            dryRun: {
+                affectedVersions: [],
+                referenceHash: hashRequest([]),
+                proposedExercises: [proposedExercisePreview()],
+            },
+        });
+
+        await commit.execute(request, metadata);
+        await commit.execute(request, metadata);
+        expect(calls.exerciseCreate).toBe(1);
+    });
 });
 
 describe("CommitHistoricalImport — interruption and resume", () => {
@@ -409,6 +448,28 @@ describe("CommitHistoricalImport — interruption and resume", () => {
         expect(calls.markConsumed).toBe(1);
         expect(resumed.completedSessions).toBe(1);
         expect(resumed.programs).toBe(1);
+    });
+
+    it("does not recreate a proposed exercise when an interrupted import is retried", async () => {
+        const { commit, calls } = harness({
+            missingExercise: true,
+            failSessionOnAttempt: 1,
+            dryRun: {
+                affectedVersions: [],
+                referenceHash: hashRequest([]),
+                proposedExercises: [proposedExercisePreview()],
+            },
+        });
+        let commitId = "";
+        try {
+            await commit.execute(request, metadata);
+        } catch (error) {
+            expect(error).toBeInstanceOf(HistoricalImportCommitFailedError);
+            commitId = (error as HistoricalImportCommitFailedError).commitId;
+        }
+
+        await commit.retry(commitId, metadata);
+        expect(calls.exerciseCreate).toBe(1);
     });
 });
 

@@ -678,6 +678,15 @@ export const trainingSessionSummarySchema = z
         ...trainingSessionCoreShape,
         activityCount: z.number().int().nonnegative(),
         painRecordCount: z.number().int().nonnegative(),
+        // Read-only linkage resolved through the planned-session mapping tables (design 11.4): the
+        // originating program, so list rows differentiate without opening the session. Null when the
+        // session has no planned link or the link is not part of a program.
+        programId: z.string().uuid().nullable(),
+        programName: z.string().nullable(),
+        // Bounded content summary — the distinct activity kinds present plus the total performed-set
+        // count — so a row conveys "what happened" without embedding the activity/set trees.
+        activityKinds: z.array(sessionActivityTypeSchema),
+        totalSetCount: z.number().int().nonnegative(),
     })
     .strict();
 
@@ -694,7 +703,36 @@ export const trainingSessionResponseSchema = z
     })
     .strict();
 
-export const trainingSessionListResponseSchema = z.object({ items: z.array(trainingSessionSummarySchema) }).strict();
+export const trainingSessionListResponseSchema = z
+    .object({
+        items: z.array(trainingSessionSummarySchema),
+        // Opaque keyset cursor for the next page, or null when the current page is the last one.
+        nextCursor: z.string().nullable().default(null),
+    })
+    .strict();
+
+const listLocalDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be a YYYY-MM-DD date");
+
+/**
+ * Query contract for the bounded, newest-first sessions list (design 11.6; UX1). Everything arrives
+ * as strings on the wire, so `limit` coerces and clamps to a sane page size and `includeArchived`
+ * accepts the `"true"` flag. The `cursor` is an opaque keyset token minted by a previous page; the
+ * server decodes it and rejects a malformed one with the standard validation envelope.
+ */
+export const trainingSessionListQuerySchema = z
+    .object({
+        limit: z.coerce.number().int().min(1).max(100).default(50),
+        cursor: z.string().trim().min(1).optional(),
+        status: trainingSessionStatusSchema.optional(),
+        from: listLocalDateSchema.optional(),
+        to: listLocalDateSchema.optional(),
+        search: z.string().trim().min(1).max(200).optional(),
+        includeArchived: z
+            .union([z.boolean(), z.string()])
+            .optional()
+            .transform(value => value === true || value === "true"),
+    })
+    .strict();
 
 // ---------------------------------------------------------------------------------------------
 // Active-workout read projection (design 18.3; PRD UX-3) — the session tree plus the frozen
@@ -1036,6 +1074,7 @@ export type PainSideValue = z.infer<typeof painSideSchema>;
 export type TrainingSessionSummary = z.infer<typeof trainingSessionSummarySchema>;
 export type TrainingSessionResponse = z.infer<typeof trainingSessionResponseSchema>;
 export type TrainingSessionListResponse = z.infer<typeof trainingSessionListResponseSchema>;
+export type TrainingSessionListQuery = z.infer<typeof trainingSessionListQuerySchema>;
 export type SessionActivityResponse = z.infer<typeof sessionActivityResponseSchema>;
 export type PainRecordResponse = z.infer<typeof painRecordResponseSchema>;
 export type SetGroupTypeValue = z.infer<typeof setGroupTypeSchema>;

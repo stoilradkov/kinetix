@@ -1,3 +1,4 @@
+import { HttpException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
@@ -109,12 +110,21 @@ function summary(overrides: Partial<TrainingSessionSummary> = {}): TrainingSessi
     void occurrenceMappings;
     void setMappings;
     void runStepMappings;
-    return { ...core, activityCount: 2, painRecordCount: 1, ...overrides };
+    return {
+        ...core,
+        activityCount: 2,
+        painRecordCount: 1,
+        programId: null,
+        programName: null,
+        activityKinds: ["strength"],
+        totalSetCount: 0,
+        ...overrides,
+    };
 }
 
 function repository(overrides: Partial<TrainingSessionRepository> = {}): TrainingSessionRepository {
     return {
-        listSessions: async () => [summary()],
+        listSessions: async () => ({ items: [summary()], nextCursor: null }),
         readSession: async () => resource(),
         loadForUpdate: async () => null,
         create: async () => undefined,
@@ -135,9 +145,35 @@ function controller(overrides: {
 
 describe("TrainingSessionController", () => {
     it("lists session summaries with counts and no nested trees", async () => {
-        const result = await controller({}).list(undefined);
+        const result = await controller({}).list({});
         expect(result.items[0]).toMatchObject({ id: ids.session, activityCount: 2, painRecordCount: 1 });
         expect(result.items[0]).not.toHaveProperty("activities");
+        expect(result.nextCursor).toBeNull();
+    });
+
+    it("passes validated pagination and filter params through to the repository", async () => {
+        const listSessions = vi.fn(async () => ({ items: [summary()], nextCursor: "next-token" }));
+        const result = await controller({
+            repository: repository({ listSessions } as Partial<TrainingSessionRepository>),
+        }).list({ limit: "10", status: "completed", search: "squat", includeArchived: "true", cursor: "abc" });
+        expect(listSessions).toHaveBeenCalledWith({
+            limit: 10,
+            status: "completed",
+            search: "squat",
+            includeArchived: true,
+            cursor: "abc",
+        });
+        expect(result.nextCursor).toBe("next-token");
+    });
+
+    it("rejects an out-of-range limit with the validation envelope", async () => {
+        try {
+            await controller({}).list({ limit: "500" });
+            throw new Error("expected rejection");
+        } catch (error) {
+            expect(error).toBeInstanceOf(HttpException);
+            expect((error as HttpException).getResponse()).toMatchObject({ code: "VALIDATION_FAILED" });
+        }
     });
 
     it("gets a session with its trees and ETag", async () => {

@@ -1,14 +1,21 @@
 import { Logger, VersioningType } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NestFactory } from "@nestjs/core";
+import type { NestExpressApplication } from "@nestjs/platform-express";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import helmet from "helmet";
 
 import { AppModule } from "#src/app.module";
 
 async function bootstrap(): Promise<void> {
-    const app = await NestFactory.create(AppModule, { bufferLogs: true });
+    const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+        bodyParser: false,
+        bufferLogs: true,
+    });
     const config = app.get(ConfigService);
+    const bodyLimit = config.getOrThrow<number>("HTTP_BODY_LIMIT_BYTES");
+    app.useBodyParser("json", { limit: bodyLimit });
+    app.useBodyParser("urlencoded", { extended: true, limit: bodyLimit });
     app.use(helmet());
     app.enableCors({
         origin: config.getOrThrow<string[]>("CORS_ORIGINS"),

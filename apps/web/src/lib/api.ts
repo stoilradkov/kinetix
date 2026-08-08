@@ -101,6 +101,7 @@ import {
     runViewResponseSchema,
     type RunViewResponse,
     type TrainingSessionResponse,
+    type TrainingSessionStatusValue,
     type TrainingSessionSummary,
     type ExerciseCatalogItemResponse,
     type ExerciseMergeResource,
@@ -630,13 +631,30 @@ export async function changePlannedSessionOutcome(
     );
 }
 
-export function trainingSessionsQueryOptions(includeArchived: boolean) {
+export interface TrainingSessionListParams {
+    includeArchived?: boolean;
+    limit?: number;
+    cursor?: string;
+    status?: TrainingSessionStatusValue;
+    from?: string;
+    to?: string;
+    search?: string;
+}
+
+export function trainingSessionsQueryOptions(params: TrainingSessionListParams = {}) {
+    const search = new URLSearchParams();
+    if (params.limit !== undefined) search.set("limit", String(params.limit));
+    if (params.cursor !== undefined) search.set("cursor", params.cursor);
+    if (params.status !== undefined) search.set("status", params.status);
+    if (params.from !== undefined) search.set("from", params.from);
+    if (params.to !== undefined) search.set("to", params.to);
+    if (params.search !== undefined) search.set("search", params.search);
+    if (params.includeArchived) search.set("includeArchived", "true");
+    const query = search.toString();
     return queryOptions({
-        queryKey: ["training-sessions", includeArchived],
+        queryKey: ["training-sessions", query],
         queryFn: async () =>
-            trainingSessionListResponseSchema.parse(
-                await apiRequest(`/training/sessions${includeArchived ? "?includeArchived=true" : ""}`),
-            ),
+            trainingSessionListResponseSchema.parse(await apiRequest(`/training/sessions${query ? `?${query}` : ""}`)),
     });
 }
 

@@ -234,6 +234,86 @@ function completedSession(overrides: Partial<HistoricalCompletedSessionInput> = 
     };
 }
 
+function proposedExercise(overrides: Record<string, unknown> = {}) {
+    return {
+        name: "Cable Chest Fly",
+        slug: "cable-chest-fly",
+        equipmentTypeId: EQUIPMENT,
+        movementPatternId: MOVEMENT,
+        classification: "isolation" as const,
+        laterality: "bilateral" as const,
+        bodyPosition: "standing",
+        repetitionSemantics: "total" as const,
+        loadModel: "external_only" as const,
+        supportedMeasurements: ["repetitions", "external_load"] as const,
+        muscles: [{ muscleGroupId: MUSCLE, role: "primary" as const }],
+        ...overrides,
+    };
+}
+
+function completedSessionWithProposal(prefix: string, proposed = proposedExercise()): HistoricalCompletedSessionInput {
+    return completedSession({
+        externalId: `${prefix}-session`,
+        activities: [
+            {
+                type: "strength",
+                externalId: `${prefix}-activity`,
+                position: 0,
+                strength: {
+                    occurrences: [
+                        {
+                            externalId: `${prefix}-occurrence`,
+                            reference: { by: "slug", slug: "cable-chest-fly" },
+                            proposed,
+                            position: 0,
+                            performedSets: [
+                                {
+                                    externalId: `${prefix}-set`,
+                                    position: 0,
+                                    setType: "working",
+                                    status: "completed",
+                                    measurements: { reps: 12, externalLoad: { value: 20, unit: "kg" } },
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        ],
+    });
+}
+
+function programWithProposal() {
+    return {
+        externalId: "proposal-program",
+        name: "Proposal Program",
+        scheduleMode: "ordered" as const,
+        sessions: [
+            {
+                externalId: "proposal-planned-session",
+                sequence: 0,
+                prescription: {
+                    activities: [
+                        {
+                            type: "strength" as const,
+                            position: 0,
+                            exercises: [
+                                {
+                                    ref: "program-cable-fly",
+                                    reference: { by: "alias" as const, alias: "Cable Chest Fly" },
+                                    proposed: proposedExercise(),
+                                    position: 0,
+                                    sets: [{ position: 0, setType: "working" as const }],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        ],
+    };
+}
+
 function envelope(overrides: Partial<HistoricalImportEnvelopeInput> = {}): HistoricalImportEnvelopeInput {
     return {
         schemaVersion: 1,
@@ -262,13 +342,21 @@ describe("HistoricalImportDryRun", () => {
                         activities: [
                             {
                                 type: "strength" as const,
+                                externalId: "planned-act-1",
                                 position: 0,
                                 exercises: [
                                     {
+                                        externalId: "planned-ex-1",
                                         ref: "ex-1",
                                         reference: { by: "id" as const, exerciseId: SQUAT },
                                         position: 0,
-                                        sets: [{ position: 0, setType: "working" as const }],
+                                        sets: [
+                                            {
+                                                externalId: "planned-set-1",
+                                                position: 0,
+                                                setType: "working" as const,
+                                            },
+                                        ],
                                     },
                                 ],
                             },
@@ -278,17 +366,80 @@ describe("HistoricalImportDryRun", () => {
             ],
         };
         const { useCaseInstance, repository } = useCase();
+        const actual = completedSession({
+            programMapping: {
+                plannedLink: { programExternalId: "prog-1", plannedSessionExternalId: "sess-1" },
+                activities: [
+                    {
+                        prescribedActivityExternalId: "planned-act-1",
+                        actualActivityRef: "act-1",
+                        relation: "matched",
+                    },
+                ],
+                occurrences: [
+                    {
+                        prescribedExerciseExternalId: "planned-ex-1",
+                        occurrenceRef: "occ-1",
+                        relation: "matched",
+                    },
+                ],
+                sets: [
+                    {
+                        prescribedSetExternalId: "planned-set-1",
+                        performedSetRef: "set-1",
+                        relation: "matched",
+                    },
+                ],
+            },
+        });
         const result = await useCaseInstance.execute(
-            envelope({ programs: [program], completedSessions: [completedSession()] }),
+            envelope({ programs: [program], completedSessions: [actual] }),
             metadata,
         );
 
-        expect(result.state).toBe("ready");
         expect(result.errors).toHaveLength(0);
+        expect(result.state).toBe("ready");
         expect(result.programs).toHaveLength(1);
         expect(result.completedSessions).toHaveLength(1);
         expect(result.completedSessions[0]!.status).toBe("completed");
         expect(result.completedSessions[0]!.externalId).toBe("ts-1");
+        const plannedSession = result.programs[0]!.sessions[0]!;
+        const plannedActivity = plannedSession.prescription!.activities[0]!;
+        const plannedExercise = plannedActivity.strength!.exercises[0]!;
+        const plannedSet = plannedExercise.sets[0]!;
+        const completed = result.completedSessions[0]!;
+        const completedActivity = completed.activities[0]!;
+        const completedOccurrence = completedActivity.strength!.occurrences[0]!;
+        const completedSet = completedOccurrence.performedSets[0]!;
+        expect(completed.sourcePlannedSessionId).toBe(plannedSession.id);
+        expect(completed.plannedLinks).toEqual([
+            {
+                plannedSessionId: plannedSession.id,
+                sourcePrescriptionId: plannedSession.prescription!.id,
+                resolvedPrescriptionId: plannedSession.prescription!.id,
+            },
+        ]);
+        expect(completed.activityMappings).toEqual([
+            expect.objectContaining({
+                prescribedActivityId: plannedActivity.id,
+                actualActivityId: completedActivity.id,
+                relation: "matched",
+            }),
+        ]);
+        expect(completed.occurrenceMappings).toEqual([
+            expect.objectContaining({
+                prescribedExerciseId: plannedExercise.id,
+                occurrenceId: completedOccurrence.id,
+                relation: "matched",
+            }),
+        ]);
+        expect(completed.setMappings).toEqual([
+            expect.objectContaining({
+                prescribedSetId: plannedSet.id,
+                performedSetId: completedSet.id,
+                relation: "matched",
+            }),
+        ]);
         // program, planned-session, training-session, session-activity, occurrence, performed-set
         expect(result.storagePlan.counts.create).toBe(result.summary.entities);
         expect(result.storagePlan.counts.conflict).toBe(0);
@@ -322,6 +473,73 @@ describe("HistoricalImportDryRun", () => {
         expect(result.errors[0]!.code).toBe("CATALOG_MAPPING_REQUIRED");
         // The unresolved session is omitted from the normalized preview, never repaired.
         expect(result.completedSessions).toHaveLength(0);
+    });
+
+    it("reuses one proposed exercise across repeated completed-session occurrences", async () => {
+        const resolver = new BulkCatalogResolver(fakeCatalog({}), noExternalIds);
+        const { useCaseInstance } = useCase({ resolver });
+        const result = await useCaseInstance.execute(
+            envelope({
+                createMissingExercises: true,
+                completedSessions: [completedSessionWithProposal("first"), completedSessionWithProposal("second")],
+            }),
+            metadata,
+        );
+
+        expect(result.errors).toEqual([]);
+        expect(result.state).toBe("ready");
+        expect(result.proposedExercises).toHaveLength(1);
+        expect(result.completedSessions).toHaveLength(2);
+        const firstActivity = result.completedSessions[0]!.activities[0]!;
+        const secondActivity = result.completedSessions[1]!.activities[0]!;
+        expect(firstActivity.strength?.occurrences[0]!.exerciseId).toBe(
+            secondActivity.strength?.occurrences[0]!.exerciseId,
+        );
+    });
+
+    it("rejects conflicting definitions for one proposed canonical slug", async () => {
+        const resolver = new BulkCatalogResolver(fakeCatalog({}), noExternalIds);
+        const { useCaseInstance } = useCase({ resolver });
+        const result = await useCaseInstance.execute(
+            envelope({
+                createMissingExercises: true,
+                completedSessions: [
+                    completedSessionWithProposal("first"),
+                    completedSessionWithProposal("second", proposedExercise({ bodyPosition: "seated" })),
+                ],
+            }),
+            metadata,
+        );
+
+        expect(result.state).toBe("needs_mapping");
+        expect(result.proposedExercises).toHaveLength(1);
+        expect(result.errors).toContainEqual(
+            expect.objectContaining({
+                code: "PROPOSED_EXERCISE_CONFLICT",
+                path: ["completedSessions", 1, "activities", 0, "strength", "occurrences", 0, "proposed"],
+            }),
+        );
+    });
+
+    it("shares one proposed exercise between program prescriptions and completed sessions", async () => {
+        const resolver = new BulkCatalogResolver(fakeCatalog({}), noExternalIds);
+        const { useCaseInstance } = useCase({ resolver });
+        const result = await useCaseInstance.execute(
+            envelope({
+                createMissingExercises: true,
+                programs: [programWithProposal()],
+                completedSessions: [completedSessionWithProposal("actual")],
+            }),
+            metadata,
+        );
+
+        expect(result.errors).toEqual([]);
+        expect(result.state).toBe("ready");
+        expect(result.proposedExercises).toHaveLength(1);
+        const plannedExerciseId =
+            result.programs[0]!.sessions[0]!.prescription!.activities[0]!.strength!.exercises[0]!.exerciseId;
+        const actualExerciseId = result.completedSessions[0]!.activities[0]!.strength!.occurrences[0]!.exerciseId;
+        expect(plannedExerciseId).toBe(actualExerciseId);
     });
 
     it("rejects an unsupported measurement rather than dropping it", async () => {

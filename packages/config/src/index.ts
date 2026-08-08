@@ -6,6 +6,12 @@ export const apiEnvSchema = z.object({
     NODE_ENV: environmentSchema.default("development"),
     PORT: z.coerce.number().int().positive().max(65_535).default(3000),
     HOST: z.string().default("0.0.0.0"),
+    HTTP_BODY_LIMIT_BYTES: z.coerce
+        .number()
+        .int()
+        .min(1024)
+        .max(256 * 1024 * 1024)
+        .default(64 * 1024 * 1024),
     DATABASE_URL: z.string().url(),
     CORS_ORIGINS: z
         .string()

@@ -54,6 +54,13 @@ export class ApiExceptionFilter implements ExceptionFilter {
 }
 
 export function mapException(exception: unknown): MappedError {
+    if (isPayloadTooLarge(exception))
+        return {
+            status: HttpStatus.PAYLOAD_TOO_LARGE,
+            code: "PAYLOAD_TOO_LARGE",
+            message: "Request body exceeds the configured HTTP payload limit",
+        };
+
     if (exception instanceof ApplicationError || exception instanceof DomainError)
         return {
             status: statusForCode(exception.code),
@@ -88,6 +95,16 @@ export function mapException(exception: unknown): MappedError {
         code: "INTERNAL_ERROR",
         message: "An unexpected error occurred",
     };
+}
+
+function isPayloadTooLarge(exception: unknown): boolean {
+    if (typeof exception !== "object" || exception === null) return false;
+    const candidate = exception as { status?: unknown; statusCode?: unknown; type?: unknown };
+    return (
+        candidate.type === "entity.too.large" ||
+        candidate.status === HttpStatus.PAYLOAD_TOO_LARGE ||
+        candidate.statusCode === HttpStatus.PAYLOAD_TOO_LARGE
+    );
 }
 
 function statusForCode(code: string, fallback = HttpStatus.INTERNAL_SERVER_ERROR): number {

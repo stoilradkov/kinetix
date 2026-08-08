@@ -76,7 +76,7 @@ function SessionsPage(): React.JSX.Element {
     const navigate = useNavigate();
     const [includeArchived, setIncludeArchived] = useState(false);
     const [editor, setEditor] = useState<EditorState | null>(null);
-    const sessions = useQuery(trainingSessionsQueryOptions(includeArchived));
+    const sessions = useQuery(trainingSessionsQueryOptions({ includeArchived }));
 
     const startEmpty = useMutation({
         mutationFn: () => startEmptyTrainingSession(),

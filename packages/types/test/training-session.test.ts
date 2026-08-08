@@ -15,6 +15,8 @@ import {
     setRunningActivityRequestSchema,
     startTemplateTrainingSessionRequestSchema,
     substituteOccurrenceRequestSchema,
+    trainingSessionListQuerySchema,
+    trainingSessionListResponseSchema,
     trainingSessionResponseSchema,
     updatePerformedSetRequestSchema,
     updateRunRequestSchema,
@@ -470,5 +472,92 @@ describe("training session contracts", () => {
             ],
         });
         expect(parsed.items[0]?.derivedPaceSecondsPerKm).toBe(270);
+    });
+
+    it("coerces and defaults the sessions list query params", () => {
+        const parsed = trainingSessionListQuerySchema.parse({
+            limit: "25",
+            status: "completed",
+            from: "2026-08-01",
+            to: "2026-08-31",
+            search: "  squat  ",
+            includeArchived: "true",
+        });
+        expect(parsed.limit).toBe(25);
+        expect(parsed.status).toBe("completed");
+        expect(parsed.from).toBe("2026-08-01");
+        expect(parsed.search).toBe("squat");
+        expect(parsed.includeArchived).toBe(true);
+    });
+
+    it("defaults limit and treats a missing includeArchived as false", () => {
+        const parsed = trainingSessionListQuerySchema.parse({});
+        expect(parsed.limit).toBe(50);
+        expect(parsed.includeArchived).toBe(false);
+        expect(parsed.cursor).toBeUndefined();
+    });
+
+    it("rejects an out-of-range limit, an unknown status, a bad date, and unknown fields", () => {
+        expect(trainingSessionListQuerySchema.safeParse({ limit: "0" }).success).toBe(false);
+        expect(trainingSessionListQuerySchema.safeParse({ limit: "500" }).success).toBe(false);
+        expect(trainingSessionListQuerySchema.safeParse({ status: "archived" }).success).toBe(false);
+        expect(trainingSessionListQuerySchema.safeParse({ from: "08-2026-01" }).success).toBe(false);
+        expect(trainingSessionListQuerySchema.safeParse({ unexpected: "x" }).success).toBe(false);
+    });
+
+    it("carries linkage and content summary fields on list items with a nextCursor", () => {
+        const parsed = trainingSessionListResponseSchema.parse({
+            items: [
+                {
+                    id: uuid,
+                    profileId: uuid,
+                    status: "completed",
+                    title: "Upper A",
+                    localDate: "2026-08-07",
+                    timeZone: "Europe/Sofia",
+                    startedAt: null,
+                    endedAt: null,
+                    durationMinutes: null,
+                    readiness: {
+                        energy: null,
+                        motivation: null,
+                        fatigue: null,
+                        soreness: null,
+                        stress: null,
+                        recovery: null,
+                    },
+                    postWorkout: {
+                        energy: null,
+                        motivation: null,
+                        enjoyment: null,
+                        difficulty: null,
+                        fatigue: null,
+                        notes: null,
+                    },
+                    notes: null,
+                    tags: [],
+                    sourcePlannedSessionId: null,
+                    version: 2,
+                    archivedAt: null,
+                    createdAt: "2026-08-07T09:00:00.000Z",
+                    updatedAt: "2026-08-07T10:00:00.000Z",
+                    activityCount: 2,
+                    painRecordCount: 0,
+                    programId: uuid,
+                    programName: "Hypertrophy Block",
+                    activityKinds: ["strength"],
+                    totalSetCount: 12,
+                },
+            ],
+            nextCursor: "b3BhcXVl",
+        });
+        expect(parsed.items[0]?.programName).toBe("Hypertrophy Block");
+        expect(parsed.items[0]?.totalSetCount).toBe(12);
+        expect(parsed.nextCursor).toBe("b3BhcXVl");
+    });
+
+    it("defaults nextCursor to null when omitted", () => {
+        const parsed = trainingSessionListResponseSchema.parse({ items: [] });
+        expect(parsed.nextCursor).toBeNull();
     });
 });

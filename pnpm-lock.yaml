@@ -257,6 +257,16 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
+  packages/workout-importer:
+    dependencies:
+      '@kinetix/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      tsx:
+        specifier: ^4.23.0
+        version: 4.23.0
+
 packages:
 
   '@adobe/css-tools@4.5.0':

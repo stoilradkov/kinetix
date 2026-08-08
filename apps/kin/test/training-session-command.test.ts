@@ -23,7 +23,15 @@ const base = {
     updatedAt: "2026-08-02T09:00:00.000Z",
 };
 
-const summary = { ...base, activityCount: 0, painRecordCount: 0 };
+const summary = {
+    ...base,
+    activityCount: 0,
+    painRecordCount: 0,
+    programId: null,
+    programName: null,
+    activityKinds: [],
+    totalSetCount: 0,
+};
 const response = {
     ...base,
     activities: [],
@@ -45,6 +53,41 @@ describe("kin training sessions", () => {
 
         expect(request.mock.calls[0]?.[0]).toContain("/training/sessions?includeArchived=true");
         expect(output).toHaveBeenCalledWith(`${summary.id}\t1\tdraft\t2026-08-02\tUpper A`);
+    });
+
+    it("forwards pagination and filter params and prints the next cursor", async () => {
+        const output = vi.fn();
+        const request = vi.fn(async () => Response.json({ items: [summary], nextCursor: "CURSOR2" }));
+        const program = createProgram({ fetch: request, output });
+
+        await program.parseAsync([
+            "node",
+            "kin",
+            "training",
+            "sessions",
+            "list",
+            "--limit",
+            "10",
+            "--cursor",
+            "CURSOR1",
+            "--status",
+            "completed",
+            "--from",
+            "2026-08-01",
+            "--to",
+            "2026-08-31",
+            "--search",
+            "squat",
+        ]);
+
+        const url = request.mock.calls[0]?.[0] as string;
+        expect(url).toContain("limit=10");
+        expect(url).toContain("cursor=CURSOR1");
+        expect(url).toContain("status=completed");
+        expect(url).toContain("from=2026-08-01");
+        expect(url).toContain("to=2026-08-31");
+        expect(url).toContain("search=squat");
+        expect(output).toHaveBeenCalledWith("next-cursor\tCURSOR2");
     });
 
     it("creates a session from inline JSON", async () => {

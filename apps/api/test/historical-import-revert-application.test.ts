@@ -67,6 +67,7 @@ interface HarnessOptions {
     readonly activeProfileId?: string;
     /** Version each entity currently sits at; default 1 (untouched since import). */
     readonly versions?: Record<string, number>;
+    readonly importOnlyRevisionIds?: readonly string[];
     readonly archivedIds?: readonly string[];
     /** Throw on the Nth (1-based) archive call to simulate an interruption. */
     readonly failArchiveOnAttempt?: number;
@@ -80,6 +81,7 @@ function harness(options: HarnessOptions = {}) {
     if (options.seedRevert) revertsByCommit.set(options.seedRevert.commitId, options.seedRevert);
     const versions = { ...options.versions };
     const archived = new Set<string>(options.archivedIds ?? []);
+    const importOnlyRevisionIds = new Set(options.importOnlyRevisionIds ?? []);
     let idSeq = 0;
     let archiveCalls = 0;
     const calls = { archive: [] as string[] };
@@ -87,7 +89,11 @@ function harness(options: HarnessOptions = {}) {
     const inspect = async (_entityType: string, entityId: string) => {
         if (!(entityId in versions) && !archived.has(entityId)) return { version: 1, archived: archived.has(entityId) };
         if (!(entityId in versions) && archived.has(entityId)) return { version: 2, archived: true };
-        return { version: versions[entityId] ?? 1, archived: archived.has(entityId) };
+        return {
+            version: versions[entityId] ?? 1,
+            archived: archived.has(entityId),
+            postImportRevisionsAreImport: importOnlyRevisionIds.has(entityId),
+        };
     };
 
     const archiveEntity = async (id: string, expectedVersion: number) => {
@@ -198,6 +204,17 @@ describe("RevertHistoricalImport — safe compensation", () => {
         const { revert, calls } = harness({ versions: { [SESSION]: 3 } });
         await expect(revert.execute(COMMIT, metadata)).rejects.toBeInstanceOf(ImportRevertBlockedError);
         expect(calls.archive).toEqual([]);
+    });
+
+    it("allows a planned-session outcome revision produced by the import itself", async () => {
+        const { revert, calls } = harness({
+            versions: { [PLANNED]: 2 },
+            importOnlyRevisionIds: [PLANNED],
+        });
+        const result = await revert.execute(COMMIT, metadata);
+
+        expect(result.state).toBe("succeeded");
+        expect(calls.archive).toEqual([SESSION, PLANNED, PROGRAM]);
     });
 
     it("records the blocked aggregates on the durable run for a status read", async () => {

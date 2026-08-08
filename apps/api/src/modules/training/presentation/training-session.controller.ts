@@ -34,6 +34,7 @@ import {
     startTemplateTrainingSessionRequestSchema,
     startTrainingSessionRequestSchema,
     substituteOccurrenceRequestSchema,
+    trainingSessionListQuerySchema,
     trainingSessionListResponseSchema,
     trainingSessionResponseSchema,
     updatePerformedSetRequestSchema,
@@ -82,11 +83,18 @@ export class TrainingSessionController {
     ) {}
 
     @Get()
-    @ApiOperation({ summary: "List training sessions, optionally including archived ones" })
+    @ApiOperation({ summary: "List training sessions newest-first, with keyset pagination and filters" })
+    @ApiQuery({ name: "limit", required: false })
+    @ApiQuery({ name: "cursor", required: false })
+    @ApiQuery({ name: "status", required: false })
+    @ApiQuery({ name: "from", required: false })
+    @ApiQuery({ name: "to", required: false })
+    @ApiQuery({ name: "search", required: false })
     @ApiQuery({ name: "includeArchived", required: false })
-    async list(@Query("includeArchived") includeArchived: string | undefined): Promise<TrainingSessionListResponse> {
-        const items = await this.repository.listSessions({ includeArchived: includeArchived === "true" });
-        return trainingSessionListResponseSchema.parse({ items });
+    async list(@Query() rawQuery: Record<string, unknown> = {}): Promise<TrainingSessionListResponse> {
+        const query = parseContract(trainingSessionListQuerySchema, rawQuery, "Session list query validation failed");
+        const { items, nextCursor } = await this.repository.listSessions(query);
+        return trainingSessionListResponseSchema.parse({ items, nextCursor });
     }
 
     @Post()

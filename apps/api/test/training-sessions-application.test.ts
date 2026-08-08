@@ -5,9 +5,9 @@ import {
     TrainingSessionNotFoundError,
     trainingSessionSerializer,
     type TrainingSessionListFilter,
+    type TrainingSessionListPage,
     type TrainingSessionRepository,
     type TrainingSessionResource,
-    type TrainingSessionSummary,
 } from "#src/modules/training/application/index";
 import type { ExerciseSnapshotV1, TrainingSessionState } from "#src/modules/training/domain/index";
 import {
@@ -145,8 +145,8 @@ describe("training session application services", () => {
         const fixture = createFixture();
         const created = await fixture.commands.create({}, metadata);
         await fixture.commands.archive(created.id, created.version, metadata);
-        expect(await fixture.repository.listSessions()).toHaveLength(0);
-        expect(await fixture.repository.listSessions({ includeArchived: true })).toHaveLength(1);
+        expect((await fixture.repository.listSessions()).items).toHaveLength(0);
+        expect((await fixture.repository.listSessions({ includeArchived: true })).items).toHaveLength(1);
     });
 
     it("rejects a mutation whose expected version is stale", async () => {
@@ -678,18 +678,24 @@ class FakeTrainingSessionRepository implements TrainingSessionRepository<typeof 
         return stored ? { ...structuredClone(stored.state), version: stored.version } : null;
     }
 
-    async listSessions(filter?: TrainingSessionListFilter): Promise<readonly TrainingSessionSummary[]> {
-        return [...this.values.values()]
+    async listSessions(filter?: TrainingSessionListFilter): Promise<TrainingSessionListPage> {
+        const items = [...this.values.values()]
             .filter(item => filter?.includeArchived || item.state.archivedAt === null)
             .map(item => {
                 const { activities, painRecords, ...core } = structuredClone(item.state);
+                const kinds = [...new Set(activities.map(activity => activity.type))].sort();
                 return {
                     ...core,
                     version: item.version,
                     activityCount: activities.length,
                     painRecordCount: painRecords.length,
+                    programId: null,
+                    programName: null,
+                    activityKinds: kinds,
+                    totalSetCount: 0,
                 };
             });
+        return { items, nextCursor: null };
     }
 
     async loadForUpdate(_entityType: string, id: EntityId) {

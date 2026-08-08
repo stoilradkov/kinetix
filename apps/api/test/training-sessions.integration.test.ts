@@ -17,6 +17,8 @@ import {
     performedRunSteps,
     performedSets,
     plannedSessions,
+    programs,
+    programPlannedSessions,
     runSplits,
     runZoneTimes,
     runningActivities,
@@ -63,6 +65,11 @@ const rowId = randomUUID();
 // Seeded immutable prescription + planned session used by the mapping round-trip test.
 const mappingRxId = randomUUID();
 const mappingPlannedId = randomUUID();
+
+// Program-linkage seeds for the list-enrichment test (session_mappings → program).
+const listProgramId = randomUUID();
+const listPlannedId = randomUUID();
+const listRxId = randomUUID();
 const mappingActivityRowId = randomUUID();
 const mappingExerciseRowId = randomUUID();
 const mappingSetRowId = randomUUID();
@@ -202,6 +209,12 @@ describe.runIf(testDatabaseUrl)("training session PostgreSQL persistence", () =>
             await connection.db.delete(gearItems).where(eq(gearItems.profileId, profileId));
             await connection.db.delete(zoneDefinitions).where(eq(zoneDefinitions.profileId, profileId));
             await connection.db.delete(plannedSessions).where(eq(plannedSessions.id, mappingPlannedId));
+            await connection.db
+                .delete(programPlannedSessions)
+                .where(eq(programPlannedSessions.programId, listProgramId));
+            await connection.db.delete(programs).where(eq(programs.id, listProgramId));
+            await connection.db.delete(plannedSessions).where(eq(plannedSessions.id, listPlannedId));
+            await connection.db.delete(sessionPrescriptions).where(eq(sessionPrescriptions.id, listRxId));
             await connection.db.delete(prescribedSets).where(eq(prescribedSets.prescriptionId, mappingRxId));
             await connection.db.delete(prescribedExercises).where(eq(prescribedExercises.prescriptionId, mappingRxId));
             await connection.db
@@ -507,8 +520,154 @@ describe.runIf(testDatabaseUrl)("training session PostgreSQL persistence", () =>
         await commands.archive(created.id, created.version, metadata);
         const active = await repository.listSessions();
         const all = await repository.listSessions({ includeArchived: true });
-        expect(active.some(session => session.id === created.id)).toBe(false);
-        expect(all.some(session => session.id === created.id)).toBe(true);
+        expect(active.items.some(session => session.id === created.id)).toBe(false);
+        expect(all.items.some(session => session.id === created.id)).toBe(true);
+    });
+
+    it("paginates newest-first with a keyset cursor that stays stable under concurrent inserts", async () => {
+        const token = `ux1page-${randomUUID().slice(0, 8)}`;
+        const seeded = [
+            { id: randomUUID(), localDate: "2099-01-03" },
+            { id: randomUUID(), localDate: "2099-01-02" },
+            { id: randomUUID(), localDate: "2099-01-02" },
+            { id: randomUUID(), localDate: "2099-01-01" },
+        ];
+        for (const row of seeded)
+            await connection.db.insert(trainingSessions).values({
+                id: row.id,
+                profileId,
+                status: "draft",
+                title: `${token} ${row.id.slice(0, 4)}`,
+                localDate: row.localDate,
+                timeZone: "Europe/Sofia",
+            });
+        // Expected newest-first order: local_date DESC, then id DESC (UUID text order matches PG uuid order).
+        const expected = [...seeded].sort((a, b) =>
+            a.localDate === b.localDate ? (a.id < b.id ? 1 : -1) : a.localDate < b.localDate ? 1 : -1,
+        );
+
+        const page1 = await repository.listSessions({ search: token, limit: 2 });
+        expect(page1.items.map(session => session.id)).toEqual([expected[0]!.id, expected[1]!.id]);
+        expect(page1.nextCursor).not.toBeNull();
+
+        // A newer session inserted mid-pagination sits above the cursor and must not shift the next page.
+        const intruder = randomUUID();
+        await connection.db.insert(trainingSessions).values({
+            id: intruder,
+            profileId,
+            status: "draft",
+            title: `${token} intruder`,
+            localDate: "2099-01-09",
+            timeZone: "Europe/Sofia",
+        });
+
+        const page2 = await repository.listSessions({ search: token, limit: 2, cursor: page1.nextCursor! });
+        expect(page2.items.map(session => session.id)).toEqual([expected[2]!.id, expected[3]!.id]);
+        expect(page2.items.map(session => session.id)).not.toContain(intruder);
+        expect(page2.nextCursor).toBeNull();
+    });
+
+    it("rejects a malformed cursor with a validation error", async () => {
+        await expect(repository.listSessions({ cursor: "not-a-real-cursor" })).rejects.toMatchObject({
+            code: "VALIDATION_FAILED",
+        });
+    });
+
+    it("applies status, date-range, and search filters in SQL", async () => {
+        const token = `ux1filter-${randomUUID().slice(0, 8)}`;
+        const inRangeCompleted = randomUUID();
+        await connection.db.insert(trainingSessions).values({
+            id: inRangeCompleted,
+            profileId,
+            status: "completed",
+            title: `${token} keep`,
+            localDate: "2099-02-10",
+            timeZone: "Europe/Sofia",
+            startedAt: now,
+            endedAt: later,
+        });
+        await connection.db.insert(trainingSessions).values({
+            id: randomUUID(),
+            profileId,
+            status: "draft",
+            title: `${token} wrong-status`,
+            localDate: "2099-02-10",
+            timeZone: "Europe/Sofia",
+        });
+        await connection.db.insert(trainingSessions).values({
+            id: randomUUID(),
+            profileId,
+            status: "completed",
+            title: `${token} out-of-range`,
+            localDate: "2099-03-10",
+            timeZone: "Europe/Sofia",
+            startedAt: now,
+            endedAt: later,
+        });
+
+        const result = await repository.listSessions({
+            search: token,
+            status: "completed",
+            from: "2099-02-01",
+            to: "2099-02-28",
+        });
+        expect(result.items.map(session => session.id)).toEqual([inRangeCompleted]);
+    });
+
+    it("enriches summaries with program linkage and a content summary", async () => {
+        const token = `ux1enrich-${randomUUID().slice(0, 8)}`;
+        const sessionId = randomUUID();
+        const activityId = randomUUID();
+        const occurrenceId = randomUUID();
+        await connection.db.insert(sessionPrescriptions).values({ id: listRxId, kind: "planned" });
+        await connection.db
+            .insert(plannedSessions)
+            .values({ id: listPlannedId, profileId, currentPrescriptionId: listRxId });
+        await connection.db.insert(programs).values({ id: listProgramId, profileId, name: "UX1 Enrichment Program" });
+        await connection.db
+            .insert(programPlannedSessions)
+            .values({ programId: listProgramId, plannedSessionId: listPlannedId, sequence: 0 });
+        await connection.db.insert(trainingSessions).values({
+            id: sessionId,
+            profileId,
+            status: "draft",
+            title: token,
+            localDate: "2099-04-01",
+            timeZone: "Europe/Sofia",
+        });
+        await connection.db
+            .insert(sessionActivities)
+            .values({ id: activityId, sessionId, type: "strength", position: 0 });
+        await connection.db.insert(exerciseOccurrences).values({
+            id: occurrenceId,
+            activityId,
+            exerciseId: benchId,
+            exerciseSnapshot: snapshotFor(benchId, "Bench Press"),
+            position: 0,
+        });
+        for (let index = 0; index < 3; index += 1)
+            await connection.db.insert(performedSets).values({
+                id: randomUUID(),
+                occurrenceId,
+                position: index,
+                setType: "working",
+                status: "completed",
+            });
+        await connection.db.insert(sessionMappings).values({
+            id: randomUUID(),
+            sessionId,
+            plannedSessionId: listPlannedId,
+            sourcePrescriptionId: listRxId,
+            resolvedPrescriptionId: listRxId,
+        });
+
+        const result = await repository.listSessions({ search: token });
+        const item = result.items.find(session => session.id === sessionId);
+        expect(item?.programId).toBe(listProgramId);
+        expect(item?.programName).toBe("UX1 Enrichment Program");
+        expect(item?.activityCount).toBe(1);
+        expect(item?.activityKinds).toEqual(["strength"]);
+        expect(item?.totalSetCount).toBe(3);
     });
 
     it("enforces the unique activity-position constraint", async () => {

@@ -28,12 +28,14 @@ import {
     type ExerciseSnapshotV1,
     type HistoricalStoragePayload,
     type ImportEntityType,
+    type MappingRelation,
     type PainRecordInput,
     type PerformedRunStepInput,
     type PerformedSetInput,
     type RunSplitInput,
     type RunningActivityInput,
     type SessionActivityInput,
+    type SessionMappingsInput,
     type SetGroupInput,
     type StrengthActivityInput,
     type TrainingSessionState,
@@ -41,7 +43,8 @@ import {
 } from "#src/modules/training/domain/index";
 import {
     BulkProgramNormalizer,
-    proposeExerciseSnapshot,
+    ProposedExerciseRegistry,
+    proposedExerciseConflict,
     type BulkAffectedVersion,
     type BulkCatalogResolver,
     type BulkCommittedExercise,
@@ -206,6 +209,35 @@ export interface HistoricalPainRecordInput {
     readonly notes?: string | null;
 }
 
+export interface HistoricalProgramMappingInput {
+    readonly plannedLink?: {
+        readonly programExternalId: string;
+        readonly plannedSessionExternalId: string;
+    } | null;
+    readonly activities?: readonly {
+        readonly prescribedActivityExternalId?: string | null;
+        readonly actualActivityRef: string;
+        readonly relation: MappingRelation;
+        readonly reason?: string | null;
+        readonly notes?: string | null;
+    }[];
+    readonly occurrences?: readonly {
+        readonly prescribedExerciseExternalId?: string | null;
+        readonly occurrenceRef: string;
+        readonly relation: MappingRelation;
+        readonly reason?: string | null;
+        readonly notes?: string | null;
+    }[];
+    readonly sets?: readonly {
+        readonly prescribedSetExternalId?: string | null;
+        readonly performedSetRef: string;
+        readonly relation: MappingRelation;
+        readonly portion?: string | null;
+        readonly reason?: string | null;
+        readonly notes?: string | null;
+    }[];
+}
+
 export interface HistoricalCompletedSessionInput {
     readonly externalId: string;
     readonly title?: string | null;
@@ -220,6 +252,7 @@ export interface HistoricalCompletedSessionInput {
     readonly tags?: readonly string[];
     readonly activities: readonly HistoricalSessionActivityInput[];
     readonly painRecords?: readonly HistoricalPainRecordInput[];
+    readonly programMapping?: HistoricalProgramMappingInput | null;
 }
 
 export interface HistoricalImportEnvelopeInput {
@@ -372,6 +405,23 @@ interface DryRunSink {
     readonly affected: Map<string, BulkAffectedVersion>;
 }
 
+interface HistoricalPlannedNodeReference {
+    readonly id: string;
+    readonly programExternalId: string;
+    readonly plannedSessionExternalId: string;
+}
+
+interface HistoricalPlannedSessionReference extends HistoricalPlannedNodeReference {
+    readonly prescriptionId: string;
+}
+
+interface HistoricalPlannedReferenceRegistry {
+    readonly sessions: ReadonlyMap<string, HistoricalPlannedSessionReference>;
+    readonly activities: ReadonlyMap<string, HistoricalPlannedNodeReference>;
+    readonly exercises: ReadonlyMap<string, HistoricalPlannedNodeReference>;
+    readonly sets: ReadonlyMap<string, HistoricalPlannedNodeReference>;
+}
+
 export class HistoricalImportDryRun<Transaction = unknown> {
     private readonly clock: Clock;
     private readonly generateId: () => string;
@@ -408,13 +458,18 @@ export class HistoricalImportDryRun<Transaction = unknown> {
 
         const sink: DryRunSink = { errors: [], mappings: [], proposedExercises: [], affected: new Map() };
         const warnings: PlanningWarning[] = [];
+        const proposedExerciseRegistry = new ProposedExerciseRegistry(this.generateId);
 
         // ---- Normalize + validate every program (reusing the shipped bulk normalizer) --------
         const normalizedPrograms: BulkNormalizedProgram[] = [];
         for (const [index, program] of programs.entries()) {
             const normalization = await this.normalizer.normalize(
                 program,
-                { basePath: ["programs", index], createMissingExercises: envelope.createMissingExercises ?? false },
+                {
+                    basePath: ["programs", index],
+                    createMissingExercises: envelope.createMissingExercises ?? false,
+                    proposedExerciseRegistry,
+                },
                 profileId,
                 now,
             );
@@ -426,6 +481,8 @@ export class HistoricalImportDryRun<Transaction = unknown> {
             for (const version of normalization.affected) sink.affected.set(version.entityId, version);
         }
 
+        const plannedReferences = buildHistoricalPlannedReferenceRegistry(programs, normalizedPrograms);
+
         // ---- Build + validate every completed session in memory (no persistence) -------------
         const normalizedSessions: HistoricalNormalizedSession[] = [];
         for (const [index, session] of completedSessions.entries()) {
@@ -436,6 +493,8 @@ export class HistoricalImportDryRun<Transaction = unknown> {
                 envelope.createMissingExercises ?? false,
                 now,
                 sink,
+                proposedExerciseRegistry,
+                plannedReferences,
             );
             if (normalized) normalizedSessions.push(normalized);
         }
@@ -508,6 +567,8 @@ export class HistoricalImportDryRun<Transaction = unknown> {
         createMissingExercises: boolean,
         now: Date,
         sink: DryRunSink,
+        proposedExerciseRegistry: ProposedExerciseRegistry,
+        plannedReferences: HistoricalPlannedReferenceRegistry,
     ): Promise<HistoricalNormalizedSession | null> {
         // Mint a fresh UUID for every addressable node, keyed by its payload external id.
         const activityId = new Map<string, string>();
@@ -544,6 +605,7 @@ export class HistoricalImportDryRun<Transaction = unknown> {
                     createMissingExercises,
                     now,
                     sink,
+                    proposedExerciseRegistry,
                 );
                 if (resolved) resolvedOccurrence.set(occurrence.externalId, resolved);
                 else unresolved = true;
@@ -596,6 +658,14 @@ export class HistoricalImportDryRun<Transaction = unknown> {
                 notes: pain.notes ?? null,
             }));
 
+            const normalizedMapping = this.normalizeProgramMapping(
+                session.programMapping,
+                activityId,
+                occurrenceId,
+                performedSetId,
+                plannedReferences,
+            );
+
             let aggregate = TrainingSession.create(
                 {
                     id: this.generateId(),
@@ -609,6 +679,8 @@ export class HistoricalImportDryRun<Transaction = unknown> {
                     postWorkout: session.postWorkout,
                     activities,
                     painRecords,
+                    sourcePlannedSessionId: normalizedMapping.sourcePlannedSessionId,
+                    mappings: normalizedMapping.mappings,
                 },
                 now,
             );
@@ -625,6 +697,89 @@ export class HistoricalImportDryRun<Transaction = unknown> {
         }
     }
 
+    private normalizeProgramMapping(
+        mapping: HistoricalProgramMappingInput | null | undefined,
+        activityIds: ReadonlyMap<string, string>,
+        occurrenceIds: ReadonlyMap<string, string>,
+        performedSetIds: ReadonlyMap<string, string>,
+        planned: HistoricalPlannedReferenceRegistry,
+    ): { sourcePlannedSessionId: string | null; mappings: SessionMappingsInput } {
+        if (!mapping) return { sourcePlannedSessionId: null, mappings: {} };
+
+        const linked =
+            mapping.plannedLink == null ? null : requiredPlannedSessionReference(mapping.plannedLink, planned.sessions);
+        const requireOwned = (
+            externalId: string | null | undefined,
+            references: ReadonlyMap<string, HistoricalPlannedNodeReference>,
+            kind: string,
+        ): string | null => {
+            if (externalId == null) return null;
+            if (!linked)
+                throw new ApplicationValidationError(
+                    `A planned link is required when a ${kind} mapping references prescribed work`,
+                );
+            const reference = references.get(externalId);
+            if (!reference)
+                throw new ApplicationValidationError(`Unknown prescribed ${kind} external id '${externalId}'`);
+            if (
+                reference.programExternalId !== linked.programExternalId ||
+                reference.plannedSessionExternalId !== linked.plannedSessionExternalId
+            )
+                throw new ApplicationValidationError(
+                    `Prescribed ${kind} '${externalId}' does not belong to planned session '${linked.plannedSessionExternalId}'`,
+                );
+            return reference.id;
+        };
+
+        return {
+            sourcePlannedSessionId: linked?.id ?? null,
+            mappings: {
+                plannedLinks: linked
+                    ? [
+                          {
+                              plannedSessionId: linked.id,
+                              sourcePrescriptionId: linked.prescriptionId,
+                              resolvedPrescriptionId: linked.prescriptionId,
+                          },
+                      ]
+                    : [],
+                activityMappings: (mapping.activities ?? []).map(entry => ({
+                    id: this.generateId(),
+                    prescribedActivityId: requireOwned(
+                        entry.prescribedActivityExternalId,
+                        planned.activities,
+                        "activity",
+                    ),
+                    actualActivityId: requiredActualReference(entry.actualActivityRef, activityIds, "activity"),
+                    relation: entry.relation,
+                    reason: entry.reason ?? null,
+                    notes: entry.notes ?? null,
+                })),
+                occurrenceMappings: (mapping.occurrences ?? []).map(entry => ({
+                    id: this.generateId(),
+                    prescribedExerciseId: requireOwned(
+                        entry.prescribedExerciseExternalId,
+                        planned.exercises,
+                        "exercise",
+                    ),
+                    occurrenceId: requiredActualReference(entry.occurrenceRef, occurrenceIds, "occurrence"),
+                    relation: entry.relation,
+                    reason: entry.reason ?? null,
+                    notes: entry.notes ?? null,
+                })),
+                setMappings: (mapping.sets ?? []).map(entry => ({
+                    id: this.generateId(),
+                    prescribedSetId: requireOwned(entry.prescribedSetExternalId, planned.sets, "set"),
+                    performedSetId: requiredActualReference(entry.performedSetRef, performedSetIds, "performed set"),
+                    relation: entry.relation,
+                    portion: entry.portion ?? null,
+                    reason: entry.reason ?? null,
+                    notes: entry.notes ?? null,
+                })),
+            },
+        };
+    }
+
     private async resolveOccurrence(
         sessionExternalId: string,
         occurrence: HistoricalOccurrenceInput,
@@ -632,6 +787,7 @@ export class HistoricalImportDryRun<Transaction = unknown> {
         createMissing: boolean,
         now: Date,
         sink: DryRunSink,
+        proposedExerciseRegistry: ProposedExerciseRegistry,
     ): Promise<{ exerciseId: string; snapshot: ExerciseSnapshotV1 } | null> {
         const resolution = await this.catalog.resolve(occurrence.reference);
         if (resolution.status === "resolved") {
@@ -645,14 +801,18 @@ export class HistoricalImportDryRun<Transaction = unknown> {
 
         if (resolution.status === "missing" && createMissing && occurrence.proposed) {
             try {
-                const snapshot = proposeExerciseSnapshot(occurrence.proposed, this.generateId, now);
-                sink.proposedExercises.push({
-                    exerciseId: snapshot.exerciseId,
-                    exerciseRef: occurrence.externalId,
-                    sessionExternalId,
-                    definition: occurrence.proposed,
-                });
-                return { exerciseId: snapshot.exerciseId, snapshot };
+                const registration = proposedExerciseRegistry.register(
+                    occurrence.proposed,
+                    { exerciseRef: occurrence.externalId, sessionExternalId },
+                    path,
+                    now,
+                );
+                if (registration.status === "conflict") {
+                    sink.errors.push(proposedExerciseConflict([...path, "proposed"], registration));
+                    return null;
+                }
+                if (registration.status === "created") sink.proposedExercises.push(registration.preview);
+                return { exerciseId: registration.snapshot.exerciseId, snapshot: registration.snapshot };
             } catch (error) {
                 sink.errors.push(toError([...path, "proposed"], error));
                 return null;
@@ -766,6 +926,76 @@ export class HistoricalImportDryRun<Transaction = unknown> {
 // ---------------------------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------------------------
+
+function buildHistoricalPlannedReferenceRegistry(
+    programs: readonly BulkProgramInput[],
+    normalizedPrograms: readonly BulkNormalizedProgram[],
+): HistoricalPlannedReferenceRegistry {
+    const sessions = new Map<string, HistoricalPlannedSessionReference>();
+    const activities = new Map<string, HistoricalPlannedNodeReference>();
+    const exercises = new Map<string, HistoricalPlannedNodeReference>();
+    const sets = new Map<string, HistoricalPlannedNodeReference>();
+
+    for (const [programIndex, program] of programs.entries()) {
+        if (!program.externalId) continue;
+        const normalizedProgram = normalizedPrograms[programIndex];
+        if (!normalizedProgram) continue;
+        for (const [sessionIndex, session] of (program.sessions ?? []).entries()) {
+            const normalizedSession = normalizedProgram.sessions[sessionIndex];
+            const prescription = normalizedSession?.prescription;
+            if (!normalizedSession || !prescription) continue;
+            const owner = {
+                programExternalId: program.externalId,
+                plannedSessionExternalId: session.externalId,
+            };
+            sessions.set(session.externalId, {
+                ...owner,
+                id: normalizedSession.id,
+                prescriptionId: prescription.id,
+            });
+            for (const [activityIndex, activity] of session.prescription.activities.entries()) {
+                const normalizedActivity = prescription.activities[activityIndex];
+                if (!normalizedActivity) continue;
+                if (activity.externalId) activities.set(activity.externalId, { ...owner, id: normalizedActivity.id });
+                if (activity.type !== "strength" || !normalizedActivity.strength) continue;
+                for (const [exerciseIndex, exercise] of activity.exercises.entries()) {
+                    const normalizedExercise = normalizedActivity.strength.exercises[exerciseIndex];
+                    if (!normalizedExercise) continue;
+                    if (exercise.externalId)
+                        exercises.set(exercise.externalId, { ...owner, id: normalizedExercise.id });
+                    for (const [setIndex, set] of exercise.sets.entries()) {
+                        const normalizedSet = normalizedExercise.sets[setIndex];
+                        if (set.externalId && normalizedSet)
+                            sets.set(set.externalId, { ...owner, id: normalizedSet.id });
+                    }
+                }
+            }
+        }
+    }
+    return { sessions, activities, exercises, sets };
+}
+
+function requiredPlannedSessionReference(
+    link: NonNullable<HistoricalProgramMappingInput["plannedLink"]>,
+    sessions: ReadonlyMap<string, HistoricalPlannedSessionReference>,
+): HistoricalPlannedSessionReference {
+    const reference = sessions.get(link.plannedSessionExternalId);
+    if (!reference)
+        throw new ApplicationValidationError(
+            `Planned session '${link.plannedSessionExternalId}' has no normalized prescription`,
+        );
+    if (reference.programExternalId !== link.programExternalId)
+        throw new ApplicationValidationError(
+            `Planned session '${link.plannedSessionExternalId}' does not belong to program '${link.programExternalId}'`,
+        );
+    return reference;
+}
+
+function requiredActualReference(externalId: string, references: ReadonlyMap<string, string>, kind: string): string {
+    const id = references.get(externalId);
+    if (!id) throw new ApplicationValidationError(`Unknown actual ${kind} ref '${externalId}'`);
+    return id;
+}
 
 function summarize(
     programs: number,
@@ -997,8 +1227,8 @@ interface CommitRuntime<Transaction> {
  * committed. A batch failure leaves prior batches intact, records a path-anchored failure, and stops.
  *
  * Scope (create-mode MVP, matching the shipped bulk commit): fresh entities are created and their
- * external IDs registered for safe retries; field-level upsert of pre-existing aggregates and planned↔
- * actual mapping persistence require the dry-run to carry diffs/mappings and are a later increment.
+ * external IDs registered for safe retries. Explicit planned↔actual mappings from the approved dry-run
+ * are persisted verbatim; field-level upsert of pre-existing aggregates remains a later increment.
  */
 export class CommitHistoricalImport<Transaction = unknown> {
     private readonly clock: Clock;
@@ -1776,13 +2006,15 @@ export interface HistoricalImportRevertResult {
 export interface ImportedEntityState {
     readonly version: number;
     readonly archived: boolean;
+    /** Every revision after import creation was produced by the same import workflow. */
+    readonly postImportRevisionsAreImport?: boolean;
 }
 
 /**
  * Read the current state of an import-owned aggregate root by its Kinetix id (design §14.7, HI6). Used to
- * detect post-import edits before a revert (a version `> 1` means the aggregate was edited or restored
- * since the import created it at version 1) and to trace current revisions in the audit report. Returns
- * `null` when the entity no longer resolves. No raw SQL in the use case (ADR 0003).
+ * detect post-import edits before a revert and distinguish them from import-owned follow-up revisions
+ * (for example planned-outcome recomputation), and to trace current revisions in the audit report.
+ * Returns `null` when the entity no longer resolves. No raw SQL in the use case (ADR 0003).
  */
 export interface HistoricalImportEntityInspector<Transaction = unknown> {
     inspect(
@@ -1843,10 +2075,10 @@ interface RevertRuntime<Transaction> {
  * archive commands, so history is preserved (an archived aggregate is restorable) and nothing is
  * hard-deleted. It never touches unrelated data or the shared exercise catalog.
  *
- * Safety is absolute: before archiving anything, the revert inspects every import-owned aggregate. Import
- * creates each at version 1, so a current version `> 1` means the user edited (or restored) it after the
- * import — archiving it would overwrite that later edit. If **any** aggregate was edited, the whole revert
- * is refused ({@link ImportRevertBlockedError}) with the offending aggregates listed and nothing archived.
+ * Safety is absolute: before archiving anything, the revert inspects every import-owned aggregate. A
+ * version after creation is allowed only when every intervening revision also came from the import
+ * workflow (for example planned-outcome recomputation); any user/agent/system edit or restore blocks the
+ * whole revert ({@link ImportRevertBlockedError}) with nothing archived.
  *
  * Like the commit, the revert is durable, idempotent, and resumable: it is keyed uniquely by `commitId`,
  * archives each aggregate in its own transaction, and checkpoints the archived entity before moving on, so
@@ -1936,13 +2168,14 @@ export class RevertHistoricalImport<Transaction = unknown> {
             .filter(mapping => isRevertibleEntityType(mapping.entityType) && !archivedIds.has(mapping.entityId))
             .map(mapping => ({ ...mapping, entityType: mapping.entityType as RevertibleEntityType }));
 
-        // Inspect every remaining aggregate before archiving any: a version > 1 means a post-import edit.
+        // Inspect every remaining aggregate before archiving any. Import-owned follow-up revisions are
+        // safe; any revision from another source means later state we must not overwrite.
         const pending: { mapping: (typeof targets)[number]; version: number }[] = [];
         const blocked: HistoricalImportBlockedEntity[] = [];
         for (const mapping of targets) {
             const state = await this.runtime.inspector.inspect(mapping.entityType, mapping.entityId);
             if (state === null || state.archived) continue; // already gone/archived out-of-band → skip
-            if (state.version > 1) {
+            if (state.version > 1 && state.postImportRevisionsAreImport !== true) {
                 blocked.push({
                     entityType: mapping.entityType,
                     entityId: mapping.entityId,
