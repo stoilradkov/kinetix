@@ -2405,6 +2405,50 @@ export const historicalImportDryRuns = pgTable(
 
 export type HistoricalImportDryRunRow = typeof historicalImportDryRuns.$inferSelect;
 
+/**
+ * The durable historical-import commit run (issue #59, HI5; design §14.7). Keyed uniquely by
+ * `dry_run_id` — a dry-run commits into exactly one run — it records identity, the resolved import
+ * batch, lifecycle state, the ordered checkpoint of committed aggregate batch keys, attempts, and a
+ * path-anchored failure. The checkpoint is written in the same transaction as each aggregate batch, so a
+ * crashed commit resumes from exactly the batches that durably committed and never re-applies one.
+ */
+export const historicalImportCommits = pgTable(
+    "historical_import_commits",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        dryRunId: uuid("dry_run_id")
+            .notNull()
+            .references(() => historicalImportDryRuns.id, { onDelete: "cascade" }),
+        profileId: uuid("profile_id").notNull(),
+        importBatchId: uuid("import_batch_id").references(() => importBatches.id, { onDelete: "set null" }),
+        sourceNamespace: text("source_namespace").notNull(),
+        sourceGeneratedBy: text("source_generated_by"),
+        mode: text("mode").notNull(),
+        idempotencyKey: text("idempotency_key"),
+        state: text("state").notNull().default("pending"),
+        committedBatchKeys: jsonb("committed_batch_keys").$type<string[]>().notNull().default([]),
+        attempts: integer("attempts").notNull().default(0),
+        failure: jsonb("failure").$type<Record<string, unknown>>(),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        startedAt: timestamp("started_at", { withTimezone: true }),
+        completedAt: timestamp("completed_at", { withTimezone: true }),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("historical_import_commits_mode_valid", sql`${table.mode} IN ('create', 'upsert')`),
+        check(
+            "historical_import_commits_state_valid",
+            sql`${table.state} IN ('pending', 'running', 'succeeded', 'failed')`,
+        ),
+        check("historical_import_commits_attempts_valid", sql`${table.attempts} >= 0`),
+        uniqueIndex("historical_import_commits_dry_run_unique").on(table.dryRunId),
+        index("historical_import_commits_profile_idx").on(table.profileId, table.createdAt),
+        index("historical_import_commits_batch_idx").on(table.importBatchId),
+    ],
+);
+
+export type HistoricalImportCommitRow = typeof historicalImportCommits.$inferSelect;
+
 export type WorkoutTemplateRow = typeof workoutTemplates.$inferSelect;
 export type WorkoutTemplatePrescriptionRow = typeof workoutTemplatePrescriptions.$inferSelect;
 export type ProgramRow = typeof programs.$inferSelect;

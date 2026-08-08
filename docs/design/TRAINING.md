@@ -998,6 +998,50 @@ whole archive in a fixed number of batched reads (one external-ID mapping read, 
 per version-tracked root type) regardless of payload size — never one round-trip per entity — so a
 representative five-year archive (~1 000 completed sessions) previews within a single request.
 
+### 14.7 Historical import commit
+
+`POST /api/v1/training/imports/commits` (issue #59, HI5) commits an approved historical dry-run (14.6)
+into authoritative Training state — durably, idempotently, and resumably. Like the single-program bulk
+commit (14.3) it accepts only the dry-run identity + approval token and never a replacement body, so a
+commit can never differ from what was previewed. Where 14.3 writes one program in one transaction, a
+multi-year archive is applied as a sequence of **aggregate-safe batches** — one transaction per program
+tree and per completed session — each checkpointed on a durable commit-run record. So an interruption
+never leaves a partial aggregate, and a retry resumes from exactly the batches that committed, never
+duplicating a program, session, activity, occurrence, or set.
+
+Commit:
+
+1. Locks the dry-run and rejects expired/consumed/needs-mapping state and a wrong token; rechecks the
+   referenced catalog versions and normalized hash (a changed reference is `DRY_RUN_STALE`).
+2. Opens-or-resolves the import batch (14.5) that will own every committed external ID, and opens-or-
+   resolves the commit run keyed uniquely by `dry_run_id` (a `SELECT … FOR UPDATE` serializes concurrent
+   commits; a run already `running` is `IDEMPOTENCY_IN_PROGRESS`, an already-`succeeded` run replays).
+3. Creates approved catalog entries proposed in the dry-run, idempotently (an existing exercise is left
+   as-is), so prescription/occurrence rows can FK them.
+4. Applies each program and completed session as its own transaction: persists the aggregate through the
+   ordinary aggregate commands (so every revision and outbox fact fires exactly as for a hand-authored
+   program or session, with `revisionSource = "import"`), registers the aggregate's namespaced external
+   IDs against `bulk_external_ids` (DB uniqueness backs safe retries), and appends the batch key to the
+   run's checkpoint — all atomically.
+5. Consumes the dry-run only once every batch has committed, then marks the run `succeeded`.
+
+A batch failure leaves prior batches intact, records a path-anchored failure (the canonical payload node
+that stopped the import) on the run, marks it `failed`, and surfaces `JOB_FAILED` (422). The run is then
+resumable: `GET …/commits/:id` reads its durable status/counts/failure, and `POST …/commits/:id/retries`
+resumes from the last committed checkpoint. `historical_import_commits` persists identity, the resolved
+import batch, lifecycle state, the ordered checkpoint, attempts, and the failure (migration 0029, unique
+on `dry_run_id`). The response returns the created/updated/skipped/conflicted entity counts and the
+external-ID → Kinetix-ID mappings. `kin training imports commit|commit-status|commit-retry` mirror the
+endpoints.
+
+**Scope (create-mode MVP, matching 14.3).** Fresh entities are created and their external IDs registered
+for safe retries; upsert commits `create` at this increment (external-ID uniqueness rejects duplicates
+rather than silently duplicating). Field-level upsert of pre-existing aggregates and planned↔actual
+mapping persistence require the dry-run to carry per-field diffs / normalized mappings and are a later
+increment. Because the commit checkpoints each aggregate independently and can resume, `WORKERS_ENABLED`
+and the durable job queue (ADR 0004) are not required for it; the run executes inline but is fully
+durable and idempotent through its own record.
+
 ## 15. Progression rule engine
 
 ### 15.1 AST

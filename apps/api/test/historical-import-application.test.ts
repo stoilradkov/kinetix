@@ -147,6 +147,10 @@ function recordingRepository(): HistoricalImportDryRunRepository<typeof transact
         async findById(id) {
             return saved.find(record => record.id === id) ?? null;
         },
+        async lockForCommit(id) {
+            return saved.find(record => record.id === id) ?? null;
+        },
+        async markConsumed() {},
     };
 }
 

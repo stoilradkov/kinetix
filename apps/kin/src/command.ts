@@ -9,6 +9,9 @@ import {
     bulkCommitResponseSchema,
     bulkDryRunResponseSchema,
     bulkProgramEnvelopeSchema,
+    historicalImportCommitRequestSchema,
+    historicalImportCommitResponseSchema,
+    type HistoricalImportCommitResponse,
     historicalImportDryRunResponseSchema,
     historicalImportEnvelopeSchema,
     healthResponseSchema,
@@ -1335,6 +1338,96 @@ function registerImportCommands(training: Command, dependencies: ProgramDependen
                 for (const error of result.errors)
                     dependencies.output(`error\t${error.code}\t${error.path.join(".")}\t${error.message}`);
             },
+        );
+
+    imports
+        .command("commit")
+        .description("Commit an approved historical dry-run into authoritative Training state")
+        .requiredOption("--dry-run-id <id>", "The dry-run to commit")
+        .requiredOption("--approval-token <token>", "The approval token returned by the dry-run")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: {
+                dryRunId: string;
+                approvalToken: string;
+                idempotencyKey?: string;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const request = historicalImportCommitRequestSchema.parse({
+                    dryRunId: options.dryRunId,
+                    approvalToken: options.approvalToken,
+                });
+                const result = historicalImportCommitResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/imports/commits`,
+                        mutationRequest("POST", request, undefined, options.idempotencyKey),
+                    ),
+                );
+                printCommitResult(dependencies, result, options.json);
+            },
+        );
+
+    imports
+        .command("commit-status")
+        .description("Read the status and result of a historical import commit run")
+        .requiredOption("--id <id>", "The commit run id")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { id: string; apiUrl?: string; json?: boolean }) => {
+            const result = historicalImportCommitResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/imports/commits/${options.id}`,
+                ),
+            );
+            printCommitResult(dependencies, result, options.json);
+        });
+
+    imports
+        .command("commit-retry")
+        .description("Resume a failed or interrupted historical import commit from its checkpoint")
+        .requiredOption("--id <id>", "The commit run id")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { id: string; apiUrl?: string; json?: boolean }) => {
+            const result = historicalImportCommitResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/imports/commits/${options.id}/retries`,
+                    mutationRequest("POST", {}, undefined, undefined),
+                ),
+            );
+            printCommitResult(dependencies, result, options.json);
+        });
+}
+
+function printCommitResult(
+    dependencies: ProgramDependencies,
+    result: HistoricalImportCommitResponse,
+    json: boolean | undefined,
+): void {
+    if (json) {
+        dependencies.output(JSON.stringify(result));
+        return;
+    }
+    const counts = result.counts;
+    dependencies.output(
+        `${result.commitId}\t${result.state}\tprograms=${result.programs}\tsessions=${result.completedSessions}`,
+    );
+    dependencies.output(
+        `counts\tcreated=${counts.created}\tupdated=${counts.updated}\tskipped=${counts.skipped}\tconflicted=${counts.conflicted}`,
+    );
+    for (const entity of result.entities)
+        dependencies.output(`entity\t${entity.entityType}\t${entity.externalId}\t${entity.entityId}`);
+    for (const exercise of result.createdExercises)
+        dependencies.output(`exercise\t${exercise.exerciseId}\t${exercise.exerciseRef}`);
+    if (result.failure)
+        dependencies.output(
+            `failure\t${result.failure.code}\t${result.failure.path.join(".")}\t${result.failure.message}`,
         );
 }
 

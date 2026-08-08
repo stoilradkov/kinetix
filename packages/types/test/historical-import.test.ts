@@ -5,6 +5,8 @@ import {
     bulkProgramInputSchema,
     historicalCompletedSessionSchema,
     historicalExerciseReferenceSchema,
+    historicalImportCommitRequestSchema,
+    historicalImportCommitResponseSchema,
     historicalImportDryRunResponseSchema,
     historicalImportEnvelopeSchema,
 } from "#src/index";
@@ -424,5 +426,82 @@ describe("historicalImportDryRunResponseSchema — HI4 preview contract", () => 
 
     it("rejects an unknown top-level field", () => {
         expect(historicalImportDryRunResponseSchema.safeParse(dryRunResponse({ smuggled: true })).success).toBe(false);
+    });
+});
+
+describe("historicalImportCommitRequestSchema — HI5 commit request", () => {
+    it("accepts only the dry-run identity and approval token", () => {
+        const parsed = historicalImportCommitRequestSchema.parse({
+            dryRunId: "0198a4db-d8da-7000-8000-0000000000f0",
+            approvalToken: "token-abc",
+        });
+        expect(parsed.approvalToken).toBe("token-abc");
+    });
+
+    it("rejects a smuggled replacement body so commit cannot differ from the dry-run", () => {
+        expect(
+            historicalImportCommitRequestSchema.safeParse({
+                dryRunId: "0198a4db-d8da-7000-8000-0000000000f0",
+                approvalToken: "token-abc",
+                programs: [{ name: "sneaky" }],
+            }).success,
+        ).toBe(false);
+    });
+});
+
+describe("historicalImportCommitResponseSchema — HI5 commit run resource", () => {
+    function commitResponse(overrides: Record<string, unknown> = {}) {
+        return {
+            commitId: "0198a4db-d8da-7000-8000-0000000000e0",
+            dryRunId: "0198a4db-d8da-7000-8000-0000000000f0",
+            importBatchId: "0198a4db-d8da-7000-8000-0000000000e1",
+            state: "succeeded",
+            mode: "create",
+            source: { namespace: "coach-app", generatedBy: null },
+            programs: 1,
+            completedSessions: 2,
+            counts: { created: 12, updated: 0, skipped: 0, conflicted: 0 },
+            entities: [
+                {
+                    entityType: "training-session",
+                    externalId: "ts-1",
+                    entityId: "0198a4db-d8da-7000-8000-0000000000a2",
+                },
+            ],
+            createdExercises: [],
+            affectedVersions: [],
+            warnings: [],
+            failure: null,
+            createdAt: "2026-08-01T10:00:00.000Z",
+            startedAt: "2026-08-01T10:00:00.000Z",
+            completedAt: "2026-08-01T10:00:01.000Z",
+            ...overrides,
+        };
+    }
+
+    it("accepts a succeeded run and round-trips", () => {
+        const once = historicalImportCommitResponseSchema.parse(commitResponse());
+        const twice = historicalImportCommitResponseSchema.parse(JSON.parse(JSON.stringify(once)));
+        expect(twice).toEqual(once);
+    });
+
+    it("accepts a failed run carrying a path-anchored failure that identifies the canonical payload node", () => {
+        const response = commitResponse({
+            state: "failed",
+            counts: { created: 4, updated: 0, skipped: 0, conflicted: 1 },
+            completedAt: null,
+            failure: {
+                path: ["completedSessions", 0],
+                code: "EXTERNAL_ID_CONFLICT",
+                message: "An entity with this external ID already exists in this namespace",
+                entityType: "training-session",
+                externalId: "ts-1",
+            },
+        });
+        expect(historicalImportCommitResponseSchema.safeParse(response).success).toBe(true);
+    });
+
+    it("rejects an unknown top-level field", () => {
+        expect(historicalImportCommitResponseSchema.safeParse(commitResponse({ smuggled: true })).success).toBe(false);
     });
 });

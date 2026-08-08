@@ -1205,6 +1205,34 @@ export class TrainingSessionCommands<Transaction = unknown> {
         });
     }
 
+    /**
+     * Persist an already-built, fully-validated completed session verbatim — no profile resolution, no
+     * catalog re-resolution, no re-minting of ids (issue #59, HI5). This is the training-session analog
+     * of {@link PrescriptionPublisher.publishPreparedState}: the historical-import commit builds each
+     * session's tree in the dry-run (create → start → complete) and this inserts exactly that state, so
+     * the committed session is byte-for-byte the previewed one. It re-runs every domain invariant via
+     * `rehydrate`, writes one revision at version 1, and emits the standard `training.session.completed`
+     * fact (with `revisionSource` carried on `metadata`). It must run inside the caller's transaction so
+     * the whole aggregate + its revision + its outbox event commit atomically.
+     */
+    async commitPreparedState(
+        state: TrainingSessionState,
+        metadata: TrainingSessionMutationMetadata,
+        transaction: Transaction,
+    ): Promise<TrainingSessionResource> {
+        const now = this.clock.now();
+        const validated = TrainingSession.rehydrate(state).state;
+        await this.runtime.mutations.create({
+            entityType: TRAINING_SESSION_ENTITY_TYPE,
+            entityId: entityId(validated.id),
+            state: validated,
+            metadata: revisionMetadata(metadata, "Imported completed training session"),
+            events: [this.event("completed", validated, 1, metadata, now)],
+            transaction,
+        });
+        return { ...validated, version: 1 };
+    }
+
     /** Create a fresh session already moved to `in_progress`, persisting one revision. */
     private createStartedSession(
         input: CreateTrainingSessionInput,

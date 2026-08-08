@@ -154,11 +154,16 @@ import {
     IMPORT_STORAGE_READ_PORT,
     RECONCILE_IMPORT_STORAGE,
     HISTORICAL_IMPORT_DRY_RUN_REPOSITORY,
+    HISTORICAL_IMPORT_COMMIT_REPOSITORY,
+    HISTORICAL_IMPORT_COMMIT_QUERY_SERVICE,
+    COMMIT_HISTORICAL_IMPORT,
     EXERCISE_SLUG_RESOLVER,
     HISTORICAL_IMPORT_DRY_RUN,
     BulkCatalogResolver,
     DryRunBulkProgram,
     CommitBulkProgram,
+    CommitHistoricalImport,
+    HistoricalImportCommitQueryService,
     RegisterImportBatch,
     ImportBatchQueryService,
     ReconcileImportStorage,
@@ -170,6 +175,7 @@ import {
     type ExerciseExternalIdResolver,
     type ExerciseSlugResolver,
     type HistoricalImportDryRunRepository,
+    type HistoricalImportCommitRepository,
     type TrainingExerciseCatalogPort,
 } from "#src/modules/training/application/index";
 import type {
@@ -191,6 +197,7 @@ import { DrizzleBulkExternalIdRegistry } from "#src/modules/training/infrastruct
 import { DrizzleImportBatchRepository } from "#src/modules/training/infrastructure/drizzle-import-batch-repository";
 import { DrizzleImportStorageReadPort } from "#src/modules/training/infrastructure/drizzle-import-storage-read-port";
 import { DrizzleHistoricalImportDryRunRepository } from "#src/modules/training/infrastructure/drizzle-historical-import-dry-run-repository";
+import { DrizzleHistoricalImportCommitRepository } from "#src/modules/training/infrastructure/drizzle-historical-import-commit-repository";
 import { DrizzleExerciseSlugResolver } from "#src/modules/training/infrastructure/drizzle-exercise-slug-resolver";
 import { DrizzleExerciseExternalIdResolver } from "#src/modules/training/infrastructure/drizzle-exercise-external-id-resolver";
 import { DrizzleTrainingProfileRepository } from "#src/modules/training/infrastructure/drizzle-training-profile-repository";
@@ -819,6 +826,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         DrizzleImportBatchRepository,
         DrizzleImportStorageReadPort,
         DrizzleHistoricalImportDryRunRepository,
+        DrizzleHistoricalImportCommitRepository,
         DrizzleExerciseSlugResolver,
         DrizzleExerciseExternalIdResolver,
         { provide: BULK_DRY_RUN_REPOSITORY, useExisting: DrizzleBulkDryRunRepository },
@@ -826,6 +834,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         { provide: IMPORT_BATCH_REPOSITORY, useExisting: DrizzleImportBatchRepository },
         { provide: IMPORT_STORAGE_READ_PORT, useExisting: DrizzleImportStorageReadPort },
         { provide: HISTORICAL_IMPORT_DRY_RUN_REPOSITORY, useExisting: DrizzleHistoricalImportDryRunRepository },
+        { provide: HISTORICAL_IMPORT_COMMIT_REPOSITORY, useExisting: DrizzleHistoricalImportCommitRepository },
         { provide: EXERCISE_SLUG_RESOLVER, useExisting: DrizzleExerciseSlugResolver },
         { provide: EXERCISE_EXTERNAL_ID_RESOLVER, useExisting: DrizzleExerciseExternalIdResolver },
         {
@@ -928,6 +937,70 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                 RECONCILE_IMPORT_STORAGE,
                 BULK_CATALOG_RESOLVER,
                 EXERCISE_SLUG_RESOLVER,
+                PROFILE_READER,
+            ],
+        },
+        {
+            provide: COMMIT_HISTORICAL_IMPORT,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                dryRuns: HistoricalImportDryRunRepository,
+                commits: HistoricalImportCommitRepository,
+                externalIds: BulkExternalIdRegistry,
+                importBatches: RegisterImportBatch,
+                catalog: TrainingExerciseCatalogPort,
+                exercises: ExerciseCatalogCommands,
+                programCommands: ProgramCommands,
+                plannedSessions: PlannedSessionCommands,
+                publisher: PrescriptionPublisher,
+                membership: ProgramMembershipRepository,
+                trainingSessions: TrainingSessionCommands,
+                profileReader: ProfileReader,
+            ) =>
+                new CommitHistoricalImport({
+                    unitOfWork,
+                    dryRuns,
+                    commits,
+                    externalIds,
+                    importBatches,
+                    catalog,
+                    exercises,
+                    programCommands,
+                    plannedSessions,
+                    publisher,
+                    membership,
+                    trainingSessions,
+                    profileReader,
+                    generateId: randomUUID,
+                }),
+            inject: [
+                UNIT_OF_WORK,
+                HISTORICAL_IMPORT_DRY_RUN_REPOSITORY,
+                HISTORICAL_IMPORT_COMMIT_REPOSITORY,
+                BULK_EXTERNAL_ID_REGISTRY,
+                REGISTER_IMPORT_BATCH,
+                TRAINING_EXERCISE_CATALOG,
+                EXERCISE_CATALOG_COMMANDS,
+                PROGRAM_COMMANDS,
+                PLANNED_SESSION_COMMANDS,
+                PRESCRIPTION_PUBLISHER,
+                PROGRAM_MEMBERSHIP_REPOSITORY,
+                TRAINING_SESSION_COMMANDS,
+                PROFILE_READER,
+            ],
+        },
+        {
+            provide: HISTORICAL_IMPORT_COMMIT_QUERY_SERVICE,
+            useFactory: (
+                commits: HistoricalImportCommitRepository,
+                dryRuns: HistoricalImportDryRunRepository,
+                externalIds: BulkExternalIdRegistry,
+                profileReader: ProfileReader,
+            ) => new HistoricalImportCommitQueryService({ commits, dryRuns, externalIds, profileReader }),
+            inject: [
+                HISTORICAL_IMPORT_COMMIT_REPOSITORY,
+                HISTORICAL_IMPORT_DRY_RUN_REPOSITORY,
+                BULK_EXTERNAL_ID_REGISTRY,
                 PROFILE_READER,
             ],
         },

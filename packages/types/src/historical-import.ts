@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
     bulkAffectedVersionSchema,
+    bulkCommittedExerciseSchema,
     bulkDryRunErrorSchema,
     bulkDryRunStateSchema,
     bulkExerciseMappingSchema,
@@ -521,3 +522,104 @@ export const historicalImportDryRunResponseSchema = z
 export type HistoricalNormalizedSession = z.infer<typeof historicalNormalizedSessionSchema>;
 export type HistoricalImportSummary = z.infer<typeof historicalImportSummarySchema>;
 export type HistoricalImportDryRunResponse = z.infer<typeof historicalImportDryRunResponseSchema>;
+
+// ---------------------------------------------------------------------------------------------
+// Commit (issue #59, HI5; design §14.3, §14.7)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Start a commit of an approved historical dry-run (design §14.7). Like the single-program bulk commit
+ * (14.3) it accepts only the dry-run identity and the approval token — never a replacement body, so a
+ * caller cannot smuggle a payload that differs from what was previewed. The `Idempotency-Key` header
+ * carries safe-retry semantics; the durable commit run additionally resumes deterministically from its
+ * own checkpoint, so an interrupted commit never duplicates a program, session, activity, or set.
+ */
+export const historicalImportCommitRequestSchema = z
+    .object({
+        dryRunId: z.string().uuid(),
+        approvalToken: z.string().trim().min(1).max(200),
+    })
+    .strict();
+
+/**
+ * Lifecycle of a durable historical-import commit run. `pending` is created but not yet applied,
+ * `running` is mid-flight, `succeeded` applied every aggregate and consumed the dry-run, and `failed`
+ * stopped on a batch error with a path-anchored {@link historicalImportCommitFailureSchema} — a `failed`
+ * run is resumable by retry from its last committed checkpoint.
+ */
+export const historicalImportCommitStateSchema = z.enum(["pending", "running", "succeeded", "failed"]);
+
+/**
+ * Entity-level totals across every import-addressable entity (design §14.7). `created` and `skipped`
+ * (already committed on a resumed run, or byte-identical) are the create-mode outcomes; `updated` and
+ * `conflicted` are reserved for a later upsert increment and are `0` here.
+ */
+export const historicalImportCommitCountsSchema = z
+    .object({
+        created: z.number().int().nonnegative(),
+        updated: z.number().int().nonnegative(),
+        skipped: z.number().int().nonnegative(),
+        conflicted: z.number().int().nonnegative(),
+    })
+    .strict();
+
+/** One committed external-ID → Kinetix-ID binding, so any imported entity is traceable to its caller ID. */
+export const historicalImportCommitEntitySchema = z
+    .object({
+        entityType: importEntityTypeSchema,
+        externalId: externalIdSchema,
+        entityId: z.string().uuid(),
+    })
+    .strict();
+
+/**
+ * Why a commit run stopped, anchored to the exact offending node in the canonical payload (`path`) so a
+ * failed batch always identifies its source location. `entityType`/`externalId` name the aggregate that
+ * failed when the failure is entity-scoped.
+ */
+export const historicalImportCommitFailureSchema = z
+    .object({
+        path: z.array(z.union([z.string(), z.number()])),
+        code: z.string(),
+        message: z.string(),
+        entityType: importEntityTypeSchema.nullable(),
+        externalId: externalIdSchema.nullable(),
+    })
+    .strict();
+
+/**
+ * The durable commit run resource (design §14.7). It is the result of `POST …/commits`, the body of
+ * `GET …/commits/:id`, and the result of `POST …/commits/:id/retries`, so start, status, and retry all
+ * share one shape. It carries the resolved import-batch identity, the entity counts, the deterministic
+ * external-ID → Kinetix-ID mappings, the catalog exercises created for proposed definitions, the
+ * affected catalog versions, and — on a `failed` run — the path-anchored failure. A byte-for-byte replay
+ * (same dry-run/idempotency key) returns the identical resource.
+ */
+export const historicalImportCommitResponseSchema = z
+    .object({
+        commitId: z.string().uuid(),
+        dryRunId: z.string().uuid(),
+        importBatchId: z.string().uuid().nullable(),
+        state: historicalImportCommitStateSchema,
+        mode: z.enum(["create", "upsert"]),
+        source: z.object({ namespace: z.string(), generatedBy: z.string().nullable() }).strict(),
+        programs: z.number().int().nonnegative(),
+        completedSessions: z.number().int().nonnegative(),
+        counts: historicalImportCommitCountsSchema,
+        entities: z.array(historicalImportCommitEntitySchema),
+        createdExercises: z.array(bulkCommittedExerciseSchema),
+        affectedVersions: z.array(bulkAffectedVersionSchema),
+        warnings: z.array(planningWarningSchema),
+        failure: historicalImportCommitFailureSchema.nullable(),
+        createdAt: z.string(),
+        startedAt: z.string().nullable(),
+        completedAt: z.string().nullable(),
+    })
+    .strict();
+
+export type HistoricalImportCommitRequest = z.infer<typeof historicalImportCommitRequestSchema>;
+export type HistoricalImportCommitState = z.infer<typeof historicalImportCommitStateSchema>;
+export type HistoricalImportCommitCounts = z.infer<typeof historicalImportCommitCountsSchema>;
+export type HistoricalImportCommitEntity = z.infer<typeof historicalImportCommitEntitySchema>;
+export type HistoricalImportCommitFailure = z.infer<typeof historicalImportCommitFailureSchema>;
+export type HistoricalImportCommitResponse = z.infer<typeof historicalImportCommitResponseSchema>;

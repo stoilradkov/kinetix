@@ -1,12 +1,30 @@
 import type { Clock } from "#src/platform/domain/index";
-import { hashRequest, type CommandContext, type UnitOfWork } from "#src/platform/application/index";
+import {
+    ApplicationError,
+    ApplicationNotFoundError,
+    ApplicationValidationError,
+    DryRunConsumedError,
+    DryRunExpiredError,
+    DryRunStaleError,
+    DryRunTokenInvalidError,
+    IdempotencyInProgressError,
+    hashRequest,
+    type CommandContext,
+    type UnitOfWork,
+} from "#src/platform/application/index";
 import {
     TrainingSession,
     collectHistoricalStorageRequests,
+    partitionCommitBatches,
+    planCommitBatches,
+    tallyCommitCounts,
     validateHistoricalImportIdentities,
+    type CommitBatch,
+    type CommitCounts,
     type ExerciseOccurrenceInput,
     type ExerciseSnapshotV1,
     type HistoricalStoragePayload,
+    type ImportEntityType,
     type PainRecordInput,
     type PerformedRunStepInput,
     type PerformedSetInput,
@@ -23,10 +41,14 @@ import {
     proposeExerciseSnapshot,
     type BulkAffectedVersion,
     type BulkCatalogResolver,
+    type BulkCommittedExercise,
     type BulkDryRunError,
     type BulkDryRunState,
     type BulkExerciseMapping,
     type BulkExerciseResolution,
+    type BulkExternalIdEntry,
+    type BulkExternalIdMapping,
+    type BulkExternalIdRegistry,
     type BulkNormalizedProgram,
     type BulkProgramInput,
     type BulkProposedExercise,
@@ -38,6 +60,13 @@ import {
     type StorageReconciliationPlan,
     type StorageReconciliationRequest,
 } from "#src/modules/training/application/storage-reconciliation";
+import type { RegisterImportBatch } from "#src/modules/training/application/import-batches";
+import type { ExerciseCatalogCommands, TrainingExerciseCatalogPort } from "#src/modules/training/application/exercises";
+import { ExerciseNotFoundError } from "#src/modules/training/application/exercises";
+import type { ProgramCommands, ProgramMembershipRepository } from "#src/modules/training/application/programs";
+import type { PlannedSessionCommands } from "#src/modules/training/application/planned-sessions";
+import type { PrescriptionPublisher } from "#src/modules/training/application/session-prescriptions";
+import type { TrainingSessionCommands } from "#src/modules/training/application/training-sessions";
 import type { ProfileReader } from "#src/modules/profile/index";
 
 /**
@@ -278,6 +307,13 @@ export interface StoredHistoricalImportDryRun {
 export interface HistoricalImportDryRunRepository<Transaction = unknown> {
     save(record: StoredHistoricalImportDryRun, transaction: Transaction): Promise<void>;
     findById(id: string, transaction?: Transaction): Promise<StoredHistoricalImportDryRun | null>;
+    /**
+     * Lock the dry-run row for a commit (SELECT … FOR UPDATE), serializing concurrent commits of the
+     * same dry-run so its consumed/expiry gates cannot race (design §14.3 step 1, §14.7).
+     */
+    lockForCommit(id: string, transaction: Transaction): Promise<StoredHistoricalImportDryRun | null>;
+    /** Mark the dry-run consumed once its commit run succeeded, in the finishing transaction. */
+    markConsumed(id: string, input: { consumedAt: Date }, transaction: Transaction): Promise<void>;
 }
 
 /** Resolve a canonical exercise `slug` to a catalog exercise id (#55 canonical references). */
@@ -780,4 +816,701 @@ function toError(path: readonly (string | number)[], error: unknown): BulkDryRun
             ? error.code
             : "VALIDATION_FAILED";
     return { path: [...path], code, message };
+}
+
+// =============================================================================================
+// Commit (issue #59, HI5; design §14.3, §14.7)
+// =============================================================================================
+
+export const HISTORICAL_IMPORT_COMMIT_REPOSITORY = Symbol("HISTORICAL_IMPORT_COMMIT_REPOSITORY");
+export const COMMIT_HISTORICAL_IMPORT = Symbol("COMMIT_HISTORICAL_IMPORT");
+export const HISTORICAL_IMPORT_COMMIT_QUERY_SERVICE = Symbol("HISTORICAL_IMPORT_COMMIT_QUERY_SERVICE");
+
+/** Lifecycle of a durable commit run (mirrors the wire `historicalImportCommitStateSchema`). */
+export type HistoricalImportCommitState = "pending" | "running" | "succeeded" | "failed";
+
+/** Why a commit run stopped, anchored to the offending node in the canonical payload. */
+export interface HistoricalImportCommitFailure {
+    readonly path: readonly (string | number)[];
+    readonly code: string;
+    readonly message: string;
+    readonly entityType: ImportEntityType | null;
+    readonly externalId: string | null;
+}
+
+/**
+ * The durable commit-run record — the source of truth for status, idempotent replay, and resume. Keyed
+ * by `dryRunId` (a dry-run commits into exactly one run), it persists identity, the resolved import
+ * batch, the ordered checkpoint of committed batch keys, attempt count, and a path-anchored failure.
+ * Because the record is written in the same transaction as each batch it checkpoints, an interrupted
+ * commit resumes from exactly the batches that durably committed — never re-applying one.
+ */
+export interface StoredHistoricalImportCommit {
+    readonly id: string;
+    readonly dryRunId: string;
+    readonly profileId: string;
+    readonly importBatchId: string | null;
+    readonly sourceNamespace: string;
+    readonly sourceGeneratedBy: string | null;
+    readonly mode: "create" | "upsert";
+    readonly idempotencyKey: string | null;
+    readonly state: HistoricalImportCommitState;
+    readonly committedBatchKeys: readonly string[];
+    readonly attempts: number;
+    readonly failure: HistoricalImportCommitFailure | null;
+    readonly createdAt: Date;
+    readonly startedAt: Date | null;
+    readonly completedAt: Date | null;
+    readonly updatedAt: Date;
+}
+
+/** One committed external-ID → Kinetix-ID binding surfaced in a commit result. */
+export interface HistoricalImportCommitEntity {
+    readonly entityType: ImportEntityType;
+    readonly externalId: string;
+    readonly entityId: string;
+}
+
+/** The application-facing commit run result (mirror of `historicalImportCommitResponseSchema`). */
+export interface HistoricalImportCommitResult {
+    readonly commitId: string;
+    readonly dryRunId: string;
+    readonly importBatchId: string | null;
+    readonly state: HistoricalImportCommitState;
+    readonly mode: "create" | "upsert";
+    readonly source: { readonly namespace: string; readonly generatedBy: string | null };
+    readonly programs: number;
+    readonly completedSessions: number;
+    readonly counts: CommitCounts;
+    readonly entities: readonly HistoricalImportCommitEntity[];
+    readonly createdExercises: readonly BulkCommittedExercise[];
+    readonly affectedVersions: readonly BulkAffectedVersion[];
+    readonly warnings: readonly PlanningWarning[];
+    readonly failure: HistoricalImportCommitFailure | null;
+    readonly createdAt: string;
+    readonly startedAt: string | null;
+    readonly completedAt: string | null;
+}
+
+/** Start a commit: only the dry-run identity + approval token (never a body) plus an optional key. */
+export interface HistoricalImportCommitRequest {
+    readonly dryRunId: string;
+    readonly approvalToken: string;
+    readonly idempotencyKey?: string | null;
+}
+
+/**
+ * Persistence port over the durable commit-run store. `lockByDryRunId` / `lockById` serialize concurrent
+ * commits (SELECT … FOR UPDATE); `insertIfAbsent` (INSERT … ON CONFLICT (dry_run_id) DO NOTHING)
+ * converges concurrent first-time starts on one run; `save` rewrites the mutable lifecycle fields
+ * (state, checkpoint, failure, timestamps). Identity is fixed at insert. No raw SQL in the use case
+ * (ADR 0003); every write runs inside the caller's UnitOfWork.
+ */
+export interface HistoricalImportCommitRepository<Transaction = unknown> {
+    lockByDryRunId(
+        dryRunId: string,
+        profileId: string,
+        transaction: Transaction,
+    ): Promise<StoredHistoricalImportCommit | null>;
+    lockById(id: string, profileId: string, transaction: Transaction): Promise<StoredHistoricalImportCommit | null>;
+    insertIfAbsent(record: StoredHistoricalImportCommit, transaction: Transaction): Promise<boolean>;
+    findById(id: string, profileId: string, transaction?: Transaction): Promise<StoredHistoricalImportCommit | null>;
+    save(record: StoredHistoricalImportCommit, transaction: Transaction): Promise<void>;
+}
+
+/** A missing/foreign dry-run addressed by a commit. */
+export class HistoricalImportDryRunNotFoundError extends ApplicationNotFoundError {
+    constructor(readonly dryRunId: string) {
+        super(`Historical import dry-run ${dryRunId} was not found`, { dryRunId });
+        this.name = "HistoricalImportDryRunNotFoundError";
+    }
+}
+
+/** A missing/foreign commit run addressed by a status/retry request. */
+export class HistoricalImportCommitNotFoundError extends ApplicationNotFoundError {
+    constructor(readonly commitId: string) {
+        super(`Historical import commit ${commitId} was not found`, { commitId });
+        this.name = "HistoricalImportCommitNotFoundError";
+    }
+}
+
+/**
+ * A commit batch failed and left the run `failed` (design §14.7). Carries the path-anchored failure so
+ * the boundary can surface exactly which canonical payload node stopped the import. `JOB_FAILED` maps to
+ * a 422 and CLI exit 6; the run is durably recorded and resumable via retry.
+ */
+export class HistoricalImportCommitFailedError extends ApplicationError {
+    constructor(
+        readonly commitId: string,
+        readonly failure: HistoricalImportCommitFailure,
+    ) {
+        super("JOB_FAILED", failure.message, undefined, {
+            commitId,
+            path: [...failure.path],
+            failureCode: failure.code,
+            ...(failure.entityType ? { entityType: failure.entityType } : {}),
+            ...(failure.externalId ? { externalId: failure.externalId } : {}),
+        });
+        this.name = "HistoricalImportCommitFailedError";
+    }
+}
+
+interface CommitRuntime<Transaction> {
+    readonly unitOfWork: UnitOfWork<Transaction>;
+    readonly dryRuns: HistoricalImportDryRunRepository<Transaction>;
+    readonly commits: HistoricalImportCommitRepository<Transaction>;
+    readonly externalIds: BulkExternalIdRegistry<Transaction>;
+    readonly importBatches: RegisterImportBatch<Transaction>;
+    readonly catalog: Pick<TrainingExerciseCatalogPort, "resolveCurrentExercise">;
+    readonly exercises: ExerciseCatalogCommands<Transaction>;
+    readonly programCommands: ProgramCommands<Transaction>;
+    readonly plannedSessions: PlannedSessionCommands<Transaction>;
+    readonly publisher: PrescriptionPublisher<Transaction>;
+    readonly membership: ProgramMembershipRepository<Transaction>;
+    readonly trainingSessions: Pick<TrainingSessionCommands<Transaction>, "commitPreparedState">;
+    readonly profileReader: Pick<ProfileReader, "requireActiveProfileId">;
+    readonly clock?: Clock;
+    readonly generateId?: () => string;
+}
+
+/**
+ * Commit an approved historical dry-run into authoritative Training state — durably, idempotently, and
+ * resumably (design §14.7; issue #59, HI5). Unlike the single-program bulk commit (14.3) which writes
+ * one program in one transaction, a multi-year archive is applied as a sequence of **aggregate-safe
+ * batches** — one transaction per program tree and per completed session — each checkpointed on a
+ * durable commit-run record. So an interruption never leaves a partial aggregate, and a retry resumes
+ * from exactly the batches that committed, never duplicating a program, session, activity, occurrence,
+ * or set.
+ *
+ * Commit reuses only the approved normalized trees the dry-run stored — it accepts no body, re-derives
+ * nothing, and interprets nothing. It re-verifies the dry-run's identity, token, freshness, and
+ * reference hash before any write; persists each aggregate through the ordinary aggregate commands
+ * ({@link ProgramCommands}, {@link PlannedSessionCommands}, {@link TrainingSessionCommands}) so every
+ * revision and outbox fact fires exactly as for a hand-authored program or session, with
+ * `revisionSource = "import"`; registers each aggregate's namespaced external IDs (linked to its import
+ * batch) so the DB uniqueness backs safe retries; and consumes the dry-run only once every batch has
+ * committed. A batch failure leaves prior batches intact, records a path-anchored failure, and stops.
+ *
+ * Scope (create-mode MVP, matching the shipped bulk commit): fresh entities are created and their
+ * external IDs registered for safe retries; field-level upsert of pre-existing aggregates and planned↔
+ * actual mapping persistence require the dry-run to carry diffs/mappings and are a later increment.
+ */
+export class CommitHistoricalImport<Transaction = unknown> {
+    private readonly clock: Clock;
+    private readonly generateId: () => string;
+
+    constructor(private readonly runtime: CommitRuntime<Transaction>) {
+        this.clock = runtime.clock ?? { now: () => new Date() };
+        this.generateId =
+            runtime.generateId ??
+            (() => {
+                throw new Error("Historical import commit ID generation is not configured");
+            });
+    }
+
+    /** Start (or resume, for a byte-identical retry) the commit of an approved dry-run. */
+    async execute(
+        request: HistoricalImportCommitRequest,
+        metadata: CommandContext,
+    ): Promise<HistoricalImportCommitResult> {
+        const profileId = await this.runtime.profileReader.requireActiveProfileId();
+        const claim = await this.claim(request, profileId);
+        if (claim.done) return this.toResult(claim.commit, claim.dryRun);
+        return this.run(claim.commit, claim.dryRun, metadata);
+    }
+
+    /** Resume a failed or interrupted commit run from its last committed checkpoint. */
+    async retry(commitId: string, metadata: CommandContext): Promise<HistoricalImportCommitResult> {
+        const profileId = await this.runtime.profileReader.requireActiveProfileId();
+        const claim = await this.claimForRetry(commitId, profileId);
+        if (claim.done) return this.toResult(claim.commit, claim.dryRun);
+        return this.run(claim.commit, claim.dryRun, metadata);
+    }
+
+    // ---- Gate + claim (one transaction) --------------------------------------------------------
+
+    private claim(
+        request: HistoricalImportCommitRequest,
+        profileId: string,
+    ): Promise<{ commit: StoredHistoricalImportCommit; dryRun: StoredHistoricalImportDryRun; done: boolean }> {
+        return this.runtime.unitOfWork.execute(async transaction => {
+            const dryRun = await this.runtime.dryRuns.lockForCommit(request.dryRunId, transaction);
+            if (!dryRun || dryRun.profileId !== profileId)
+                throw new HistoricalImportDryRunNotFoundError(request.dryRunId);
+            if (dryRun.approvalToken !== request.approvalToken) throw new DryRunTokenInvalidError(dryRun.id);
+
+            let commit = await this.runtime.commits.lockByDryRunId(dryRun.id, profileId, transaction);
+            if (commit?.state === "succeeded") return { commit, dryRun, done: true };
+            if (commit?.state === "running") throw new IdempotencyInProgressError("training.imports.commit", dryRun.id);
+
+            // Freshness + readiness gates for a first or resumed-after-failure commit.
+            if (dryRun.consumedAt !== null) throw new DryRunConsumedError(dryRun.id);
+            if (dryRun.expiresAt.getTime() <= this.clock.now().getTime()) throw new DryRunExpiredError(dryRun.id);
+            this.assertCommittable(dryRun);
+            await this.revalidateReferences(dryRun);
+
+            const batch = await this.runtime.importBatches.execute(
+                {
+                    source: {
+                        namespace: dryRun.sourceNamespace,
+                        payloadId: dryRun.payloadId,
+                        schemaVersion: 1,
+                        checksum: dryRun.checksum,
+                        generatedBy: dryRun.sourceGeneratedBy,
+                    },
+                },
+                transaction,
+            );
+
+            const now = this.clock.now();
+            if (!commit) {
+                const record = this.newRecord(dryRun, request, batch.id, profileId, now);
+                const inserted = await this.runtime.commits.insertIfAbsent(record, transaction);
+                commit = inserted
+                    ? record
+                    : await this.runtime.commits.lockByDryRunId(dryRun.id, profileId, transaction);
+                if (!commit) throw new HistoricalImportCommitNotFoundError(dryRun.id);
+                if (commit.state === "succeeded") return { commit, dryRun, done: true };
+                if (commit.state === "running")
+                    throw new IdempotencyInProgressError("training.imports.commit", dryRun.id);
+            }
+
+            const running: StoredHistoricalImportCommit = {
+                ...commit,
+                importBatchId: batch.id,
+                state: "running",
+                attempts: commit.attempts + 1,
+                startedAt: commit.startedAt ?? now,
+                failure: null,
+                updatedAt: now,
+            };
+            await this.runtime.commits.save(running, transaction);
+            return { commit: running, dryRun, done: false };
+        });
+    }
+
+    private claimForRetry(
+        commitId: string,
+        profileId: string,
+    ): Promise<{ commit: StoredHistoricalImportCommit; dryRun: StoredHistoricalImportDryRun; done: boolean }> {
+        return this.runtime.unitOfWork.execute(async transaction => {
+            const commit = await this.runtime.commits.lockById(commitId, profileId, transaction);
+            if (!commit) throw new HistoricalImportCommitNotFoundError(commitId);
+            const dryRun = await this.runtime.dryRuns.lockForCommit(commit.dryRunId, transaction);
+            if (!dryRun || dryRun.profileId !== profileId)
+                throw new HistoricalImportDryRunNotFoundError(commit.dryRunId);
+            if (commit.state === "succeeded") return { commit, dryRun, done: true };
+
+            this.assertCommittable(dryRun);
+            await this.revalidateReferences(dryRun);
+            const now = this.clock.now();
+            const running: StoredHistoricalImportCommit = {
+                ...commit,
+                state: "running",
+                attempts: commit.attempts + 1,
+                startedAt: commit.startedAt ?? now,
+                failure: null,
+                updatedAt: now,
+            };
+            await this.runtime.commits.save(running, transaction);
+            return { commit: running, dryRun, done: false };
+        });
+    }
+
+    // ---- Batch execution (one transaction per aggregate) ---------------------------------------
+
+    private async run(
+        commit: StoredHistoricalImportCommit,
+        dryRun: StoredHistoricalImportDryRun,
+        metadata: CommandContext,
+    ): Promise<HistoricalImportCommitResult> {
+        // Every write records import provenance so revisions/outbox carry `revisionSource = "import"`.
+        const writeMeta: CommandContext = { ...metadata, source: "import" };
+        const profileId = commit.profileId;
+        const importBatchId = commit.importBatchId;
+
+        // Catalog entries proposed in the dry-run are created up front (prescription/occurrence rows FK
+        // them), idempotently so a resumed run does not attempt to recreate an existing exercise.
+        await this.commitProposedExercises(dryRun, writeMeta);
+
+        const batches = planCommitBatches(dryRun.storagePlan.entries);
+        const committedKeys = new Set(commit.committedBatchKeys);
+        const { pending } = partitionCommitBatches(batches, committedKeys);
+
+        for (const batch of pending) {
+            try {
+                await this.runtime.unitOfWork.execute(async transaction => {
+                    if (batch.kind === "program")
+                        await this.commitProgramBatch(dryRun, batch, writeMeta, profileId, importBatchId, transaction);
+                    else await this.commitSessionBatch(dryRun, batch, writeMeta, profileId, importBatchId, transaction);
+                    committedKeys.add(batch.key);
+                    commit = { ...commit, committedBatchKeys: [...committedKeys], updatedAt: this.clock.now() };
+                    await this.runtime.commits.save(commit, transaction);
+                });
+            } catch (error) {
+                const failure = failureForBatch(batch, error);
+                const now = this.clock.now();
+                commit = { ...commit, state: "failed", failure, updatedAt: now };
+                await this.runtime.unitOfWork.execute(transaction => this.runtime.commits.save(commit, transaction));
+                throw new HistoricalImportCommitFailedError(commit.id, failure);
+            }
+        }
+
+        const completedAt = this.clock.now();
+        const finished = { ...commit, state: "succeeded" as const, completedAt, updatedAt: completedAt };
+        await this.runtime.unitOfWork.execute(async transaction => {
+            await this.runtime.dryRuns.markConsumed(dryRun.id, { consumedAt: completedAt }, transaction);
+            await this.runtime.commits.save(finished, transaction);
+        });
+        return this.toResult(finished, dryRun);
+    }
+
+    private async commitProposedExercises(
+        dryRun: StoredHistoricalImportDryRun,
+        writeMeta: CommandContext,
+    ): Promise<void> {
+        if (dryRun.proposedExercises.length === 0) return;
+        await this.runtime.unitOfWork.execute(async transaction => {
+            for (const proposed of dryRun.proposedExercises) {
+                if (await this.exerciseExists(proposed.exerciseId)) continue;
+                await this.runtime.exercises.create(
+                    {
+                        id: proposed.exerciseId,
+                        slug: proposed.definition.slug ?? slugify(proposed.definition.name),
+                        name: proposed.definition.name,
+                        equipmentTypeId: proposed.definition.equipmentTypeId,
+                        movementPatternId: proposed.definition.movementPatternId,
+                        classification: proposed.definition.classification,
+                        laterality: proposed.definition.laterality,
+                        bodyPosition: proposed.definition.bodyPosition,
+                        repetitionSemantics: proposed.definition.repetitionSemantics,
+                        loadModel: proposed.definition.loadModel,
+                        supportedMeasurements: [...proposed.definition.supportedMeasurements],
+                        muscles: (proposed.definition.muscles ?? []).map(muscle => ({
+                            muscleGroupId: muscle.muscleGroupId,
+                            role: muscle.role,
+                        })),
+                    },
+                    writeMeta,
+                    transaction,
+                );
+            }
+        });
+    }
+
+    private async exerciseExists(exerciseId: string): Promise<boolean> {
+        try {
+            await this.runtime.catalog.resolveCurrentExercise(exerciseId);
+            return true;
+        } catch (error) {
+            if (error instanceof ExerciseNotFoundError) return false;
+            throw error;
+        }
+    }
+
+    private async commitProgramBatch(
+        dryRun: StoredHistoricalImportDryRun,
+        batch: CommitBatch,
+        writeMeta: CommandContext,
+        profileId: string,
+        importBatchId: string | null,
+        transaction: Transaction,
+    ): Promise<void> {
+        const program = dryRun.programs[batch.index];
+        if (!program)
+            throw new ApplicationValidationError(
+                `Program batch ${batch.index} is missing from the dry-run`,
+                undefined,
+                {
+                    batch: batch.key,
+                },
+            );
+
+        await this.runtime.programCommands.create(
+            {
+                id: program.id,
+                name: program.name,
+                description: program.description,
+                scheduleMode: program.scheduleMode,
+                startDate: program.startDate,
+                endDate: program.endDate,
+                focus: program.focus,
+                goalIds: [...program.goalIds],
+                blocks: program.blocks.map(block => ({
+                    id: block.id,
+                    parentBlockId: block.parentBlockId,
+                    type: block.type,
+                    label: block.label,
+                    position: block.position,
+                    startDate: block.startDate,
+                    endDate: block.endDate,
+                    relativeStartWeek: block.relativeStartWeek,
+                    relativeEndWeek: block.relativeEndWeek,
+                    focus: block.focus,
+                    targetMuscles: [...block.targetMuscles],
+                    targetVolume: block.targetVolume,
+                    targetIntensity: block.targetIntensity,
+                    deload: block.deload,
+                    expectedAdaptations: block.expectedAdaptations,
+                    notes: block.notes,
+                    tags: [...block.tags],
+                })),
+            },
+            writeMeta,
+            transaction,
+        );
+
+        const entries: BulkExternalIdEntry[] = [];
+        if (program.externalId)
+            entries.push({ entityType: "program", externalId: program.externalId, entityId: program.id });
+        for (const block of program.blocks)
+            entries.push({ entityType: "program-block", externalId: block.externalId, entityId: block.id });
+
+        for (const session of program.sessions) {
+            if (!session.prescription)
+                throw new ApplicationValidationError(
+                    `Session '${session.externalId}' in a ready dry-run is missing its prescription`,
+                    { prescription: ["Prescription is missing"] },
+                    { sessionExternalId: session.externalId },
+                );
+            const published = await this.runtime.publisher.publishPreparedState(
+                session.prescription,
+                writeMeta,
+                transaction,
+            );
+            await this.runtime.plannedSessions.materialize(
+                {
+                    id: session.id,
+                    profileId,
+                    currentPrescriptionId: published.id,
+                    title: session.title,
+                    localDate: session.localDate,
+                    timeZone: session.timeZone,
+                    preferredTime: session.preferredTime,
+                    expectedDurationMinutes: session.expectedDurationMinutes,
+                    notes: session.notes,
+                    tags: [...session.tags],
+                    sourceTemplateId: null,
+                    sourceTemplateVersion: null,
+                },
+                published,
+                writeMeta,
+                transaction,
+            );
+            await this.runtime.membership.linkProgramSession(
+                {
+                    programId: program.id,
+                    plannedSessionId: session.id,
+                    relativeWeek: session.relativeWeek,
+                    relativeDay: session.relativeDay,
+                    sequence: session.sequence,
+                },
+                transaction,
+            );
+            for (const blockId of session.blockIds)
+                await this.runtime.membership.linkSessionBlock(session.id, blockId, transaction);
+            entries.push({ entityType: "planned-session", externalId: session.externalId, entityId: session.id });
+        }
+
+        await this.runtime.externalIds.register(
+            { profileId, namespace: dryRun.sourceNamespace, importBatchId, entries },
+            transaction,
+        );
+    }
+
+    private async commitSessionBatch(
+        dryRun: StoredHistoricalImportDryRun,
+        batch: CommitBatch,
+        writeMeta: CommandContext,
+        profileId: string,
+        importBatchId: string | null,
+        transaction: Transaction,
+    ): Promise<void> {
+        const normalized = dryRun.completedSessions[batch.index];
+        if (!normalized)
+            throw new ApplicationValidationError(
+                `Completed-session batch ${batch.index} is missing from the dry-run`,
+                undefined,
+                { batch: batch.key },
+            );
+        const { externalId, ...state } = normalized;
+        await this.runtime.trainingSessions.commitPreparedState(state, writeMeta, transaction);
+        await this.runtime.externalIds.register(
+            {
+                profileId,
+                namespace: dryRun.sourceNamespace,
+                importBatchId,
+                entries: [{ entityType: "training-session", externalId, entityId: state.id }],
+            },
+            transaction,
+        );
+    }
+
+    // ---- Gating helpers ------------------------------------------------------------------------
+
+    private assertCommittable(dryRun: StoredHistoricalImportDryRun): void {
+        if (dryRun.state !== "ready" || dryRun.errors.length > 0)
+            throw new ApplicationError(
+                "CATALOG_MAPPING_REQUIRED",
+                "This dry-run has unresolved mappings or validation errors and cannot be committed",
+                undefined,
+                { dryRunId: dryRun.id },
+            );
+    }
+
+    /**
+     * Recompute the reference fingerprint over the *current* versions of every catalog exercise the
+     * dry-run resolved and compare to the stored hash (design §14.3 step 2). A version bump, a new merge
+     * redirect, or a deleted exercise changes the hash → the dry-run is stale and must be re-run.
+     */
+    private async revalidateReferences(dryRun: StoredHistoricalImportDryRun): Promise<void> {
+        const current: BulkAffectedVersion[] = [];
+        for (const affected of dryRun.affectedVersions) {
+            if (affected.entityType !== "training.exercise") {
+                current.push(affected);
+                continue;
+            }
+            try {
+                const resolved = await this.runtime.catalog.resolveCurrentExercise(affected.entityId);
+                current.push({ ...affected, version: resolved.exercise.version });
+            } catch (error) {
+                if (error instanceof ExerciseNotFoundError) throw new DryRunStaleError(dryRun.id);
+                throw error;
+            }
+        }
+        if (hashRequest(current) !== dryRun.referenceHash) throw new DryRunStaleError(dryRun.id);
+    }
+
+    private newRecord(
+        dryRun: StoredHistoricalImportDryRun,
+        request: HistoricalImportCommitRequest,
+        importBatchId: string | null,
+        profileId: string,
+        now: Date,
+    ): StoredHistoricalImportCommit {
+        return {
+            id: this.generateId(),
+            dryRunId: dryRun.id,
+            profileId,
+            importBatchId,
+            sourceNamespace: dryRun.sourceNamespace,
+            sourceGeneratedBy: dryRun.sourceGeneratedBy,
+            mode: dryRun.mode,
+            idempotencyKey: request.idempotencyKey ?? null,
+            state: "pending",
+            committedBatchKeys: [],
+            attempts: 0,
+            failure: null,
+            createdAt: now,
+            startedAt: null,
+            completedAt: null,
+            updatedAt: now,
+        };
+    }
+
+    private async toResult(
+        commit: StoredHistoricalImportCommit,
+        dryRun: StoredHistoricalImportDryRun,
+    ): Promise<HistoricalImportCommitResult> {
+        const entities = commit.importBatchId ? await this.runtime.externalIds.listByBatch(commit.importBatchId) : [];
+        return assembleCommitResult(commit, dryRun, entities);
+    }
+}
+
+/**
+ * Read side of the commit surface: resolve a durable commit run's status/failure/counts for a status
+ * poll (`GET …/commits/:id`). Scoped to the active profile; reuses the same result shape the commit
+ * itself returns so start, status, and retry are indistinguishable to a caller.
+ */
+export class HistoricalImportCommitQueryService {
+    constructor(
+        private readonly runtime: {
+            readonly commits: HistoricalImportCommitRepository;
+            readonly dryRuns: HistoricalImportDryRunRepository;
+            readonly externalIds: Pick<BulkExternalIdRegistry, "listByBatch">;
+            readonly profileReader: Pick<ProfileReader, "requireActiveProfileId">;
+        },
+    ) {}
+
+    async findById(commitId: string): Promise<HistoricalImportCommitResult> {
+        const profileId = await this.runtime.profileReader.requireActiveProfileId();
+        const commit = await this.runtime.commits.findById(commitId, profileId);
+        if (!commit) throw new HistoricalImportCommitNotFoundError(commitId);
+        const dryRun = await this.runtime.dryRuns.findById(commit.dryRunId);
+        if (!dryRun) throw new HistoricalImportDryRunNotFoundError(commit.dryRunId);
+        const entities = commit.importBatchId ? await this.runtime.externalIds.listByBatch(commit.importBatchId) : [];
+        return assembleCommitResult(commit, dryRun, entities);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Commit helpers
+// ---------------------------------------------------------------------------------------------
+
+function assembleCommitResult(
+    commit: StoredHistoricalImportCommit,
+    dryRun: StoredHistoricalImportDryRun,
+    entities: readonly BulkExternalIdMapping[],
+): HistoricalImportCommitResult {
+    const batches = planCommitBatches(dryRun.storagePlan.entries);
+    const committedKeys = new Set(commit.committedBatchKeys);
+    const committed = batches.filter(batch => committedKeys.has(batch.key));
+    const conflicted =
+        commit.state === "failed" && commit.failure?.code === "EXTERNAL_ID_CONFLICT"
+            ? batches.filter(batch => pathKey(batch.path) === pathKey(commit.failure!.path))
+            : [];
+    return {
+        commitId: commit.id,
+        dryRunId: commit.dryRunId,
+        importBatchId: commit.importBatchId,
+        state: commit.state,
+        mode: commit.mode,
+        source: { namespace: commit.sourceNamespace, generatedBy: commit.sourceGeneratedBy },
+        programs: committed.filter(batch => batch.kind === "program").length,
+        completedSessions: committed.filter(batch => batch.kind === "completed-session").length,
+        counts: tallyCommitCounts({ committed, skipped: [], conflicted }),
+        entities: entities.map(entity => ({
+            entityType: entity.entityType,
+            externalId: entity.externalId,
+            entityId: entity.entityId,
+        })),
+        createdExercises: dryRun.proposedExercises.map(proposed => ({
+            exerciseId: proposed.exerciseId,
+            exerciseRef: proposed.exerciseRef,
+            sessionExternalId: proposed.sessionExternalId,
+        })),
+        affectedVersions: [...dryRun.affectedVersions],
+        warnings: [...dryRun.warnings],
+        failure: commit.failure,
+        createdAt: commit.createdAt.toISOString(),
+        startedAt: commit.startedAt?.toISOString() ?? null,
+        completedAt: commit.completedAt?.toISOString() ?? null,
+    };
+}
+
+/** Classify a batch failure into a path-anchored, machine-readable failure record (design §14.7). */
+function failureForBatch(batch: CommitBatch, error: unknown): HistoricalImportCommitFailure {
+    const entityType: ImportEntityType = batch.kind === "program" ? "program" : "training-session";
+    const message = error instanceof Error ? error.message : "Commit batch failed";
+    const code =
+        error instanceof ApplicationError
+            ? error.code
+            : error && typeof error === "object" && "code" in error && typeof error.code === "string"
+              ? error.code
+              : "INTERNAL_ERROR";
+    return { path: [...batch.path], code, message, entityType, externalId: batch.rootExternalId };
+}
+
+function pathKey(path: readonly (string | number)[]): string {
+    return path.map(String).join(" ");
+}
+
+function slugify(name: string): string {
+    const slug = name
+        .trim()
+        .toLowerCase()
+        .normalize("NFKD")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    return slug.length > 0 ? slug : "exercise";
 }

@@ -71,6 +71,25 @@ export class DrizzleHistoricalImportDryRunRepository implements HistoricalImport
         return row ? this.hydrate(row) : null;
     }
 
+    async lockForCommit(id: string, transaction: unknown): Promise<StoredHistoricalImportDryRun | null> {
+        const row = (
+            await this.executor(transaction)
+                .select()
+                .from(historicalImportDryRuns)
+                .where(eq(historicalImportDryRuns.id, id))
+                .limit(1)
+                .for("update")
+        )[0];
+        return row ? this.hydrate(row) : null;
+    }
+
+    async markConsumed(id: string, input: { consumedAt: Date }, transaction: unknown): Promise<void> {
+        await this.executor(transaction)
+            .update(historicalImportDryRuns)
+            .set({ consumedAt: input.consumedAt })
+            .where(eq(historicalImportDryRuns.id, id));
+    }
+
     private hydrate(row: HistoricalImportDryRunRow): StoredHistoricalImportDryRun {
         return {
             id: row.id,
