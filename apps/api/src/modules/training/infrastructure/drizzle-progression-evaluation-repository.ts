@@ -11,11 +11,14 @@ import {
 
 import { DatabaseService } from "#src/database/database.service";
 import {
+    type ProgressionDecisionRecord,
+    type ProgressionEvaluationActionStatus,
     type ProgressionEvaluationActionView,
     type ProgressionEvaluationListFilter,
     type ProgressionEvaluationRecord,
     type ProgressionEvaluationRepository,
     type ProgressionEvaluationView,
+    type ProgressionResultRevisionView,
 } from "#src/modules/training/application/index";
 import type {
     ActionV1,
@@ -111,6 +114,53 @@ export class DrizzleProgressionEvaluationRepository implements ProgressionEvalua
         return hydrate(row, actions.get(row.id) ?? []);
     }
 
+    async loadForUpdate(id: string, transaction: unknown): Promise<ProgressionEvaluationView | null> {
+        const executor = this.executor(transaction);
+        // Row lock so two concurrent approvers serialize and only one can apply the proposal (design §15.3).
+        const row = (
+            await executor
+                .select()
+                .from(progressionEvaluations)
+                .where(eq(progressionEvaluations.id, id))
+                .limit(1)
+                .for("update")
+        )[0];
+        if (!row) return null;
+        const actions = await this.loadActions([row.id], executor);
+        return hydrate(row, actions.get(row.id) ?? []);
+    }
+
+    async recordDecision(
+        decision: ProgressionDecisionRecord,
+        transaction: unknown,
+    ): Promise<ProgressionEvaluationView> {
+        const executor = this.executor(transaction);
+        await executor
+            .update(progressionEvaluations)
+            .set({
+                status: decision.status,
+                decidedAt: decision.decidedAt,
+                decidedBy: decision.decidedBy,
+                decisionReason: decision.decisionReason,
+                resultRevisions: decision.resultRevisions.map(revision => ({ ...revision })),
+            })
+            .where(eq(progressionEvaluations.id, decision.id));
+        await executor
+            .update(progressionEvaluationActions)
+            .set({ status: decision.actionStatus })
+            .where(eq(progressionEvaluationActions.evaluationId, decision.id));
+        const view = await this.readById(decision.id, transaction);
+        if (!view) throw new Error(`Progression evaluation ${decision.id} vanished during a decision`);
+        return view;
+    }
+
+    async markStale(id: string, transaction: unknown): Promise<void> {
+        await this.executor(transaction)
+            .update(progressionEvaluations)
+            .set({ stale: true })
+            .where(eq(progressionEvaluations.id, id));
+    }
+
     async listForSession(sessionId: string, transaction?: unknown): Promise<readonly ProgressionEvaluationView[]> {
         const executor = this.executor(transaction);
         const rows = await executor
@@ -199,6 +249,11 @@ function toView(record: ProgressionEvaluationRecord): ProgressionEvaluationView 
         conflict: record.conflict,
         autoApplyEligible: record.autoApplyEligible,
         autoApplyReason: record.autoApplyReason,
+        stale: record.stale,
+        decidedAt: record.decidedAt,
+        decidedBy: record.decidedBy,
+        decisionReason: record.decisionReason,
+        resultRevisions: record.resultRevisions,
         actions: record.actions,
         evaluatedAt: record.evaluatedAt,
     };
@@ -239,6 +294,11 @@ function hydrate(
         },
         autoApplyEligible: row.autoApplyEligible,
         autoApplyReason: row.autoApplyReason,
+        stale: row.stale,
+        decidedAt: row.decidedAt,
+        decidedBy: row.decidedBy,
+        decisionReason: row.decisionReason,
+        resultRevisions: row.resultRevisions as unknown as ProgressionResultRevisionView[],
         actions: actionRows.map(toActionView),
         evaluatedAt: row.evaluatedAt,
     };
@@ -249,6 +309,6 @@ function toActionView(row: ProgressionEvaluationActionRow): ProgressionEvaluatio
         position: row.position,
         actionType: row.actionType as ProgressionActionType,
         action: row.action as unknown as ActionV1,
-        status: row.status as "proposed",
+        status: row.status as ProgressionEvaluationActionStatus,
     };
 }

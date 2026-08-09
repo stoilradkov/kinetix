@@ -2690,6 +2690,14 @@ export const progressionEvaluations = pgTable(
         conflictFields: jsonb("conflict_fields").$type<string[]>().notNull().default([]),
         autoApplyEligible: boolean("auto_apply_eligible").notNull().default(false),
         autoApplyReason: text("auto_apply_reason"),
+        // Approval lifecycle (G4, design §15.3 steps 8–9, PRD PG-7): a proposal is flagged `stale` when its
+        // context moved after evaluation (reevaluation is enqueued instead of applying it), and the approve/
+        // reject decision plus the owner revisions it produced are recorded for the immutable audit trail.
+        stale: boolean("stale").notNull().default(false),
+        decidedAt: timestamp("decided_at", { withTimezone: true }),
+        decidedBy: text("decided_by"),
+        decisionReason: text("decision_reason"),
+        resultRevisions: jsonb("result_revisions").$type<Record<string, unknown>[]>().notNull().default([]),
         evaluatedAt: timestamp("evaluated_at", { withTimezone: true }).notNull().defaultNow(),
         createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     },

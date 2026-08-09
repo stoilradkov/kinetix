@@ -2024,8 +2024,92 @@ function registerTrainingProgressionCommands(training: Command, dependencies: Pr
                 dependencies.output(
                     `  auto-apply\t${result.autoApplyEligible ? "eligible" : `blocked${result.autoApplyReason ? ` (${result.autoApplyReason})` : ""}`}`,
                 );
+                if (result.stale) dependencies.output("  stale\tqueued for reevaluation");
+                if (result.decidedAt)
+                    dependencies.output(
+                        `  decided\t${result.status} by ${result.decidedBy ?? "?"}${result.decisionReason ? ` (${result.decisionReason})` : ""}`,
+                    );
+                for (const revision of result.resultRevisions)
+                    dependencies.output(
+                        `  applied\t${revision.entityType} ${revision.entityId} → v${revision.version}`,
+                    );
             }
         });
+
+    progression
+        .command("pending")
+        .description("List pending progression proposals awaiting approval")
+        .option("--limit <count>", "Maximum results (1-200)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { limit?: string; apiUrl?: string; json?: boolean }) => {
+            const params = new URLSearchParams({ status: "pending" });
+            if (options.limit !== undefined) params.set("limit", options.limit);
+            const result = progressionEvaluationListResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/progression/evaluations?${params.toString()}`,
+                ),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const item of result.items) outputProgressionEvaluation(dependencies.output, item);
+        });
+
+    progression
+        .command("approve")
+        .description("Approve a proposal, applying its actions to the target owner")
+        .argument("<evaluation-id>", "Progression evaluation UUID")
+        .option("--reason <reason>", "Reason recorded with the decision")
+        .option("--idempotency-key <key>", "Idempotency key so a retried approval replays instead of re-applying")
+        .option("--source <source>", "Provenance source recorded with the decision")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                evaluationId: string,
+                options: { reason?: string; idempotencyKey?: string; source?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const body: Record<string, unknown> = {};
+                if (options.reason !== undefined) body.reason = options.reason;
+                const result = progressionEvaluationResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/progression/evaluations/${encodeURIComponent(evaluationId)}/approve`,
+                        mutationRequest("POST", body, undefined, options.idempotencyKey, provenanceOf(options)),
+                    ),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else outputProgressionEvaluation(dependencies.output, result);
+            },
+        );
+
+    progression
+        .command("reject")
+        .description("Reject/acknowledge a proposal without applying it")
+        .argument("<evaluation-id>", "Progression evaluation UUID")
+        .option("--reason <reason>", "Reason recorded with the decision")
+        .option("--idempotency-key <key>", "Idempotency key so a retried rejection replays")
+        .option("--source <source>", "Provenance source recorded with the decision")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                evaluationId: string,
+                options: { reason?: string; idempotencyKey?: string; source?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const body: Record<string, unknown> = {};
+                if (options.reason !== undefined) body.reason = options.reason;
+                const result = progressionEvaluationResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/progression/evaluations/${encodeURIComponent(evaluationId)}/reject`,
+                        mutationRequest("POST", body, undefined, options.idempotencyKey, provenanceOf(options)),
+                    ),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else outputProgressionEvaluation(dependencies.output, result);
+            },
+        );
 }
 
 function outputProgressionEvaluation(

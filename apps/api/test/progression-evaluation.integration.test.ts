@@ -64,6 +64,11 @@ function record(overrides: Partial<ProgressionEvaluationRecord> = {}): Progressi
         conflict: { conflicting: false, ruleIds: [], fields: [] },
         autoApplyEligible: false,
         autoApplyReason: "Rule is not enabled for automatic application",
+        stale: false,
+        decidedAt: null,
+        decidedBy: null,
+        decisionReason: null,
+        resultRevisions: [],
         evaluatedAt: now,
         actions: [
             {
@@ -192,6 +197,55 @@ describe.runIf(testDatabaseUrl)("progression evaluations PostgreSQL persistence"
             const pending = await repository.listForProfile({ profileId, status: "pending" }, tx);
             expect(pending).toHaveLength(1);
             expect(pending[0]!.status).toBe("pending");
+        });
+    });
+
+    it("locks a row for update and records an approval decision atomically", async () => {
+        await inRollback(async tx => {
+            await repository.insert(record(), tx);
+
+            const locked = await repository.loadForUpdate(evaluationId, tx);
+            expect(locked).not.toBeNull();
+            expect(locked!.status).toBe("pending");
+            expect(locked!.stale).toBe(false);
+
+            const decided = await repository.recordDecision(
+                {
+                    id: evaluationId,
+                    status: "applied",
+                    actionStatus: "applied",
+                    decidedAt: now,
+                    decidedBy: "user-1",
+                    decisionReason: "Looks good",
+                    resultRevisions: [
+                        {
+                            entityType: "training.workout-template",
+                            entityId: scopeId,
+                            version: 2,
+                            prescriptionId: "0198a4db-d8da-7000-8000-0000000e00a1",
+                        },
+                    ],
+                },
+                tx,
+            );
+            expect(decided.status).toBe("applied");
+            expect(decided.decidedBy).toBe("user-1");
+            expect(decided.decisionReason).toBe("Looks good");
+            expect(decided.resultRevisions[0]).toMatchObject({ entityType: "training.workout-template", version: 2 });
+            expect(decided.actions[0]!.status).toBe("applied");
+
+            const reread = await repository.readById(evaluationId, tx);
+            expect(reread!.status).toBe("applied");
+            expect(reread!.actions[0]!.status).toBe("applied");
+        });
+    });
+
+    it("flags an evaluation stale", async () => {
+        await inRollback(async tx => {
+            await repository.insert(record(), tx);
+            await repository.markStale(evaluationId, tx);
+            const read = await repository.readById(evaluationId, tx);
+            expect(read!.stale).toBe(true);
         });
     });
 });

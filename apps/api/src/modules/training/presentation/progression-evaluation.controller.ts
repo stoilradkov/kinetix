@@ -1,27 +1,52 @@
 import { randomUUID } from "node:crypto";
 
-import { Body, Controller, Get, Headers, HttpException, Inject, Param, Post, Query } from "@nestjs/common";
-import { ApiOperation, ApiParam, ApiQuery, ApiTags } from "@nestjs/swagger";
+import {
+    Body,
+    Controller,
+    Get,
+    Headers,
+    HttpException,
+    Inject,
+    Optional,
+    Param,
+    Post,
+    Query,
+    Res,
+} from "@nestjs/common";
+import { ApiHeader, ApiOperation, ApiParam, ApiQuery, ApiTags } from "@nestjs/swagger";
 
 import {
+    approveProgressionEvaluationRequestSchema,
     evaluateProgressionRequestSchema,
     progressionEvaluationListQuerySchema,
     progressionEvaluationListResponseSchema,
     progressionEvaluationResponseSchema,
+    rejectProgressionEvaluationRequestSchema,
     type ProgressionEvaluationListResponse,
     type ProgressionEvaluationResponse,
 } from "@kinetix/types";
 
 import {
     EVALUATE_PROGRESSION,
+    PROGRESSION_APPROVAL_SERVICE,
     PROGRESSION_EVALUATION_REPOSITORY,
     ProgressionSubjectUnavailableError,
     type EvaluateProgression,
+    type ProgressionApprovalService,
     type ProgressionEvaluationRepository,
     type ProgressionEvaluationView,
 } from "#src/modules/training/application/index";
 import { PROFILE_READER, type ProfileReader } from "#src/modules/profile/index";
-import { ApplicationValidationError, type CommandContext } from "#src/platform/application/index";
+import {
+    ApplicationValidationError,
+    IDEMPOTENT_COMMAND_EXECUTOR,
+    type CommandContext,
+    type IdempotentCommandExecutor,
+} from "#src/platform/application/index";
+
+interface HeaderResponse {
+    setHeader(name: string, value: string): void;
+}
 
 /**
  * Progression evaluation read/trigger surface (issue #40, G2; design §15.3). Evaluations are immutable
@@ -36,7 +61,9 @@ export class ProgressionEvaluationController {
     constructor(
         @Inject(EVALUATE_PROGRESSION) private readonly evaluate: EvaluateProgression,
         @Inject(PROGRESSION_EVALUATION_REPOSITORY) private readonly repository: ProgressionEvaluationRepository,
+        @Inject(PROGRESSION_APPROVAL_SERVICE) private readonly approval: ProgressionApprovalService,
         @Inject(PROFILE_READER) private readonly profiles: ProfileReader,
+        @Optional() @Inject(IDEMPOTENT_COMMAND_EXECUTOR) private readonly idempotency?: IdempotentCommandExecutor,
     ) {}
 
     @Post("sessions/:sessionId/progression/evaluate")
@@ -98,6 +125,99 @@ export class ProgressionEvaluationController {
             throw new HttpException({ code: "NOT_FOUND", message: `Evaluation ${id} was not found` }, 404);
         return progressionEvaluationResponseSchema.parse(toResponse(view));
     }
+
+    @Post("progression/evaluations/:evaluationId/approve")
+    @ApiOperation({ summary: "Approve a proposal, applying its actions to the target owner (all-or-none)" })
+    @ApiParam({ name: "evaluationId", format: "uuid" })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    async approve(
+        @Param("evaluationId") evaluationId: string,
+        @Body() rawBody: unknown = {},
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Headers("x-correlation-id") correlationId: string | undefined,
+        @Headers("x-kinetix-source") source: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<ProgressionEvaluationResponse> {
+        const id = uuid(evaluationId, "evaluationId");
+        const command = parseContract(
+            approveProgressionEvaluationRequestSchema,
+            rawBody,
+            "Approve request validation failed",
+        );
+        const metadata = commandMetadata(correlationId, source);
+        return this.executeDecision({
+            operation: "training.progression-evaluation.approve",
+            idempotencyKey,
+            request: { evaluationId: id, ...command },
+            metadata,
+            response,
+            run: transaction =>
+                this.approval.approve({ evaluationId: id, reason: command.reason ?? null }, metadata, transaction),
+        });
+    }
+
+    @Post("progression/evaluations/:evaluationId/reject")
+    @ApiOperation({ summary: "Reject/acknowledge a proposal without applying it" })
+    @ApiParam({ name: "evaluationId", format: "uuid" })
+    @ApiHeader({ name: "Idempotency-Key", required: false })
+    async reject(
+        @Param("evaluationId") evaluationId: string,
+        @Body() rawBody: unknown = {},
+        @Headers("idempotency-key") idempotencyKey: string | undefined,
+        @Headers("x-correlation-id") correlationId: string | undefined,
+        @Headers("x-kinetix-source") source: string | undefined,
+        @Res({ passthrough: true }) response: HeaderResponse,
+    ): Promise<ProgressionEvaluationResponse> {
+        const id = uuid(evaluationId, "evaluationId");
+        const command = parseContract(
+            rejectProgressionEvaluationRequestSchema,
+            rawBody,
+            "Reject request validation failed",
+        );
+        const metadata = commandMetadata(correlationId, source);
+        return this.executeDecision({
+            operation: "training.progression-evaluation.reject",
+            idempotencyKey,
+            request: { evaluationId: id, ...command },
+            metadata,
+            response,
+            run: transaction =>
+                this.approval.reject({ evaluationId: id, reason: command.reason ?? null }, metadata, transaction),
+        });
+    }
+
+    /**
+     * Run an approve/reject through the idempotent executor when a key is supplied (so a retried decision
+     * replays the stored response instead of re-applying), otherwise directly in the service's own unit of
+     * work. The evaluation projection has no aggregate version, so concurrency is guarded by the row lock
+     * and the deterministic status transition rather than an ETag.
+     */
+    private async executeDecision(input: {
+        readonly operation: string;
+        readonly idempotencyKey?: string;
+        readonly request: unknown;
+        readonly metadata: CommandContext;
+        readonly response: HeaderResponse;
+        readonly run: (transaction?: unknown) => Promise<ProgressionEvaluationView>;
+    }): Promise<ProgressionEvaluationResponse> {
+        const perform = async (transaction?: unknown) =>
+            progressionEvaluationResponseSchema.parse(toResponse(await input.run(transaction)));
+        if (input.idempotencyKey !== undefined) {
+            if (!this.idempotency) throw new Error("Idempotency support is not configured");
+            const result = await this.idempotency.execute(
+                {
+                    operation: input.operation,
+                    key: input.idempotencyKey,
+                    request: input.request,
+                    context: input.metadata,
+                },
+                async transaction => ({ status: 200, body: await perform(transaction) }),
+            );
+            input.response.setHeader("Idempotency-Replayed", String(result.replayed));
+            return result.body;
+        }
+        return perform();
+    }
 }
 
 function toResponse(view: ProgressionEvaluationView): unknown {
@@ -131,6 +251,11 @@ function toResponse(view: ProgressionEvaluationView): unknown {
         },
         autoApplyEligible: view.autoApplyEligible,
         autoApplyReason: view.autoApplyReason,
+        stale: view.stale,
+        decidedAt: view.decidedAt ? view.decidedAt.toISOString() : null,
+        decidedBy: view.decidedBy,
+        decisionReason: view.decisionReason,
+        resultRevisions: view.resultRevisions.map(revision => ({ ...revision })),
         actions: view.actions.map(action => ({ ...action, action: { ...action.action } })),
         evaluatedAt: view.evaluatedAt.toISOString(),
     };

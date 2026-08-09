@@ -60,11 +60,22 @@ export const PROGRESSION_EVALUATE_JOB_VERSION = 1;
 // Application-facing views (mirror the wire contract; the application never imports @kinetix/types)
 // -------------------------------------------------------------------------------------------------
 
+/** Lifecycle of one proposed action: `proposed` until the evaluation is approved (`applied`) or rejected. */
+export type ProgressionEvaluationActionStatus = "proposed" | "applied" | "rejected";
+
 export interface ProgressionEvaluationActionView {
     readonly position: number;
     readonly actionType: ProgressionActionType;
     readonly action: ActionV1;
-    readonly status: "proposed";
+    readonly status: ProgressionEvaluationActionStatus;
+}
+
+/** A revision produced by applying a proposal to a target owner (design §15.3, PRD PG-7). */
+export interface ProgressionResultRevisionView {
+    readonly entityType: string;
+    readonly entityId: string;
+    readonly version: number;
+    readonly prescriptionId: string;
 }
 
 /** The safety verdict retained with an evaluation (design §15.4). */
@@ -106,6 +117,15 @@ export interface ProgressionEvaluationView {
     readonly conflict: ProgressionConflictView;
     readonly autoApplyEligible: boolean;
     readonly autoApplyReason: string | null;
+    /** True once a context revision moved after evaluation; a stale proposal is reevaluated, not applied. */
+    readonly stale: boolean;
+    /** When a human (or auto-apply) resolved the proposal; `null` while it is still pending/blocked. */
+    readonly decidedAt: Date | null;
+    /** The actor/source that resolved the proposal; `null` while pending. */
+    readonly decidedBy: string | null;
+    readonly decisionReason: string | null;
+    /** Owner revisions created when the proposal was applied; empty until applied. */
+    readonly resultRevisions: readonly ProgressionResultRevisionView[];
     readonly actions: readonly ProgressionEvaluationActionView[];
     readonly evaluatedAt: Date;
 }
@@ -187,6 +207,11 @@ export interface ProgressionEvaluationRecord {
     readonly conflict: ProgressionConflictView;
     readonly autoApplyEligible: boolean;
     readonly autoApplyReason: string | null;
+    readonly stale: boolean;
+    readonly decidedAt: Date | null;
+    readonly decidedBy: string | null;
+    readonly decisionReason: string | null;
+    readonly resultRevisions: readonly ProgressionResultRevisionView[];
     readonly evaluatedAt: Date;
     readonly actions: readonly ProgressionEvaluationActionView[];
 }
@@ -200,11 +225,28 @@ export interface ProgressionEvaluationRepository<Transaction = unknown> {
     existsByFingerprint(fingerprint: string, transaction?: Transaction): Promise<boolean>;
     insert(record: ProgressionEvaluationRecord, transaction: Transaction): Promise<ProgressionEvaluationView>;
     readById(id: string, transaction?: Transaction): Promise<ProgressionEvaluationView | null>;
+    /** Lock one evaluation row for a decision so concurrent approvers cannot both apply it (design §15.3). */
+    loadForUpdate(id: string, transaction: Transaction): Promise<ProgressionEvaluationView | null>;
+    /** Record an approve/reject decision atomically (evaluation status + action statuses + result revisions). */
+    recordDecision(decision: ProgressionDecisionRecord, transaction: Transaction): Promise<ProgressionEvaluationView>;
+    /** Flag an evaluation stale when its context moved after evaluation (reevaluation is enqueued separately). */
+    markStale(id: string, transaction: Transaction): Promise<void>;
     listForSession(sessionId: string, transaction?: Transaction): Promise<readonly ProgressionEvaluationView[]>;
     listForProfile(
         filter: ProgressionEvaluationListFilter,
         transaction?: Transaction,
     ): Promise<readonly ProgressionEvaluationView[]>;
+}
+
+/** The atomic decision write recorded on approve/reject. */
+export interface ProgressionDecisionRecord {
+    readonly id: string;
+    readonly status: Extract<ProgressionEvaluationStatus, "applied" | "rejected">;
+    readonly actionStatus: Extract<ProgressionEvaluationActionStatus, "applied" | "rejected">;
+    readonly decidedAt: Date;
+    readonly decidedBy: string | null;
+    readonly decisionReason: string | null;
+    readonly resultRevisions: readonly ProgressionResultRevisionView[];
 }
 
 export interface ProgressionEvaluationListFilter {
@@ -580,6 +622,11 @@ export class EvaluateProgression<Transaction = unknown> {
             conflict,
             autoApplyEligible: decision.eligible,
             autoApplyReason: decision.reason,
+            stale: false,
+            decidedAt: null,
+            decidedBy: null,
+            decisionReason: null,
+            resultRevisions: [],
             evaluatedAt: now,
             actions: outcome.proposedActions.map(toActionView),
         };

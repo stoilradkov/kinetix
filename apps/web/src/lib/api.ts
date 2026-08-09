@@ -70,6 +70,11 @@ import {
     updateProgressionRuleRequestSchema,
     progressionRuleListResponseSchema,
     progressionRuleResponseSchema,
+    progressionEvaluationListResponseSchema,
+    progressionEvaluationResponseSchema,
+    approveProgressionEvaluationRequestSchema,
+    rejectProgressionEvaluationRequestSchema,
+    type ProgressionEvaluationResponse,
     type ProgressionRuleResponse,
     createProgramRequestSchema,
     updateProgramRequestSchema,
@@ -546,6 +551,54 @@ export async function changeProgressionRuleStatus(
             method: "POST",
             headers: mutationHeaders(rule.version, crypto.randomUUID()),
             body: "{}",
+        }),
+    );
+}
+
+export function progressionEvaluationsQueryOptions(status?: string) {
+    const query = status ? `?status=${encodeURIComponent(status)}` : "";
+    return queryOptions({
+        queryKey: ["training-progression-evaluations", { status: status ?? null }],
+        queryFn: async () =>
+            progressionEvaluationListResponseSchema.parse(
+                await apiRequest(`/training/progression/evaluations${query}`),
+            ),
+    });
+}
+
+export function progressionEvaluationQueryOptions(evaluationId: string | null) {
+    return queryOptions({
+        queryKey: ["training-progression-evaluation", evaluationId],
+        enabled: evaluationId !== null,
+        queryFn: async () =>
+            progressionEvaluationResponseSchema.parse(
+                await apiRequest(`/training/progression/evaluations/${encodeURIComponent(evaluationId!)}`),
+            ),
+    });
+}
+
+export async function approveProgressionEvaluation(
+    evaluationId: string,
+    input: unknown = {},
+): Promise<ProgressionEvaluationResponse> {
+    return progressionEvaluationResponseSchema.parse(
+        await apiRequest(`/training/progression/evaluations/${encodeURIComponent(evaluationId)}/approve`, {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(approveProgressionEvaluationRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function rejectProgressionEvaluation(
+    evaluationId: string,
+    input: unknown = {},
+): Promise<ProgressionEvaluationResponse> {
+    return progressionEvaluationResponseSchema.parse(
+        await apiRequest(`/training/progression/evaluations/${encodeURIComponent(evaluationId)}/reject`, {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(rejectProgressionEvaluationRequestSchema.parse(input)),
         }),
     );
 }

@@ -130,6 +130,17 @@ export const progressionConflictSchema = z
     .strict();
 export type ProgressionConflict = z.infer<typeof progressionConflictSchema>;
 
+/** An owner revision produced by applying a proposal (design §15.3, PRD PG-7). */
+export const progressionResultRevisionSchema = z
+    .object({
+        entityType: z.string(),
+        entityId: z.string().uuid(),
+        version: z.number().int().positive(),
+        prescriptionId: z.string().uuid(),
+    })
+    .strict();
+export type ProgressionResultRevision = z.infer<typeof progressionResultRevisionSchema>;
+
 export const progressionEvaluationResponseSchema = z
     .object({
         id: z.string().uuid(),
@@ -153,6 +164,11 @@ export const progressionEvaluationResponseSchema = z
         conflict: progressionConflictSchema,
         autoApplyEligible: z.boolean(),
         autoApplyReason: z.string().nullable(),
+        stale: z.boolean(),
+        decidedAt: z.string().datetime().nullable(),
+        decidedBy: z.string().nullable(),
+        decisionReason: z.string().nullable(),
+        resultRevisions: z.array(progressionResultRevisionSchema),
         actions: z.array(progressionEvaluationActionResponseSchema),
         evaluatedAt: z.string().datetime(),
     })
@@ -172,6 +188,16 @@ export const evaluateProgressionRequestSchema = z
     })
     .strict();
 export type EvaluateProgressionRequest = z.infer<typeof evaluateProgressionRequestSchema>;
+
+/** Approve a pending/blocked proposal, applying its actions to the target owner (design §15.3, PRD PG-5). */
+export const approveProgressionEvaluationRequestSchema = z
+    .object({ reason: z.string().max(2_000).optional() })
+    .strict();
+export type ApproveProgressionEvaluationRequest = z.infer<typeof approveProgressionEvaluationRequestSchema>;
+
+/** Reject/acknowledge a pending/blocked proposal without applying it. */
+export const rejectProgressionEvaluationRequestSchema = z.object({ reason: z.string().max(2_000).optional() }).strict();
+export type RejectProgressionEvaluationRequest = z.infer<typeof rejectProgressionEvaluationRequestSchema>;
 
 /** Cross-session evaluation query for the approval/status surface. */
 export const progressionEvaluationListQuerySchema = z

@@ -2,13 +2,17 @@ import { HttpException } from "@nestjs/common";
 import { describe, expect, it } from "vitest";
 
 import {
+    ProgressionAlreadyResolvedError,
     ProgressionSubjectUnavailableError,
     type EvaluateProgression,
+    type ProgressionApprovalService,
     type ProgressionEvaluationRepository,
     type ProgressionEvaluationView,
 } from "#src/modules/training/application/index";
 import { ProgressionEvaluationController } from "#src/modules/training/presentation/index";
 import type { ProfileReader } from "#src/modules/profile/index";
+
+const noopResponse = { setHeader: () => undefined };
 
 const ids = {
     evaluation: "0198a4db-d8da-7000-8000-000000000f01",
@@ -52,6 +56,11 @@ function view(overrides: Partial<ProgressionEvaluationView> = {}): ProgressionEv
         conflict: { conflicting: false, ruleIds: [], fields: [] },
         autoApplyEligible: false,
         autoApplyReason: "Rule is not enabled for automatic application",
+        stale: false,
+        decidedAt: null,
+        decidedBy: null,
+        decisionReason: null,
+        resultRevisions: [],
         actions: [
             {
                 position: 0,
@@ -82,9 +91,32 @@ function evaluator(results: readonly ProgressionEvaluationView[] = [view()]): Ev
     return { evaluateSession: async () => results } as unknown as EvaluateProgression;
 }
 
+function approval(overrides: Partial<ProgressionApprovalService> = {}): ProgressionApprovalService {
+    return {
+        approve: async () => view({ status: "applied" }),
+        reject: async () => view({ status: "rejected" }),
+        ...overrides,
+    } as unknown as ProgressionApprovalService;
+}
+
+function controllerWith(
+    options: {
+        repo?: ProgressionEvaluationRepository;
+        evaluate?: EvaluateProgression;
+        approve?: ProgressionApprovalService;
+    } = {},
+): ProgressionEvaluationController {
+    return new ProgressionEvaluationController(
+        options.evaluate ?? evaluator(),
+        options.repo ?? repository(),
+        options.approve ?? approval(),
+        profiles,
+    );
+}
+
 describe("ProgressionEvaluationController", () => {
     it("evaluates a session and returns the recorded evaluations", async () => {
-        const controller = new ProgressionEvaluationController(evaluator(), repository(), profiles);
+        const controller = controllerWith();
         const result = await controller.evaluateSession(ids.session, { trigger: "manual" }, undefined, undefined);
         expect(result.items).toHaveLength(1);
         expect(result.items[0]).toMatchObject({ id: ids.evaluation, status: "pending", matched: true });
@@ -97,44 +129,38 @@ describe("ProgressionEvaluationController", () => {
                 throw new ProgressionSubjectUnavailableError(ids.session);
             },
         } as unknown as EvaluateProgression;
-        const controller = new ProgressionEvaluationController(throwing, repository(), profiles);
+        const controller = controllerWith({ evaluate: throwing });
         await expect(controller.evaluateSession(ids.session, {}, undefined, undefined)).rejects.toBeInstanceOf(
             HttpException,
         );
     });
 
     it("reads one evaluation and 404s an unknown id", async () => {
-        const controller = new ProgressionEvaluationController(
-            evaluator(),
-            repository({ readById: async () => null }),
-            profiles,
-        );
+        const controller = controllerWith({ repo: repository({ readById: async () => null }) });
         await expect(controller.detail(ids.evaluation)).rejects.toBeInstanceOf(HttpException);
 
-        const found = new ProgressionEvaluationController(evaluator(), repository(), profiles);
+        const found = controllerWith();
         const detail = await found.detail(ids.evaluation);
         expect(detail.id).toBe(ids.evaluation);
     });
 
     it("lists the profile approval queue filtered by status", async () => {
         let captured: unknown;
-        const controller = new ProgressionEvaluationController(
-            evaluator(),
-            repository({
+        const controller = controllerWith({
+            repo: repository({
                 listForProfile: async filter => {
                     captured = filter;
                     return [view()];
                 },
             }),
-            profiles,
-        );
+        });
         const result = await controller.list({ status: "pending" });
         expect(result.items).toHaveLength(1);
         expect(captured).toMatchObject({ profileId: ids.profile, status: "pending" });
     });
 
     it("rejects a non-UUID session id", async () => {
-        const controller = new ProgressionEvaluationController(evaluator(), repository(), profiles);
+        const controller = controllerWith();
         await expect(controller.evaluateSession("not-a-uuid", {}, undefined, undefined)).rejects.toBeTruthy();
     });
 
@@ -158,16 +184,44 @@ describe("ProgressionEvaluationController", () => {
             autoApplyEligible: false,
             autoApplyReason: "A safety policy blocked the change",
         });
-        const controller = new ProgressionEvaluationController(
-            evaluator(),
-            repository({ readById: async () => blocked }),
-            profiles,
-        );
+        const controller = controllerWith({ repo: repository({ readById: async () => blocked }) });
         const detail = await controller.detail(ids.evaluation);
         expect(detail.safety.outcome).toBe("block");
         expect(detail.safety.findings[0]).toMatchObject({ policyKey: "max_load_increase", outcome: "block" });
         expect(detail.conflict).toMatchObject({ conflicting: true, ruleIds: [ids.rule] });
         expect(detail.autoApplyEligible).toBe(false);
         expect(detail.autoApplyReason).toBe("A safety policy blocked the change");
+    });
+
+    it("approves a proposal and returns the applied evaluation", async () => {
+        const controller = controllerWith();
+        const result = await controller.approve(
+            ids.evaluation,
+            { reason: "ok" },
+            undefined,
+            undefined,
+            undefined,
+            noopResponse,
+        );
+        expect(result.status).toBe("applied");
+    });
+
+    it("rejects a proposal and returns the rejected evaluation", async () => {
+        const controller = controllerWith();
+        const result = await controller.reject(ids.evaluation, {}, undefined, undefined, undefined, noopResponse);
+        expect(result.status).toBe("rejected");
+    });
+
+    it("propagates an already-resolved approval as a conflict error", async () => {
+        const controller = controllerWith({
+            approve: approval({
+                approve: async () => {
+                    throw new ProgressionAlreadyResolvedError(ids.evaluation);
+                },
+            }),
+        });
+        await expect(
+            controller.approve(ids.evaluation, {}, undefined, undefined, undefined, noopResponse),
+        ).rejects.toBeInstanceOf(ProgressionAlreadyResolvedError);
     });
 });

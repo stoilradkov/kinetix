@@ -209,6 +209,15 @@ class FakeEvaluationRepository implements ProgressionEvaluationRepository {
         const record = this.inserted.find(entry => entry.id === evaluationId);
         return Promise.resolve(record ? toView(record) : null);
     }
+    loadForUpdate(evaluationId: string): Promise<ProgressionEvaluationView | null> {
+        return this.readById(evaluationId);
+    }
+    recordDecision(): Promise<ProgressionEvaluationView> {
+        throw new Error("not used in evaluation tests");
+    }
+    markStale(): Promise<void> {
+        return Promise.resolve();
+    }
     listForSession(sessionId: string): Promise<readonly ProgressionEvaluationView[]> {
         return Promise.resolve(this.inserted.filter(r => r.trainingSessionId === sessionId).map(toView));
     }

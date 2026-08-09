@@ -260,6 +260,13 @@
       "when": 1786275592356,
       "tag": "0036_dashing_katie_power",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1786277610549,
+      "tag": "0037_naive_stark_industries",
+      "breakpoints": true
     }
   ]
 }

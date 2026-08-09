@@ -101,3 +101,34 @@ limit — is a deliberate code change to a registry plus a schema-version bump a
 snapshot migration, not a data edit; this is intentional for a security boundary.
 Evaluation, safety enforcement, conflict detection, and approval are deferred to
 G2–G4, which consume but do not change the structure fixed here.
+
+## Addendum (G4): Approval and application semantics
+
+Issue #42 implements the approval lifecycle and prescription application that the
+original decision deferred. The additions preserve every constraint above.
+
+- **Default approval.** A matched proposal is `pending` (or `blocked` when a safety
+  policy blocks it or it conflicts with another proposal). A human approves or
+  rejects it through equivalent REST, CLI, and web surfaces; auto-application remains
+  gated on the G3 eligibility rule (enabled, safe, non-conflicting, non-template).
+- **Revalidation and staleness.** Approval re-locks the evaluation row, rechecks the
+  recorded context revisions against the current session version, and reruns the
+  safety policies. A moved context marks the proposal `stale` and enqueues a fresh
+  `progression.evaluate` job instead of applying stale actions; a fresh safety
+  `block` refuses approval (a human cannot override a hard limit).
+- **Atomic, history-preserving application.** Applying clones the target's current
+  immutable prescription, applies every action to a new tree (unchanged and modified
+  elements keep their logical keys; inserts would receive new keys), and republishes
+  it through the target owner's own command so the owner advances a revision, records
+  history, and links the new version→prescription — never mutating an immutable
+  prescription row. All target actions apply in one `UnitOfWork` or none.
+- **Concurrency and idempotency.** The evaluation row is locked `FOR UPDATE`, so two
+  approvers serialize and only one applies; the resolved status transition is the
+  guard (the projection has no aggregate version, so approve/reject carry an
+  optional `Idempotency-Key` rather than an ETag).
+- **MVP scope.** Application supports `mode: "template"` targets and the
+  target-field actions (`adjust_load`, `adjust_reps`, `set_effort_target`,
+  percentage `adjust_run_target`, and advisory `recommendation`). Planned-session
+  targets (`next`, `block_future`), structural actions, absolute run-target changes,
+  and equipment-aware load rounding are refused with an actionable error and remain
+  follow-up work; the approval queue, rejection, and revalidation work for every mode.

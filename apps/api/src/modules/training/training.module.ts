@@ -212,9 +212,13 @@ import {
     APPLICABLE_PROGRESSION_RULE_READER,
     EVALUATE_PROGRESSION,
     EvaluateProgression,
+    PROGRESSION_APPROVAL_SERVICE,
+    PROGRESSION_APPLICATION_EXECUTOR,
+    ProgressionApprovalService,
     type ProgressionContextReader,
     type ProgressionHealthReader,
     type ApplicableProgressionRuleReader,
+    type ProgressionApplicationExecutor,
     type ProgressionEvaluationRepository,
 } from "#src/modules/training/application/index";
 import type {
@@ -275,6 +279,7 @@ import { DrizzleProgressionRuleRepository } from "#src/modules/training/infrastr
 import { DrizzleProgressionPlanningReader } from "#src/modules/training/infrastructure/drizzle-progression-planning-reader";
 import { ProgressionRuleRevisionRegistrar } from "#src/modules/training/infrastructure/progression-rule-revision-registrar";
 import { DrizzleProgressionEvaluationRepository } from "#src/modules/training/infrastructure/drizzle-progression-evaluation-repository";
+import { DrizzleProgressionApplicationExecutor } from "#src/modules/training/infrastructure/drizzle-progression-application-executor";
 import { DrizzleProgressionContextReader } from "#src/modules/training/infrastructure/drizzle-progression-context-reader";
 import { DrizzleProgressionHealthReader } from "#src/modules/training/infrastructure/drizzle-progression-health-reader";
 import {
@@ -316,10 +321,12 @@ import {
     HistoricalImportController,
 } from "#src/modules/training/presentation/index";
 import {
+    JOB_QUEUE,
     OUTBOX_WRITER,
     REVISION_STORE,
     RevisionMutationService,
     UNIT_OF_WORK,
+    type JobQueue,
     type OutboxWriter,
     type RevisionStore,
     type UnitOfWork,
@@ -943,6 +950,46 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         },
         ProgressionEvaluationJobRegistrar,
         ProgressionEvaluationOutboxRegistrar,
+        // Progression approval + application (issue #42, G4).
+        DrizzleProgressionApplicationExecutor,
+        { provide: PROGRESSION_APPLICATION_EXECUTOR, useExisting: DrizzleProgressionApplicationExecutor },
+        {
+            provide: PROGRESSION_APPROVAL_SERVICE,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: ProgressionEvaluationRepository,
+                contextReader: ProgressionContextReader,
+                ruleReader: ApplicableProgressionRuleReader,
+                executor: ProgressionApplicationExecutor,
+                queue: JobQueue,
+                outbox: OutboxWriter,
+                profileReader: ProfileReader,
+                healthReader: ProgressionHealthReader,
+            ) =>
+                new ProgressionApprovalService({
+                    unitOfWork,
+                    repository,
+                    contextReader,
+                    ruleReader,
+                    executor,
+                    queue,
+                    outbox,
+                    profileReader,
+                    healthReader,
+                    generateId: randomUUID,
+                }),
+            inject: [
+                UNIT_OF_WORK,
+                PROGRESSION_EVALUATION_REPOSITORY,
+                PROGRESSION_CONTEXT_READER,
+                APPLICABLE_PROGRESSION_RULE_READER,
+                PROGRESSION_APPLICATION_EXECUTOR,
+                JOB_QUEUE,
+                OUTBOX_WRITER,
+                PROFILE_READER,
+                PROGRESSION_HEALTH_READER,
+            ],
+        },
         DrizzleProgramRepository,
         DrizzleProgramMembershipRepository,
         DrizzleProgramGoalValidator,
