@@ -196,6 +196,16 @@ import {
     type AdherenceResultRepository,
     type AdherenceResultQueryPort,
     type AdherenceRecalcStateReader,
+    PROGRESSION_RULE_REPOSITORY,
+    PROGRESSION_RULE_MUTATION_SERVICE,
+    PROGRESSION_RULE_COMMANDS,
+    PROGRESSION_RULE_REVISION_HANDLER,
+    PROGRESSION_PLANNING_READER,
+    ProgressionRuleCommands,
+    ProgressionRuleRevisionHandler,
+    progressionRuleSerializer,
+    type ProgressionRuleRepository,
+    type ProgressionPlanningReader,
 } from "#src/modules/training/application/index";
 import type {
     ExerciseDefinitionState,
@@ -208,6 +218,7 @@ import type {
     PlannedSessionState,
     TrainingSessionState,
     ProgramState,
+    ProgressionRuleState,
 } from "#src/modules/training/domain/index";
 import { PROFILE_READER, ProfileModule, type ProfileReader } from "#src/modules/profile/index";
 import { DrizzleTrainingCatalogRepository } from "#src/modules/training/infrastructure/drizzle-training-catalog-repository";
@@ -249,6 +260,9 @@ import {
     AdherenceJobRegistrar,
     AdherenceOutboxRegistrar,
 } from "#src/modules/training/infrastructure/adherence-registrars";
+import { DrizzleProgressionRuleRepository } from "#src/modules/training/infrastructure/drizzle-progression-rule-repository";
+import { DrizzleProgressionPlanningReader } from "#src/modules/training/infrastructure/drizzle-progression-planning-reader";
+import { ProgressionRuleRevisionRegistrar } from "#src/modules/training/infrastructure/progression-rule-revision-registrar";
 import { DrizzleProgramRepository } from "#src/modules/training/infrastructure/drizzle-program-repository";
 import { DrizzleProgramMembershipRepository } from "#src/modules/training/infrastructure/drizzle-program-membership-repository";
 import { DrizzleProgramGoalValidator } from "#src/modules/training/infrastructure/drizzle-program-goal-validator";
@@ -277,6 +291,7 @@ import {
     TrainingSessionController,
     RunController,
     AdherenceController,
+    ProgressionRuleController,
     BulkProgramController,
     ImportBatchController,
     HistoricalImportController,
@@ -313,6 +328,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         TrainingSessionController,
         RunController,
         AdherenceController,
+        ProgressionRuleController,
         BulkProgramController,
         ImportBatchController,
         HistoricalImportController,
@@ -443,6 +459,54 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
             inject: [TRAINING_INJURY_MUTATION_SERVICE, REVISION_STORE],
         },
         TrainingInjuryRevisionRegistrar,
+        DrizzleProgressionRuleRepository,
+        { provide: PROGRESSION_RULE_REPOSITORY, useExisting: DrizzleProgressionRuleRepository },
+        DrizzleProgressionPlanningReader,
+        { provide: PROGRESSION_PLANNING_READER, useExisting: DrizzleProgressionPlanningReader },
+        {
+            provide: PROGRESSION_RULE_MUTATION_SERVICE,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: ProgressionRuleRepository,
+                revisions: RevisionStore,
+                events: OutboxWriter,
+            ) => new RevisionMutationService(unitOfWork, repository, revisions, progressionRuleSerializer, events),
+            inject: [UNIT_OF_WORK, PROGRESSION_RULE_REPOSITORY, REVISION_STORE, OUTBOX_WRITER],
+        },
+        {
+            provide: PROGRESSION_RULE_COMMANDS,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                repository: ProgressionRuleRepository,
+                mutations: RevisionMutationService<ProgressionRuleState, DomainEvent>,
+                profileReader: ProfileReader,
+                planning: ProgressionPlanningReader,
+            ) =>
+                new ProgressionRuleCommands({
+                    unitOfWork,
+                    repository,
+                    mutations,
+                    profileReader,
+                    planning,
+                    generateId: randomUUID,
+                }),
+            inject: [
+                UNIT_OF_WORK,
+                PROGRESSION_RULE_REPOSITORY,
+                PROGRESSION_RULE_MUTATION_SERVICE,
+                PROFILE_READER,
+                PROGRESSION_PLANNING_READER,
+            ],
+        },
+        {
+            provide: PROGRESSION_RULE_REVISION_HANDLER,
+            useFactory: (
+                mutations: RevisionMutationService<ProgressionRuleState, DomainEvent>,
+                revisions: RevisionStore,
+            ) => new ProgressionRuleRevisionHandler(mutations, revisions, { now: () => new Date() }, randomUUID),
+            inject: [PROGRESSION_RULE_MUTATION_SERVICE, REVISION_STORE],
+        },
+        ProgressionRuleRevisionRegistrar,
         DrizzleTrainingMaxRepository,
         { provide: TRAINING_MAX_REPOSITORY, useExisting: DrizzleTrainingMaxRepository },
         {

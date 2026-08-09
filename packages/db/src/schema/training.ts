@@ -2589,6 +2589,65 @@ export const adherenceComponents = pgTable(
     ],
 );
 
+/**
+ * ProgressionRule — a versioned, archivable rule root holding a bounded condition AST,
+ * an allowlisted action list, a scope/logical-target selector, triggers, flags, and a
+ * safety-policy reference as validated JSON (design 15.2, ADR 0007). The database stores
+ * and constrains the rule but never executes its expressions; the JSON is revalidated
+ * through the domain model on every hydration.
+ */
+export const progressionRules = pgTable(
+    "progression_rules",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        name: text("name").notNull(),
+        description: text("description"),
+        scopeType: text("scope_type").notNull(),
+        scopeId: uuid("scope_id").notNull(),
+        targetMode: text("target_mode").notNull(),
+        targetSelector: jsonb("target_selector").$type<Record<string, unknown>>().notNull(),
+        conditionSchemaVersion: smallint("condition_schema_version").notNull().default(1),
+        condition: jsonb("condition").$type<Record<string, unknown>>().notNull(),
+        actionSchemaVersion: smallint("action_schema_version").notNull().default(1),
+        actions: jsonb("actions").$type<Record<string, unknown>[]>().notNull(),
+        triggers: jsonb("triggers").$type<string[]>().notNull(),
+        enabled: boolean("enabled").notNull().default(true),
+        autoApply: boolean("auto_apply").notNull().default(false),
+        safetyPolicy: jsonb("safety_policy").$type<Record<string, unknown>>().notNull().default({}),
+        status: text("status").notNull().default("active"),
+        archivedAt: timestamp("archived_at", { withTimezone: true }),
+        version: integer("version").notNull().default(1),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("progression_rules_name_valid", sql`length(btrim(${table.name})) > 0`),
+        check(
+            "progression_rules_scope_type_valid",
+            sql`${table.scopeType} IN ('program', 'block', 'template', 'exercise', 'set')`,
+        ),
+        check("progression_rules_target_mode_valid", sql`${table.targetMode} IN ('next', 'block_future', 'template')`),
+        check("progression_rules_condition_schema_version_positive", sql`${table.conditionSchemaVersion} > 0`),
+        check("progression_rules_action_schema_version_positive", sql`${table.actionSchemaVersion} > 0`),
+        check("progression_rules_status_valid", sql`${table.status} IN ('active', 'archived')`),
+        check(
+            "progression_rules_archive_state_valid",
+            sql`(${table.status} = 'active' AND ${table.archivedAt} IS NULL)
+                OR (${table.status} = 'archived' AND ${table.archivedAt} IS NOT NULL)`,
+        ),
+        check(
+            "progression_rules_template_approval_valid",
+            sql`NOT (${table.autoApply} AND ${table.targetMode} = 'template')`,
+        ),
+        check("progression_rules_version_positive", sql`${table.version} > 0`),
+        index("progression_rules_profile_idx").on(table.profileId, table.status),
+        index("progression_rules_scope_idx").on(table.scopeType, table.scopeId),
+    ],
+);
+
+export type ProgressionRuleRow = typeof progressionRules.$inferSelect;
+
 export type AdherenceResultRow = typeof adherenceResults.$inferSelect;
 export type AdherenceComponentRow = typeof adherenceComponents.$inferSelect;
 

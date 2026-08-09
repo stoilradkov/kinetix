@@ -28,3 +28,4 @@ export * from "#src/modules/training/domain/historical-import";
 export * from "#src/modules/training/domain/historical-import-commit";
 export * from "#src/modules/training/domain/import-batch";
 export * from "#src/modules/training/domain/storage-reconciliation";
+export * from "#src/modules/training/domain/progression-rule";

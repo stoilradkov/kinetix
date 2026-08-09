@@ -66,6 +66,11 @@ import {
     updateWorkoutTemplateRequestSchema,
     workoutTemplateListResponseSchema,
     workoutTemplateResponseSchema,
+    createProgressionRuleRequestSchema,
+    updateProgressionRuleRequestSchema,
+    progressionRuleListResponseSchema,
+    progressionRuleResponseSchema,
+    type ProgressionRuleResponse,
     createProgramRequestSchema,
     updateProgramRequestSchema,
     programListResponseSchema,
@@ -485,6 +490,61 @@ export async function changeWorkoutTemplateStatus(
         await apiRequest(`/training/templates/${encodeURIComponent(template.id)}/${action}`, {
             method: "POST",
             headers: mutationHeaders(template.version, crypto.randomUUID()),
+            body: "{}",
+        }),
+    );
+}
+
+export function progressionRulesQueryOptions(includeArchived: boolean) {
+    return queryOptions({
+        queryKey: ["training-progression-rules", { includeArchived }],
+        queryFn: async () =>
+            progressionRuleListResponseSchema.parse(
+                await apiRequest(`/training/rules${includeArchived ? "?includeArchived=true" : ""}`),
+            ),
+    });
+}
+
+export function progressionRuleQueryOptions(ruleId: string | null) {
+    return queryOptions({
+        queryKey: ["training-progression-rule", ruleId],
+        enabled: ruleId !== null,
+        queryFn: async () =>
+            progressionRuleResponseSchema.parse(await apiRequest(`/training/rules/${encodeURIComponent(ruleId!)}`)),
+    });
+}
+
+export async function createProgressionRule(input: unknown): Promise<ProgressionRuleResponse> {
+    return progressionRuleResponseSchema.parse(
+        await apiRequest("/training/rules", {
+            method: "POST",
+            headers: mutationHeaders(undefined, crypto.randomUUID()),
+            body: JSON.stringify(createProgressionRuleRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function updateProgressionRule(
+    rule: Pick<ProgressionRuleResponse, "id" | "version">,
+    input: unknown,
+): Promise<ProgressionRuleResponse> {
+    return progressionRuleResponseSchema.parse(
+        await apiRequest(`/training/rules/${encodeURIComponent(rule.id)}`, {
+            method: "PATCH",
+            headers: mutationHeaders(rule.version, crypto.randomUUID()),
+            body: JSON.stringify(updateProgressionRuleRequestSchema.parse(input)),
+        }),
+    );
+}
+
+export async function changeProgressionRuleStatus(
+    rule: Pick<ProgressionRuleResponse, "id" | "version">,
+    action: "archive" | "restore",
+): Promise<ProgressionRuleResponse> {
+    return progressionRuleResponseSchema.parse(
+        await apiRequest(`/training/rules/${encodeURIComponent(rule.id)}/${action}`, {
+            method: "POST",
+            headers: mutationHeaders(rule.version, crypto.randomUUID()),
             body: "{}",
         }),
     );

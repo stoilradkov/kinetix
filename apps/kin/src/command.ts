@@ -48,6 +48,10 @@ import {
     updateWorkoutTemplateRequestSchema,
     workoutTemplateListResponseSchema,
     workoutTemplateResponseSchema,
+    createProgressionRuleRequestSchema,
+    updateProgressionRuleRequestSchema,
+    progressionRuleListResponseSchema,
+    progressionRuleResponseSchema,
     createProgramRequestSchema,
     updateProgramRequestSchema,
     activateProgramRequestSchema,
@@ -234,6 +238,7 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
     registerTrainingRunningCommands(training, dependencies);
     registerTrainingInjuryCommands(training, dependencies);
     registerTrainingAdherenceCommands(training, dependencies);
+    registerProgressionRuleCommands(training, dependencies);
     const history = training.command("history").description("Inspect and restore aggregate history");
 
     history
@@ -998,6 +1003,142 @@ function registerWorkoutTemplateCommands(training: Command, dependencies: Progra
                         ),
                     );
                     outputWorkoutTemplate(dependencies.output, result, options.json);
+                },
+            );
+}
+
+function registerProgressionRuleCommands(training: Command, dependencies: ProgramDependencies): void {
+    const rules = training.command("rules").description("Manage bounded, versioned progression rules");
+
+    rules
+        .command("list")
+        .description("List progression rules, optionally filtered by scope, enabled, and archive state")
+        .option("--include-archived", "Include archived rules")
+        .option("--scope-type <type>", "Filter by scope type (program|block|template|exercise|set)")
+        .option("--enabled <boolean>", "Filter by enabled flag (true|false)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: {
+                includeArchived?: boolean;
+                scopeType?: string;
+                enabled?: string;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const params = new URLSearchParams();
+                if (options.includeArchived) params.set("includeArchived", "true");
+                if (options.scopeType !== undefined) params.set("scopeType", options.scopeType);
+                if (options.enabled !== undefined) params.set("enabled", options.enabled);
+                const query = params.toString() ? `?${params.toString()}` : "";
+                const result = progressionRuleListResponseSchema.parse(
+                    await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/rules${query}`),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else for (const rule of result.items) outputProgressionRule(dependencies.output, rule, false);
+            },
+        );
+
+    rules
+        .command("show")
+        .description("Show one progression rule with its condition tree and actions")
+        .argument("<rule-id>", "Progression rule UUID")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (ruleId: string, options: { apiUrl?: string; json?: boolean }) => {
+            const result = progressionRuleResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/rules/${encodeURIComponent(ruleId)}`,
+                ),
+            );
+            outputProgressionRule(dependencies.output, result, options.json);
+        });
+
+    rules
+        .command("create")
+        .description("Create a progression rule from inline JSON, stdin, or a file")
+        .option("--input <json>", "CreateProgressionRuleRequest JSON object")
+        .option("--file <path>", "Read the JSON body from a file (use - for stdin)")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: {
+                input?: string;
+                file?: string;
+                idempotencyKey?: string;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const input = createProgressionRuleRequestSchema.parse(readJsonBody(options));
+                const result = progressionRuleResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/rules`,
+                        mutationRequest("POST", input, undefined, options.idempotencyKey),
+                    ),
+                );
+                outputProgressionRule(dependencies.output, result, options.json);
+            },
+        );
+
+    rules
+        .command("update")
+        .description("Update a progression rule from inline JSON, stdin, or a file")
+        .argument("<rule-id>", "Progression rule UUID")
+        .requiredOption("--version <version>", "Expected rule version", parsePositiveInteger)
+        .option("--input <json>", "UpdateProgressionRuleRequest JSON object")
+        .option("--file <path>", "Read the JSON body from a file (use - for stdin)")
+        .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                ruleId: string,
+                options: {
+                    version: number;
+                    input?: string;
+                    file?: string;
+                    idempotencyKey?: string;
+                    apiUrl?: string;
+                    json?: boolean;
+                },
+            ) => {
+                const input = updateProgressionRuleRequestSchema.parse(readJsonBody(options));
+                const result = progressionRuleResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/rules/${encodeURIComponent(ruleId)}`,
+                        mutationRequest("PATCH", input, options.version, options.idempotencyKey),
+                    ),
+                );
+                outputProgressionRule(dependencies.output, result, options.json);
+            },
+        );
+
+    for (const action of ["archive", "restore"] as const)
+        rules
+            .command(action)
+            .description(`${action === "archive" ? "Archive" : "Restore"} a progression rule`)
+            .argument("<rule-id>", "Progression rule UUID")
+            .requiredOption("--version <version>", "Expected rule version", parsePositiveInteger)
+            .option("--idempotency-key <key>", "Stable key for safely retrying this command")
+            .option("--api-url <url>", "Override the Kinetix API URL")
+            .option("--json", "Emit machine-readable JSON")
+            .action(
+                async (
+                    ruleId: string,
+                    options: { version: number; idempotencyKey?: string; apiUrl?: string; json?: boolean },
+                ) => {
+                    const result = progressionRuleResponseSchema.parse(
+                        await responseJson(
+                            dependencies,
+                            `${resolveApiUrl(options.apiUrl)}/training/rules/${encodeURIComponent(ruleId)}/${action}`,
+                            mutationRequest("POST", {}, options.version, options.idempotencyKey),
+                        ),
+                    );
+                    outputProgressionRule(dependencies.output, result, options.json);
                 },
             );
 }
@@ -3192,6 +3333,18 @@ function outputWorkoutTemplate(
             "prescription" in template ? template.prescription.activities.length : template.activities.length;
         output(`${template.id}\t${template.version}\t${template.status}\t${activityCount}\t${template.name}`);
     }
+}
+
+function outputProgressionRule(
+    output: (message: string) => void,
+    rule: ReturnType<typeof progressionRuleResponseSchema.parse>,
+    json?: boolean,
+): void {
+    if (json) output(JSON.stringify(rule));
+    else
+        output(
+            `${rule.id}\t${rule.version}\t${rule.status}\t${rule.enabled ? "enabled" : "disabled"}\t${rule.scope.type}\t${rule.target.mode}\t${rule.name}`,
+        );
 }
 
 function outputProgram(
