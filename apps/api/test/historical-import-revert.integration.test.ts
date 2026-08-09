@@ -295,15 +295,13 @@ describe.runIf(testDatabaseUrl)("historical import revert PostgreSQL compensatio
         await connection.db
             .insert(muscleGroups)
             .values({ id: muscleId, slug: `quads-${suffix}`, name: `Quads ${suffix}`, position: 0, isSeeded: true });
-        await connection.db
-            .insert(equipmentTypes)
-            .values({
-                id: equipmentId,
-                slug: `barbell-${suffix}`,
-                name: `Barbell ${suffix}`,
-                position: 0,
-                isSeeded: true,
-            });
+        await connection.db.insert(equipmentTypes).values({
+            id: equipmentId,
+            slug: `barbell-${suffix}`,
+            name: `Barbell ${suffix}`,
+            position: 0,
+            isSeeded: true,
+        });
         await connection.db
             .insert(movementPatterns)
             .values({ id: movementId, slug: `squat-${suffix}`, name: `Squat ${suffix}`, position: 0, isSeeded: true });

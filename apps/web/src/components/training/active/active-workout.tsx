@@ -110,7 +110,11 @@ function ActiveWorkoutBody({ view }: { readonly view: ActiveTrainingSessionRespo
                 <div className="flex flex-wrap items-center gap-3">
                     <h1 className="text-2xl font-semibold">{view.title ?? "Workout"}</h1>
                     <Badge variant={view.status === "completed" ? "success" : "info"}>
-                        {view.status === "in_progress" ? "In progress" : view.status === "completed" ? "Completed" : "Draft"}
+                        {view.status === "in_progress"
+                            ? "In progress"
+                            : view.status === "completed"
+                              ? "Completed"
+                              : "Draft"}
                     </Badge>
                     {view.startedAt !== null && view.status === "in_progress" ? (
                         <ElapsedTimer startedAt={view.startedAt} />
@@ -169,7 +173,12 @@ function ActiveWorkoutBody({ view }: { readonly view: ActiveTrainingSessionRespo
             )}
 
             <div className="flex flex-wrap gap-2">
-                <AddExerciseDialog busy={runner.isPending} position={view.activities.length} run={run} session={session} />
+                <AddExerciseDialog
+                    busy={runner.isPending}
+                    position={view.activities.length}
+                    run={run}
+                    session={session}
+                />
                 <CompleteWorkoutDialog session={session} />
             </div>
         </div>
@@ -450,7 +459,11 @@ function SubstituteDialog({
                     <DialogDescription>Swap this exercise for another and record why.</DialogDescription>
                 </DialogHeader>
                 <ExercisePicker onSelect={setSelected} selectedId={selected?.id} />
-                <Input onChange={event => setReason(event.target.value)} placeholder="Reason (optional)" value={reason} />
+                <Input
+                    onChange={event => setReason(event.target.value)}
+                    placeholder="Reason (optional)"
+                    value={reason}
+                />
                 <DialogFooter>
                     <Button
                         disabled={busy || selected === null}
@@ -500,7 +513,9 @@ function CompleteWorkoutDialog({ session }: { readonly session: SessionRef }): R
             <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden p-0">
                 <DialogHeader className="p-6 pb-0">
                     <DialogTitle>Review &amp; complete</DialogTitle>
-                    <DialogDescription>Check these before finishing. You can reopen later to correct.</DialogDescription>
+                    <DialogDescription>
+                        Check these before finishing. You can reopen later to correct.
+                    </DialogDescription>
                 </DialogHeader>
                 <div className="flex-1 overflow-y-auto px-6 py-4">
                     {preview.isPending ? (
@@ -530,18 +545,13 @@ function CompleteWorkoutDialog({ session }: { readonly session: SessionRef }): R
                                 <section className="flex flex-col gap-2">
                                     <h3 className="text-sm font-medium">Planned sessions</h3>
                                     {preview.data.plannedOutcomes.map(outcome => (
-                                        <div
-                                            className="flex items-center gap-2 text-sm"
-                                            key={outcome.plannedSessionId}
-                                        >
+                                        <div className="flex items-center gap-2 text-sm" key={outcome.plannedSessionId}>
                                             <Badge
-                                                variant={
-                                                    outcome.projectedStatus === "completed" ? "success" : "info"
-                                                }
+                                                variant={outcome.projectedStatus === "completed" ? "success" : "info"}
                                             >
                                                 {outcome.projectedStatus.replace("_", " ")}
                                             </Badge>
-                                            <span className="text-muted-foreground font-mono tabular-nums text-xs">
+                                            <span className="text-muted-foreground font-mono text-xs tabular-nums">
                                                 {outcome.coveredSetCount}/{outcome.prescribedSetCount} sets
                                             </span>
                                         </div>

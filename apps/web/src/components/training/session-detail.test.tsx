@@ -30,12 +30,21 @@ vi.mock("@/components/training/active/active-workout", () => ({
 const { transition } = vi.hoisted(() => ({ transition: vi.fn(() => Promise.resolve()) }));
 vi.mock("@/lib/api", () => ({
     trainingSessionQueryOptions: (id: string) => ({ queryKey: ["training-session", id] }),
+    sessionAdherenceQueryOptions: (id: string) => ({ queryKey: ["training-session-adherence", id] }),
+    adherenceFormulaQueryOptions: { queryKey: ["training-adherence-formula"] },
     transitionTrainingSession: transition,
 }));
 
 let queryState: { isPending: boolean; isError: boolean; data?: TrainingSessionResponse; error?: Error };
 vi.mock("@tanstack/react-query", () => ({
-    useQuery: () => queryState,
+    // Adherence queries resolve to an empty projection so the detail tests stay focused on the session tree.
+    useQuery: (options?: { readonly queryKey?: readonly unknown[] }) => {
+        const key = options?.queryKey?.[0];
+        if (key === "training-session-adherence")
+            return { isPending: false, isError: false, data: { trainingSessionId: "", results: [] } };
+        if (key === "training-adherence-formula") return { isPending: false, isError: false, data: null };
+        return queryState;
+    },
     useMutation: (options: { mutationFn: (value: unknown) => Promise<unknown> }) => ({
         mutate: (value: unknown) => options.mutationFn(value),
         isPending: false,
@@ -135,7 +144,9 @@ describe("SessionDetail read view", () => {
         // Both the header and the planned-vs-actual card link the program by name; every one navigates.
         const programLinks = screen.getAllByRole("link", { name: "Hypertrophy Block" });
         expect(programLinks.length).toBeGreaterThan(0);
-        programLinks.forEach(link => expect(link).toHaveAttribute("href", "/training/programs"));
+        programLinks.forEach(link =>
+            expect(link).toHaveAttribute("href", "/training/programs/0198a4db-d8da-7000-8000-0000000090d1"),
+        );
         expect(screen.getAllByText("Week 1 · Lower").length).toBeGreaterThan(0);
 
         // A recorded readiness/post value renders; the rest are omitted rather than shown as zero.

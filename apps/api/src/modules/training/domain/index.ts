@@ -20,6 +20,7 @@ export * from "#src/modules/training/domain/planned-session";
 export * from "#src/modules/training/domain/session-strength";
 export * from "#src/modules/training/domain/session-running";
 export * from "#src/modules/training/domain/session-mapping";
+export * from "#src/modules/training/domain/session-adherence";
 export * from "#src/modules/training/domain/target-resolution";
 export * from "#src/modules/training/domain/training-session";
 export * from "#src/modules/training/domain/bulk-program";

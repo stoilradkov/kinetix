@@ -22,6 +22,7 @@ export * from "#src/bulk-program";
 export * from "#src/historical-import";
 export * from "#src/import-batch";
 export * from "#src/storage-reconciliation";
+export * from "#src/adherence";
 
 export const healthResponseSchema = z.object({
     status: z.enum(["ok", "error"]),

@@ -150,7 +150,7 @@ export default tseslint.config(
                 "warn",
                 {
                     allowConstantExport: true,
-                    allowExportNames: ["Route", "buttonVariants", "badgeVariants"],
+                    allowExportNames: ["Route", "buttonVariants", "badgeVariants", "tabsListVariants"],
                 },
             ],
         },

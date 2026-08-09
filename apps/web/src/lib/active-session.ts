@@ -65,10 +65,7 @@ export function describeTarget(targets: PrescriptionTargetRanges): string | null
     return parts.length > 0 ? parts.join(" · ") : null;
 }
 
-function range(
-    min: string | number | null | undefined,
-    max: string | number | null | undefined,
-): string | null {
+function range(min: string | number | null | undefined, max: string | number | null | undefined): string | null {
     if (min == null && max == null) return null;
     if (min != null && max != null) return String(min) === String(max) ? String(min) : `${min}–${max}`;
     return String(min ?? max);

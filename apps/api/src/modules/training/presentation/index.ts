@@ -13,6 +13,7 @@ export { ProgramController } from "#src/modules/training/presentation/program.co
 export { PlannedSessionController } from "#src/modules/training/presentation/planned-session.controller";
 export { TrainingSessionController } from "#src/modules/training/presentation/training-session.controller";
 export { RunController } from "#src/modules/training/presentation/run.controller";
+export { AdherenceController } from "#src/modules/training/presentation/adherence.controller";
 
 export { BulkProgramController } from "#src/modules/training/presentation/bulk-program.controller";
 export { ImportBatchController } from "#src/modules/training/presentation/import-batch.controller";

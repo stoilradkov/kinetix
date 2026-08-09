@@ -95,6 +95,10 @@ import {
     completionPreviewResponseSchema,
     trainingSessionListResponseSchema,
     trainingSessionResponseSchema,
+    sessionAdherenceResponseSchema,
+    adherenceFormulaResponseSchema,
+    adherenceQueryResponseSchema,
+    type AdherenceResultResponse,
     addRunRequestSchema,
     updateRunRequestSchema,
     runListResponseSchema,
@@ -679,6 +683,45 @@ export function trainingSessionQueryOptions(sessionId: string | null) {
             trainingSessionResponseSchema.parse(
                 await apiRequest(`/training/sessions/${encodeURIComponent(sessionId!)}`),
             ),
+    });
+}
+
+/** Current adherence results for one session (issue #38, AD2): one per linked planned prescription. */
+export function sessionAdherenceQueryOptions(sessionId: string | null) {
+    return queryOptions({
+        queryKey: ["training-session-adherence", sessionId],
+        enabled: sessionId !== null,
+        queryFn: async () =>
+            sessionAdherenceResponseSchema.parse(
+                await apiRequest(`/training/sessions/${encodeURIComponent(sessionId!)}/adherence`),
+            ),
+    });
+}
+
+/** The stable, versioned adherence formula-display metadata (weights + scoring text). */
+export const adherenceFormulaQueryOptions = queryOptions({
+    queryKey: ["training-adherence-formula"],
+    queryFn: async () => adherenceFormulaResponseSchema.parse(await apiRequest("/training/adherence/formula")),
+});
+
+/**
+ * Every adherence result across a program, keyed for the program hub (AD2). One request covers the whole
+ * program: the hub indexes results by planned session to show per-planned-session adherence inline.
+ */
+export function programAdherenceQueryOptions(programId: string | null) {
+    return queryOptions({
+        queryKey: ["training-program-adherence", programId],
+        enabled: programId !== null,
+        queryFn: async () => {
+            const page = adherenceQueryResponseSchema.parse(
+                await apiRequest(`/training/adherence?programId=${encodeURIComponent(programId!)}&limit=100`),
+            );
+            const byPlannedSession = new Map<string, AdherenceResultResponse>();
+            for (const result of page.items) {
+                if (result.plannedSessionId !== null) byPlannedSession.set(result.plannedSessionId, result);
+            }
+            return byPlannedSession;
+        },
     });
 }
 

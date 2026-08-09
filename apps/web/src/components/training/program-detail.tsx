@@ -59,10 +59,12 @@ import {
     changePlannedSessionOutcome,
     changeProgramStartDate,
     plannedSessionQueryOptions,
+    programAdherenceQueryOptions,
     programQueryOptions,
     programSessionsQueryOptions,
     reschedulePlannedSession,
 } from "@/lib/api";
+import { AdherenceScoreBadge } from "@/components/training/adherence-score-badge";
 import { groupPlannedSessions, programProgress, type PlannedSessionGroup } from "@/lib/program-hub";
 import { utcDate } from "@/lib/session-weeks";
 
@@ -196,7 +198,7 @@ export function ProgramDetail({
                 ) : (
                     <Accordion className="w-full" defaultValue={groups.map(group => group.key)} type="multiple">
                         {groups.map(group => (
-                            <SessionGroup group={group} key={group.key} onChanged={invalidate} />
+                            <SessionGroup group={group} key={group.key} onChanged={invalidate} programId={program.id} />
                         ))}
                     </Accordion>
                 )}
@@ -208,9 +210,11 @@ export function ProgramDetail({
 function SessionGroup({
     group,
     onChanged,
+    programId,
 }: {
     readonly group: PlannedSessionGroup;
     readonly onChanged: () => void;
+    readonly programId: string;
 }): React.JSX.Element {
     return (
         <AccordionItem value={group.key}>
@@ -225,7 +229,12 @@ function SessionGroup({
             <AccordionContent>
                 <ul className="grid gap-2">
                     {group.sessions.map(session => (
-                        <PlannedSessionRow key={session.plannedSessionId} onChanged={onChanged} session={session} />
+                        <PlannedSessionRow
+                            key={session.plannedSessionId}
+                            onChanged={onChanged}
+                            programId={programId}
+                            session={session}
+                        />
                     ))}
                 </ul>
             </AccordionContent>
@@ -258,11 +267,15 @@ function stateDisplay(status: PlannedSessionStatusValue): StateDisplay {
 function PlannedSessionRow({
     session,
     onChanged,
+    programId,
 }: {
     readonly session: ProgramSessionMembership;
     readonly onChanged: () => void;
+    readonly programId: string;
 }): React.JSX.Element {
     const [actionsOpen, setActionsOpen] = useState(false);
+    // Shared across every row via one cached query (React Query dedupes on the program key).
+    const adherence = useQuery(programAdherenceQueryOptions(programId));
     const state = stateDisplay(session.status);
     const StateIcon = state.icon;
 
@@ -286,6 +299,9 @@ function PlannedSessionRow({
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
+                {session.actualSessionId !== null ? (
+                    <AdherenceScoreBadge result={adherence.data?.get(session.plannedSessionId)} />
+                ) : null}
                 <span className={`flex items-center gap-1 text-xs ${state.tone}`}>
                     <StateIcon className="size-4" />
                     {state.label}

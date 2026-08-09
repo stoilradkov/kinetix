@@ -1,0 +1,1 @@
+CREATE INDEX "adherence_results_query_idx" ON "adherence_results" USING btree ("calculated_at","id") WHERE "adherence_results"."state" = 'current';

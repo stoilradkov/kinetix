@@ -26,7 +26,7 @@ const sessionsSearchSchema = z.object({
     archived: z.boolean().optional().catch(undefined),
 });
 
-export const Route = createFileRoute("/training/sessions")({
+export const Route = createFileRoute("/training/sessions/")({
     component: SessionsPage,
     validateSearch: sessionsSearchSchema,
 });

@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { Archive, LoaderCircle, Pencil, Play, Plus, RotateCcw } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { Archive, Check, LoaderCircle, Pencil, Play, Plus, RotateCcw } from "lucide-react";
+import { z } from "zod";
 
 import type { ProgramStatusValue, ProgramSummary } from "@kinetix/types";
 
@@ -11,6 +12,7 @@ import { ActivateProgramPanel } from "@/components/training/program-scheduling";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
     changeProgramStatus,
     createProgram,
@@ -26,8 +28,25 @@ import {
     programUpdateInput,
     type ProgramFormValues,
 } from "@/lib/program-form";
+import {
+    DEFAULT_PROGRAM_TAB,
+    filterProgramsByTab,
+    formatProgramDateRange,
+    PROGRAM_TABS,
+    programBadgeVariant,
+    sortProgramsByStartDate,
+    type ProgramTab,
+} from "@/lib/program-list";
 
-export const Route = createFileRoute("/training/programs")({ component: ProgramsPage });
+/** Segmented lifecycle filter, persisted in the URL so a chosen view is bookmarkable (issue #68). */
+const programsSearchSchema = z.object({
+    tab: z.enum(["active", "draft", "completed", "archived"]).optional().catch(undefined),
+});
+
+export const Route = createFileRoute("/training/programs/")({
+    component: ProgramsPage,
+    validateSearch: programsSearchSchema,
+});
 
 type EditorState = { readonly mode: "create" } | { readonly mode: "edit"; readonly program: ProgramSummary };
 
@@ -35,12 +54,11 @@ type SchedulerState = { readonly mode: "activate"; readonly program: ProgramSumm
 
 type StatusAction = "pause" | "resume" | "complete" | "archive" | "restore";
 
-const statusVariant: Record<ProgramStatusValue, "success" | "info" | "warning" | "secondary" | "milestone"> = {
-    draft: "secondary",
-    active: "success",
-    paused: "warning",
-    completed: "milestone",
-    archived: "secondary",
+const emptyMessage: Record<ProgramTab, string> = {
+    active: "No active programs. Activate a draft or create one to start training.",
+    draft: "No drafts. Create a program to plan your training.",
+    completed: "No completed programs yet.",
+    archived: "No archived programs.",
 };
 
 /** Contextual lifecycle actions offered per status (activation and session management have their own buttons). */
@@ -68,10 +86,17 @@ const actionLabel: Record<StatusAction, string> = {
 
 function ProgramsPage(): React.JSX.Element {
     const queryClient = useQueryClient();
-    const [includeArchived, setIncludeArchived] = useState(false);
+    const navigate = useNavigate({ from: Route.fullPath });
+    const tab = Route.useSearch().tab ?? DEFAULT_PROGRAM_TAB;
     const [editor, setEditor] = useState<EditorState | null>(null);
     const [scheduler, setScheduler] = useState<SchedulerState | null>(null);
-    const programs = useQuery(programsQueryOptions(includeArchived));
+    // Fetch everything (26 programs is tiny) so lifecycle tabs — including Archived — switch instantly
+    // client-side without a refetch.
+    const programs = useQuery(programsQueryOptions(true));
+    const visible = useMemo(
+        () => sortProgramsByStartDate(filterProgramsByTab(programs.data?.items ?? [], tab)),
+        [programs.data, tab],
+    );
 
     const invalidate = () =>
         queryClient.invalidateQueries({ queryKey: ["training-programs"] }).then(() => setEditor(null));
@@ -99,22 +124,34 @@ function ProgramsPage(): React.JSX.Element {
                         Overlaps are allowed and surfaced as warnings.
                     </p>
                 </div>
-                <div className="flex items-center gap-2">
-                    <Button
-                        onClick={() => setIncludeArchived(value => !value)}
-                        size="sm"
-                        variant={includeArchived ? "default" : "outline"}
-                    >
-                        {includeArchived ? "Showing archived" : "Show archived"}
-                    </Button>
-                    <Button onClick={() => setEditor({ mode: "create" })} size="sm">
-                        <Plus />
-                        New program
-                    </Button>
-                </div>
+                <Button onClick={() => setEditor({ mode: "create" })} size="sm">
+                    <Plus />
+                    New program
+                </Button>
             </div>
 
-            <div className="mt-8 grid gap-3">
+            <Tabs
+                className="mt-6"
+                onValueChange={value =>
+                    navigate({
+                        search: prev => ({
+                            ...prev,
+                            tab: value === DEFAULT_PROGRAM_TAB ? undefined : (value as ProgramTab),
+                        }),
+                    })
+                }
+                value={tab}
+            >
+                <TabsList>
+                    {PROGRAM_TABS.map(item => (
+                        <TabsTrigger key={item.value} value={item.value}>
+                            {item.label}
+                        </TabsTrigger>
+                    ))}
+                </TabsList>
+            </Tabs>
+
+            <div className="mt-6 grid gap-3">
                 {programs.isPending ? (
                     <div className="text-muted-foreground flex items-center gap-2 py-10 text-sm">
                         <LoaderCircle className="animate-spin" /> Loading programs…
@@ -123,12 +160,10 @@ function ProgramsPage(): React.JSX.Element {
                     <div className="border-destructive/30 bg-destructive/10 text-destructive rounded-lg border p-4 text-sm">
                         {programs.error.message}
                     </div>
-                ) : programs.data.items.length === 0 ? (
-                    <p className="text-muted-foreground py-10 text-sm">
-                        No programs yet. Create one to plan your training.
-                    </p>
+                ) : visible.length === 0 ? (
+                    <p className="text-muted-foreground py-10 text-sm">{emptyMessage[tab]}</p>
                 ) : (
-                    programs.data.items.map(program => (
+                    visible.map(program => (
                         <div
                             className="border-border flex items-center justify-between gap-3 rounded-lg border p-4"
                             key={program.id}
@@ -140,11 +175,16 @@ function ProgramsPage(): React.JSX.Element {
                             >
                                 <div className="flex items-center gap-2">
                                     <span className="truncate font-medium">{program.name}</span>
-                                    <Badge variant={statusVariant[program.status]}>{program.status}</Badge>
-                                    <span className="text-muted-foreground font-mono text-xs tabular-nums">
-                                        v{program.version}
-                                    </span>
+                                    <Badge variant={programBadgeVariant(program.status)}>
+                                        {program.status === "completed" ? <Check className="size-3" /> : null}
+                                        {program.status}
+                                    </Badge>
                                 </div>
+                                {formatProgramDateRange(program) !== null ? (
+                                    <p className="text-muted-foreground mt-1 font-mono text-xs tabular-nums">
+                                        {formatProgramDateRange(program)}
+                                    </p>
+                                ) : null}
                                 <div className="mt-2 flex flex-wrap gap-1.5">
                                     <Badge variant="outline">{program.scheduleMode}</Badge>
                                     <Badge variant="outline">

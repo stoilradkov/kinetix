@@ -225,6 +225,20 @@
       "when": 1786214067352,
       "tag": "0031_ancient_shockwave",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1786263079942,
+      "tag": "0032_exotic_groot",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1786265248916,
+      "tag": "0033_flippant_puppet_master",
+      "breakpoints": true
     }
   ]
 }

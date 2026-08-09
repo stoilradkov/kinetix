@@ -106,10 +106,10 @@ function PlannedLinkCard({ link }: { readonly link: PlannedLink }): React.JSX.El
                         : (link.plannedSessionTitle ?? short(link.plannedSessionId))}
                 </span>
                 {link.programId !== null && link.programName !== null ? (
-                    // Targets the programs area today; retarget to `/training/programs/$id` once #67 ships.
                     <Link
                         className="text-foreground hover:text-primary underline underline-offset-4"
-                        to="/training/programs"
+                        params={{ id: link.programId }}
+                        to="/training/programs/$id"
                     >
                         {link.programName}
                     </Link>

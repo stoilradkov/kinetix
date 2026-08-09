@@ -23,7 +23,9 @@ import {
  * tree is carried across by occurrence membership. Running activities are skipped (running actuals arrive
  * in a later slice). Returns `null` when the source has no repeatable strength work.
  */
-export function sessionToPrescriptionDraft(activities: readonly SessionActivityState[]): PublishPrescriptionDraft | null {
+export function sessionToPrescriptionDraft(
+    activities: readonly SessionActivityState[],
+): PublishPrescriptionDraft | null {
     const drafts: PrescribedActivityDraft[] = [];
     let position = 0;
     for (const activity of activities) {

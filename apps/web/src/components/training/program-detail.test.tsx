@@ -36,6 +36,7 @@ vi.mock("@tanstack/react-query", () => ({
 vi.mock("@/lib/api", () => ({
     programQueryOptions: (id: string) => ({ queryKey: ["training-program", id] }),
     programSessionsQueryOptions: (id: string) => ({ queryKey: ["training-program-sessions", id] }),
+    programAdherenceQueryOptions: (id: string) => ({ queryKey: ["training-program-adherence", id] }),
     plannedSessionQueryOptions: (id: string | null) => ({ queryKey: ["training-planned-session", id] }),
     changePlannedSessionOutcome: vi.fn(),
     changeProgramStartDate: vi.fn(),

@@ -4,6 +4,7 @@ import { Archive, ChevronLeft, LoaderCircle, MoreHorizontal, RotateCcw } from "l
 
 import type { TrainingSessionResponse, TrainingSessionStatusValue } from "@kinetix/types";
 
+import { AdherenceDisplay } from "@/components/training/adherence-display";
 import { RunningActivityDetail } from "@/components/training/running-activity-detail";
 import { SessionMappingsDetail } from "@/components/training/session-mappings-detail";
 import { StrengthActivityDetail } from "@/components/training/strength-activity-detail";
@@ -16,7 +17,12 @@ import {
     DropdownMenuItem,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { trainingSessionQueryOptions, transitionTrainingSession } from "@/lib/api";
+import {
+    adherenceFormulaQueryOptions,
+    sessionAdherenceQueryOptions,
+    trainingSessionQueryOptions,
+    transitionTrainingSession,
+} from "@/lib/api";
 
 const statusVariant: Record<TrainingSessionStatusValue, "secondary" | "info" | "success"> = {
     draft: "secondary",
@@ -171,12 +177,45 @@ export function SessionDetail({ session }: { readonly session: TrainingSessionRe
                 <StrengthActivityDetail activities={session.activities} />
                 <RunningActivityDetail activities={session.activities} />
                 <PainRecords records={session.painRecords} />
+                <AdherenceSection session={session} />
                 <SessionMappingsDetail session={session} />
                 {isEmptySession(session) ? (
                     <p className="text-muted-foreground py-6 text-sm">This session has no recorded activities yet.</p>
                 ) : null}
             </div>
         </div>
+    );
+}
+
+/**
+ * Adherence section (design UX5, §16.7). Shows the derived adherence read for a completed session — its
+ * overall percentage, component scores, exclusions, divergence, evidence, formula version, and a
+ * stale/pending/failed label. It is a projection recomputed by the worker, so an empty result set on a
+ * completed session is surfaced as "recalculating" rather than hidden. Never shown for a draft session.
+ */
+function AdherenceSection({ session }: { readonly session: TrainingSessionResponse }): React.JSX.Element | null {
+    const adherence = useQuery(sessionAdherenceQueryOptions(session.id));
+    const formula = useQuery(adherenceFormulaQueryOptions);
+
+    if (session.status !== "completed") return null;
+    const results = adherence.data?.results ?? [];
+    if (adherence.isPending && results.length === 0) return null;
+    if (results.length === 0) {
+        if (session.archivedAt !== null) return null;
+        return (
+            <section className="grid gap-2">
+                <h3 className="text-sm font-medium">Adherence</h3>
+                <p className="text-muted-foreground border-border rounded-lg border p-4 text-sm">
+                    Adherence for this session is being calculated.
+                </p>
+            </section>
+        );
+    }
+    return (
+        <section className="grid gap-2">
+            <h3 className="text-sm font-medium">Adherence</h3>
+            <AdherenceDisplay formula={formula.data} results={results} />
+        </section>
     );
 }
 
@@ -194,10 +233,13 @@ function isEmptySession(session: TrainingSessionResponse): boolean {
 /** Navigable link to the owning program, resolved from the first planned link that names one. */
 function ProgramLink({ links }: { readonly links: TrainingSessionResponse["plannedLinks"] }): React.JSX.Element | null {
     const withProgram = links.find(link => link.programId !== null && link.programName !== null);
-    if (!withProgram) return null;
-    // Targets the programs area today; retarget to the program hub `/training/programs/$id` once #67 ships.
+    if (!withProgram?.programId) return null;
     return (
-        <Link className="text-foreground hover:text-primary underline underline-offset-4" to="/training/programs">
+        <Link
+            className="text-foreground hover:text-primary underline underline-offset-4"
+            params={{ id: withProgram.programId }}
+            to="/training/programs/$id"
+        >
             {withProgram.programName}
         </Link>
     );

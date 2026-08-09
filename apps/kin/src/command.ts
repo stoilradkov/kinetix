@@ -84,6 +84,9 @@ import {
     recordSessionMappingsRequestSchema,
     activeTrainingSessionResponseSchema,
     completionPreviewResponseSchema,
+    adherenceFormulaResponseSchema,
+    adherenceQueryResponseSchema,
+    sessionAdherenceResponseSchema,
     trainingSessionListResponseSchema,
     trainingSessionResponseSchema,
     createTrainingInjuryRequestSchema,
@@ -230,6 +233,7 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
     registerTrainingSetCommands(training, dependencies);
     registerTrainingRunningCommands(training, dependencies);
     registerTrainingInjuryCommands(training, dependencies);
+    registerTrainingAdherenceCommands(training, dependencies);
     const history = training.command("history").description("Inspect and restore aggregate history");
 
     history
@@ -1767,6 +1771,138 @@ function registerPlannedSessionCommands(training: Command, dependencies: Program
             );
 }
 
+function registerTrainingAdherenceCommands(training: Command, dependencies: ProgramDependencies): void {
+    const adherence = training
+        .command("adherence")
+        .description("Read derived adherence results (overall %, components, evidence, formula version)");
+
+    adherence
+        .command("session")
+        .description("Show the current adherence results for one session, one per linked planned prescription")
+        .argument("<session-id>", "Training session UUID")
+        .option("--evidence", "Include per-component evidence inputs in the human output")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (sessionId: string, options: { evidence?: boolean; apiUrl?: string; json?: boolean }) => {
+            const result = sessionAdherenceResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/adherence`,
+                ),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const item of result.results) outputAdherenceResult(dependencies.output, item, options.evidence);
+        });
+
+    adherence
+        .command("list")
+        .description("Query adherence results across sessions, programs, blocks, and date ranges")
+        .option("--limit <count>", "Maximum results per page (1-100, default 50)")
+        .option("--cursor <cursor>", "Opaque cursor from a previous page's nextCursor")
+        .option("--session <id>", "Filter by training session UUID")
+        .option("--planned <id>", "Filter by planned session UUID")
+        .option("--program <id>", "Filter by program UUID")
+        .option("--block <id>", "Filter by program block UUID")
+        .option("--scope <scope>", "Filter by activity scope (strength, running, mixed)")
+        .option("--from <date>", "Only sessions on or after this YYYY-MM-DD local date")
+        .option("--to <date>", "Only sessions on or before this YYYY-MM-DD local date")
+        .option("--evidence", "Include per-component evidence inputs in the human output")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: {
+                limit?: string;
+                cursor?: string;
+                session?: string;
+                planned?: string;
+                program?: string;
+                block?: string;
+                scope?: string;
+                from?: string;
+                to?: string;
+                evidence?: boolean;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const params = new URLSearchParams();
+                if (options.limit !== undefined) params.set("limit", options.limit);
+                if (options.cursor !== undefined) params.set("cursor", options.cursor);
+                if (options.session !== undefined) params.set("trainingSessionId", options.session);
+                if (options.planned !== undefined) params.set("plannedSessionId", options.planned);
+                if (options.program !== undefined) params.set("programId", options.program);
+                if (options.block !== undefined) params.set("blockId", options.block);
+                if (options.scope !== undefined) params.set("scope", options.scope);
+                if (options.from !== undefined) params.set("from", options.from);
+                if (options.to !== undefined) params.set("to", options.to);
+                const query = params.toString();
+                const result = adherenceQueryResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/adherence${query ? `?${query}` : ""}`,
+                    ),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else {
+                    for (const item of result.items) outputAdherenceResult(dependencies.output, item, options.evidence);
+                    if (result.nextCursor !== null) dependencies.output(`next-cursor\t${result.nextCursor}`);
+                }
+            },
+        );
+
+    adherence
+        .command("formula")
+        .description("Show the stable, versioned adherence formula-display metadata and component weights")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { apiUrl?: string; json?: boolean }) => {
+            const result = adherenceFormulaResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/adherence/formula`),
+            );
+            if (options.json) {
+                dependencies.output(JSON.stringify(result));
+                return;
+            }
+            dependencies.output(`formula\t${result.formula}\tschema-version=${result.schemaVersion}`);
+            dependencies.output(`scoring\t${result.scoring}`);
+            for (const component of [...result.strengthComponents, ...result.runningComponents])
+                dependencies.output(
+                    `component\t${component.scope}\t${component.key}\tweight=${component.weight}\t${component.label}`,
+                );
+        });
+
+    adherence
+        .command("recalculate")
+        .description("Force a synchronous adherence recompute for a session (diagnostic)")
+        .argument("<session-id>", "Training session UUID")
+        .option("--idempotency-key <key>", "Idempotency key for a safe retry")
+        .option("--source <source>", "Provenance source (user, agent, import, sync, system)")
+        .option("--reason <reason>", "Provenance reason")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                sessionId: string,
+                options: {
+                    idempotencyKey?: string;
+                    source?: string;
+                    reason?: string;
+                    apiUrl?: string;
+                    json?: boolean;
+                },
+            ) => {
+                const result = sessionAdherenceResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/adherence/recalculate`,
+                        mutationRequest("POST", {}, undefined, options.idempotencyKey, provenanceOf(options)),
+                    ),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else for (const item of result.results) outputAdherenceResult(dependencies.output, item, false);
+            },
+        );
+}
+
 function registerTrainingSessionCommands(training: Command, dependencies: ProgramDependencies): void {
     const sessions = training.command("sessions").description("Track live and retrospective training sessions");
 
@@ -3089,6 +3225,27 @@ function outputPlannedSession(
         output(
             `${session.id}\t${session.version}\t${session.status}\t${session.localDate ?? "-"}\t${session.title ?? ""}`,
         );
+}
+
+function outputAdherenceResult(
+    output: (message: string) => void,
+    result: ReturnType<typeof sessionAdherenceResponseSchema.parse>["results"][number],
+    evidence?: boolean,
+): void {
+    const overall = result.overall === null ? "n/a" : String(result.overall);
+    output(
+        `result\t${result.id}\tsession=${result.trainingSessionId}\tstatus=${result.status}\tscope=${result.scope}` +
+            `\toverall=${overall}\tformula=${result.formula}\tplanned=${result.plannedSessionTitle ?? ""}`,
+    );
+    if (result.exclusions.length > 0) output(`  exclusions\t${result.exclusions.join(",")}`);
+    for (const component of result.components) {
+        const score = component.score === null ? "excluded" : String(component.score);
+        const flag = component.included ? "" : `\treason=${component.exclusion ?? "excluded"}`;
+        const detail = evidence ? `\tinputs=${JSON.stringify(component.inputs)}` : "";
+        output(
+            `  component\t${component.key}\tscope=${component.scope}\tscore=${score}\tweight=${component.weight}${flag}${detail}`,
+        );
+    }
 }
 
 function outputTrainingSession(

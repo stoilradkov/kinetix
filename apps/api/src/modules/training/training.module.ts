@@ -183,6 +183,19 @@ import {
     type HistoricalImportRevertRepository,
     type HistoricalImportEntityInspector,
     type TrainingExerciseCatalogPort,
+    ADHERENCE_RESULT_REPOSITORY,
+    ADHERENCE_INPUT_READER,
+    CALCULATE_ADHERENCE,
+    ADHERENCE_RESULT_QUERY,
+    ADHERENCE_RECALC_STATE_READER,
+    ADHERENCE_QUERY_SERVICE,
+    AdherenceCalculatorRegistry,
+    CalculateAdherence,
+    AdherenceQueryService,
+    type AdherenceInputReader,
+    type AdherenceResultRepository,
+    type AdherenceResultQueryPort,
+    type AdherenceRecalcStateReader,
 } from "#src/modules/training/application/index";
 import type {
     ExerciseDefinitionState,
@@ -228,6 +241,14 @@ import { PlannedSessionRevisionRegistrar } from "#src/modules/training/infrastru
 import { DrizzleTrainingSessionRepository } from "#src/modules/training/infrastructure/drizzle-training-session-repository";
 import { DrizzleRunningActivityQueries } from "#src/modules/training/infrastructure/drizzle-running-activity-queries";
 import { TrainingSessionRevisionRegistrar } from "#src/modules/training/infrastructure/training-session-revision-registrar";
+import { DrizzleAdherenceResultRepository } from "#src/modules/training/infrastructure/drizzle-adherence-result-repository";
+import { DrizzleAdherenceInputReader } from "#src/modules/training/infrastructure/drizzle-adherence-input-reader";
+import { DrizzleAdherenceResultQuery } from "#src/modules/training/infrastructure/drizzle-adherence-result-query";
+import { DrizzleAdherenceRecalcStateReader } from "#src/modules/training/infrastructure/drizzle-adherence-recalc-state-reader";
+import {
+    AdherenceJobRegistrar,
+    AdherenceOutboxRegistrar,
+} from "#src/modules/training/infrastructure/adherence-registrars";
 import { DrizzleProgramRepository } from "#src/modules/training/infrastructure/drizzle-program-repository";
 import { DrizzleProgramMembershipRepository } from "#src/modules/training/infrastructure/drizzle-program-membership-repository";
 import { DrizzleProgramGoalValidator } from "#src/modules/training/infrastructure/drizzle-program-goal-validator";
@@ -255,6 +276,7 @@ import {
     PlannedSessionController,
     TrainingSessionController,
     RunController,
+    AdherenceController,
     BulkProgramController,
     ImportBatchController,
     HistoricalImportController,
@@ -290,6 +312,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         PlannedSessionController,
         TrainingSessionController,
         RunController,
+        AdherenceController,
         BulkProgramController,
         ImportBatchController,
         HistoricalImportController,
@@ -766,6 +789,38 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
             inject: [UNIT_OF_WORK, TRAINING_SESSION_COMMANDS, TRAINING_SESSION_REPOSITORY, RUNNING_ACTIVITY_QUERIES],
         },
         TrainingSessionRevisionRegistrar,
+        // Adherence (issue #37, AD1): projection repo + mapping-aware reader, the versioned calculator
+        // registry, the CalculateAdherence orchestration, and the job/outbox registrars that make
+        // adherence the first durable-work consumer.
+        DrizzleAdherenceResultRepository,
+        { provide: ADHERENCE_RESULT_REPOSITORY, useExisting: DrizzleAdherenceResultRepository },
+        DrizzleAdherenceInputReader,
+        { provide: ADHERENCE_INPUT_READER, useExisting: DrizzleAdherenceInputReader },
+        AdherenceCalculatorRegistry,
+        {
+            provide: CALCULATE_ADHERENCE,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                reader: AdherenceInputReader,
+                repository: AdherenceResultRepository,
+                registry: AdherenceCalculatorRegistry,
+            ) => new CalculateAdherence({ unitOfWork, reader, repository, registry, generateId: randomUUID }),
+            inject: [UNIT_OF_WORK, ADHERENCE_INPUT_READER, ADHERENCE_RESULT_REPOSITORY, AdherenceCalculatorRegistry],
+        },
+        AdherenceJobRegistrar,
+        AdherenceOutboxRegistrar,
+        // Adherence read side (issue #38, AD2): the index-aware result query + the recompute-state reader,
+        // composed by the query service that annotates every result with its stale/pending/failed status.
+        DrizzleAdherenceResultQuery,
+        { provide: ADHERENCE_RESULT_QUERY, useExisting: DrizzleAdherenceResultQuery },
+        DrizzleAdherenceRecalcStateReader,
+        { provide: ADHERENCE_RECALC_STATE_READER, useExisting: DrizzleAdherenceRecalcStateReader },
+        {
+            provide: ADHERENCE_QUERY_SERVICE,
+            useFactory: (query: AdherenceResultQueryPort, stateReader: AdherenceRecalcStateReader) =>
+                new AdherenceQueryService({ query, stateReader }),
+            inject: [ADHERENCE_RESULT_QUERY, ADHERENCE_RECALC_STATE_READER],
+        },
         DrizzleProgramRepository,
         DrizzleProgramMembershipRepository,
         DrizzleProgramGoalValidator,

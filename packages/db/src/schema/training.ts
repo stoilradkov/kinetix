@@ -2493,6 +2493,105 @@ export const historicalImportReverts = pgTable(
 
 export type HistoricalImportRevertRow = typeof historicalImportReverts.$inferSelect;
 
+/**
+ * Adherence result projection (issue #37, AD1; design §16.2, §16.7). One row per (actual session,
+ * resolved prescription) scored by a versioned formula. This is derived analytics: the authoritative
+ * facts stay in the session/prescription tables and `source_fingerprint` (a SHA-256 over the scoring
+ * inputs) lets a recompute skip identical work. Results are never mutated in place — a recompute marks
+ * the current row `superseded` and inserts a new `current` row, so at most one `current` result exists
+ * per (session, resolved prescription).
+ */
+export const adherenceResults = pgTable(
+    "adherence_results",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        trainingSessionId: uuid("training_session_id")
+            .notNull()
+            .references(() => trainingSessions.id, { onDelete: "cascade" }),
+        trainingSessionVersion: integer("training_session_version").notNull(),
+        plannedSessionId: uuid("planned_session_id").references(() => plannedSessions.id, { onDelete: "set null" }),
+        sourcePrescriptionId: uuid("source_prescription_id")
+            .notNull()
+            .references(() => sessionPrescriptions.id),
+        resolvedPrescriptionId: uuid("resolved_prescription_id")
+            .notNull()
+            .references(() => sessionPrescriptions.id),
+        formula: text("formula").notNull(),
+        scope: text("scope").notNull(),
+        overallScore: numeric("overall_score", { precision: 6, scale: 3 }),
+        sourceFingerprint: text("source_fingerprint").notNull(),
+        exclusions: jsonb("exclusions").$type<string[]>().notNull().default([]),
+        state: text("state").notNull().default("current"),
+        calculatedAt: timestamp("calculated_at", { withTimezone: true }).notNull().defaultNow(),
+        supersededAt: timestamp("superseded_at", { withTimezone: true }),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("adherence_results_scope_valid", sql`${table.scope} IN ('strength', 'running', 'mixed')`),
+        check("adherence_results_state_valid", sql`${table.state} IN ('current', 'superseded')`),
+        check("adherence_results_version_valid", sql`${table.trainingSessionVersion} >= 1`),
+        check(
+            "adherence_results_score_valid",
+            sql`${table.overallScore} IS NULL OR (${table.overallScore} >= 0 AND ${table.overallScore} <= 100)`,
+        ),
+        check("adherence_results_fingerprint_valid", sql`${table.sourceFingerprint} ~ '^[0-9a-f]{64}$'`),
+        // At most one live result per (session, resolved prescription); superseded rows keep the history.
+        uniqueIndex("adherence_results_current_unique")
+            .on(table.trainingSessionId, table.resolvedPrescriptionId)
+            .where(sql`${table.state} = 'current'`),
+        index("adherence_results_session_idx").on(table.trainingSessionId),
+        index("adherence_results_profile_idx").on(table.profileId, table.calculatedAt),
+        index("adherence_results_planned_idx").on(table.plannedSessionId),
+        // Keyset scan for the cross-session adherence query (issue #38): newest-computed first over
+        // current results only. Ordered (calculated_at desc, id desc) with id breaking ties.
+        index("adherence_results_query_idx")
+            .on(table.calculatedAt, table.id)
+            .where(sql`${table.state} = 'current'`),
+    ],
+);
+
+/**
+ * One scored (or excluded) component of an adherence result (design §16.7). Every component is stored so
+ * a result stays fully explainable: `inputs` holds the aggregated actual/planned evidence and excluded
+ * components carry a null score plus an `exclusion_reason`.
+ */
+export const adherenceComponents = pgTable(
+    "adherence_components",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        resultId: uuid("result_id")
+            .notNull()
+            .references(() => adherenceResults.id, { onDelete: "cascade" }),
+        componentKey: text("component_key").notNull(),
+        scope: text("scope").notNull(),
+        score: numeric("score", { precision: 6, scale: 3 }),
+        weight: numeric("weight", { precision: 6, scale: 3 }).notNull(),
+        included: boolean("included").notNull(),
+        exclusionReason: text("exclusion_reason"),
+        inputs: jsonb("inputs").$type<Record<string, unknown>>().notNull().default({}),
+        position: integer("position").notNull(),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check(
+            "adherence_components_key_valid",
+            sql`${table.componentKey} IN ('session_completion', 'activity_completion', 'exercise_completion', 'set_completion', 'reps', 'load', 'volume', 'duration', 'distance', 'pace', 'step_completion', 'intensity')`,
+        ),
+        check("adherence_components_scope_valid", sql`${table.scope} IN ('session', 'strength', 'running', 'mixed')`),
+        check(
+            "adherence_components_score_valid",
+            sql`${table.score} IS NULL OR (${table.score} >= 0 AND ${table.score} <= 100)`,
+        ),
+        check("adherence_components_weight_valid", sql`${table.weight} >= 0`),
+        check("adherence_components_position_valid", sql`${table.position} >= 0`),
+        index("adherence_components_result_idx").on(table.resultId),
+    ],
+);
+
+export type AdherenceResultRow = typeof adherenceResults.$inferSelect;
+export type AdherenceComponentRow = typeof adherenceComponents.$inferSelect;
+
 export type WorkoutTemplateRow = typeof workoutTemplates.$inferSelect;
 export type WorkoutTemplatePrescriptionRow = typeof workoutTemplatePrescriptions.$inferSelect;
 export type ProgramRow = typeof programs.$inferSelect;

@@ -80,7 +80,17 @@ function view(): ActiveTrainingSessionResponse {
                                 exercises: [
                                     {
                                         id: PRESCRIBED_EXERCISE,
-                                        sets: [{ id: PRESCRIBED_SET, targets: targets({ repsMin: 5, repsMax: 5, loadKgMin: "100", loadKgMax: "100" }) }],
+                                        sets: [
+                                            {
+                                                id: PRESCRIBED_SET,
+                                                targets: targets({
+                                                    repsMin: 5,
+                                                    repsMax: 5,
+                                                    loadKgMin: "100",
+                                                    loadKgMax: "100",
+                                                }),
+                                            },
+                                        ],
                                     },
                                 ],
                             },
