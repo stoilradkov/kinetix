@@ -82,6 +82,24 @@ export interface TrainingSessionResource extends TrainingSessionState {
 }
 
 /**
+ * Read-only denormalization of a planned link (design 11.4; UX2): the base link plus its
+ * planned-session title and the program that owns it, resolved through the mapping tables at read
+ * time so the detail view can name and navigate the link. `plannedSessionTitle` is null for a
+ * template/previous reference; the program pair is null when the planned session is not a program
+ * member (or its program has been archived away).
+ */
+export interface SessionPlannedLinkView extends SessionPlannedLink {
+    readonly plannedSessionTitle: string | null;
+    readonly programId: string | null;
+    readonly programName: string | null;
+}
+
+/** Full detail read model with each planned link resolved to its planned-session and program names. */
+export interface TrainingSessionDetail extends Omit<TrainingSessionResource, "plannedLinks"> {
+    readonly plannedLinks: readonly SessionPlannedLinkView[];
+}
+
+/**
  * Bounded list projection: scalar metadata + version + child counts, without the nested trees. Also
  * carries read-only linkage (originating program) and a compact content summary (distinct activity
  * kinds + total performed-set count) so list rows differentiate without a detail fetch.
@@ -132,6 +150,7 @@ export interface TrainingSessionRepository<Transaction = unknown> extends Curren
     Transaction
 > {
     readSession(id: EntityId, transaction?: Transaction): Promise<TrainingSessionResource | null>;
+    readSessionDetail(id: EntityId, transaction?: Transaction): Promise<TrainingSessionDetail | null>;
     listSessions(filter?: TrainingSessionListFilter): Promise<TrainingSessionListPage>;
 }
 

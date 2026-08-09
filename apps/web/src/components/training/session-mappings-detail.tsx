@@ -1,3 +1,5 @@
+import { Link } from "@tanstack/react-router";
+
 import type { MappingRelationValue, TrainingSessionResponse } from "@kinetix/types";
 
 import { Badge } from "@/components/ui/badge";
@@ -96,11 +98,22 @@ function PlannedLinkCard({ link }: { readonly link: PlannedLink }): React.JSX.El
     const frozen = link.resolvedPrescriptionId !== link.sourcePrescriptionId;
     return (
         <div className="border-border grid gap-1 rounded-lg border p-4">
-            <div className="flex items-center gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
                 <Badge variant="info">{link.plannedSessionId === null ? "reference" : "planned"}</Badge>
-                <span className="text-muted-foreground truncate font-mono">
-                    {link.plannedSessionId === null ? "template/previous" : short(link.plannedSessionId)}
+                <span className="text-muted-foreground truncate">
+                    {link.plannedSessionId === null
+                        ? "template/previous"
+                        : (link.plannedSessionTitle ?? short(link.plannedSessionId))}
                 </span>
+                {link.programId !== null && link.programName !== null ? (
+                    // Targets the programs area today; retarget to `/training/programs/$id` once #67 ships.
+                    <Link
+                        className="text-foreground hover:text-primary underline underline-offset-4"
+                        to="/training/programs"
+                    >
+                        {link.programName}
+                    </Link>
+                ) : null}
                 {frozen ? <Badge variant="secondary">targets frozen</Badge> : null}
             </div>
             <span className="text-muted-foreground font-mono text-xs">

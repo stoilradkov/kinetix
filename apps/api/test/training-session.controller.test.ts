@@ -126,6 +126,7 @@ function repository(overrides: Partial<TrainingSessionRepository> = {}): Trainin
     return {
         listSessions: async () => ({ items: [summary()], nextCursor: null }),
         readSession: async () => resource(),
+        readSessionDetail: async () => ({ ...resource(), plannedLinks: [] }),
         loadForUpdate: async () => null,
         create: async () => undefined,
         save: async () => undefined,
@@ -185,7 +186,7 @@ describe("TrainingSessionController", () => {
 
     it("surfaces a missing session on get", async () => {
         await expect(
-            controller({ repository: repository({ readSession: async () => null }) }).get(ids.session, {
+            controller({ repository: repository({ readSessionDetail: async () => null }) }).get(ids.session, {
                 setHeader: vi.fn(),
             }),
         ).rejects.toBeInstanceOf(TrainingSessionNotFoundError);
@@ -436,7 +437,9 @@ describe("TrainingSessionController", () => {
     });
 
     it("gets a session, deriving the running pace as a query-only projection", async () => {
-        const withRun = repository({ readSession: async () => resource({ activities: [runningActivity()] }) });
+        const withRun = repository({
+            readSessionDetail: async () => ({ ...resource({ activities: [runningActivity()] }), plannedLinks: [] }),
+        });
         const result = await controller({ repository: withRun }).get(ids.session, { setHeader: vi.fn() });
         const running = result.activities[0]!.running!;
         expect(running.derivedPace.secondsPerKilometre).toBe(300);

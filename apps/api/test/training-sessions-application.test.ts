@@ -4,6 +4,7 @@ import {
     TrainingSessionCommands,
     TrainingSessionNotFoundError,
     trainingSessionSerializer,
+    type TrainingSessionDetail,
     type TrainingSessionListFilter,
     type TrainingSessionListPage,
     type TrainingSessionRepository,
@@ -676,6 +677,20 @@ class FakeTrainingSessionRepository implements TrainingSessionRepository<typeof 
     async readSession(id: EntityId): Promise<TrainingSessionResource | null> {
         const stored = this.values.get(id);
         return stored ? { ...structuredClone(stored.state), version: stored.version } : null;
+    }
+
+    async readSessionDetail(id: EntityId): Promise<TrainingSessionDetail | null> {
+        const resource = await this.readSession(id);
+        if (resource === null) return null;
+        return {
+            ...resource,
+            plannedLinks: resource.plannedLinks.map(link => ({
+                ...link,
+                plannedSessionTitle: null,
+                programId: null,
+                programName: null,
+            })),
+        };
     }
 
     async listSessions(filter?: TrainingSessionListFilter): Promise<TrainingSessionListPage> {

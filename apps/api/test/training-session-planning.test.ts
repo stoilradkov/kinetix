@@ -5,10 +5,11 @@ import {
     TrainingSessionCommands,
     trainingSessionSerializer,
     type PlannedSessionRepository,
+    type TrainingSessionDetail,
     type TrainingSessionListFilter,
+    type TrainingSessionListPage,
     type TrainingSessionRepository,
     type TrainingSessionResource,
-    type TrainingSessionSummary,
 } from "#src/modules/training/application/index";
 import {
     SessionPrescription,
@@ -403,8 +404,22 @@ class FakeTrainingSessionRepository implements TrainingSessionRepository<typeof 
         return stored ? { ...structuredClone(stored.state), version: stored.version } : null;
     }
 
-    async listSessions(filter?: TrainingSessionListFilter): Promise<readonly TrainingSessionSummary[]> {
-        return [...this.values.values()]
+    async readSessionDetail(sessionId: EntityId): Promise<TrainingSessionDetail | null> {
+        const resource = await this.readSession(sessionId);
+        if (resource === null) return null;
+        return {
+            ...resource,
+            plannedLinks: resource.plannedLinks.map(link => ({
+                ...link,
+                plannedSessionTitle: null,
+                programId: null,
+                programName: null,
+            })),
+        };
+    }
+
+    async listSessions(filter?: TrainingSessionListFilter): Promise<TrainingSessionListPage> {
+        const items = [...this.values.values()]
             .filter(item => filter?.includeArchived || item.state.archivedAt === null)
             .map(item => {
                 const {
@@ -427,8 +442,13 @@ class FakeTrainingSessionRepository implements TrainingSessionRepository<typeof 
                     version: item.version,
                     activityCount: activities.length,
                     painRecordCount: painRecords.length,
+                    programId: null,
+                    programName: null,
+                    activityKinds: [...new Set(activities.map(activity => activity.type))].sort(),
+                    totalSetCount: 0,
                 };
             });
+        return { items, nextCursor: null };
     }
 
     async loadForUpdate(_entityType: string, sessionId: EntityId) {

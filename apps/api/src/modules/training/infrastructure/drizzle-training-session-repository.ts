@@ -8,6 +8,7 @@ import {
     painRecords,
     performedRunSteps,
     performedSets,
+    plannedSessions,
     programPlannedSessions,
     programs,
     runSplits,
@@ -42,6 +43,8 @@ import {
 import { DatabaseService } from "#src/database/database.service";
 import {
     TRAINING_SESSION_ENTITY_TYPE,
+    type SessionPlannedLinkView,
+    type TrainingSessionDetail,
     type TrainingSessionListFilter,
     type TrainingSessionListPage,
     type TrainingSessionRepository,
@@ -107,6 +110,70 @@ export class DrizzleTrainingSessionRepository implements TrainingSessionReposito
         if (!row) return null;
         const children = await this.loadChildren(id, executor);
         return { ...hydrate(row, children), version: row.version };
+    }
+
+    /**
+     * Detail read model (UX2): the full session resource with each planned link denormalized to its
+     * planned-session title and owning program. The resolution is a read-only projection over the
+     * mapping tables (planned_sessions for the title, program_planned_sessions → programs for the
+     * program); it never touches the aggregate. Bare-UUID links stay valid — missing rows resolve to
+     * null so a template/previous reference or an archived-away program simply shows no name.
+     */
+    async readSessionDetail(id: EntityId, transaction?: unknown): Promise<TrainingSessionDetail | null> {
+        const resource = await this.readSession(id, transaction);
+        if (!resource) return null;
+        const plannedLinks = await this.resolvePlannedLinkViews(resource.plannedLinks, this.executor(transaction));
+        return { ...resource, plannedLinks };
+    }
+
+    /**
+     * Resolve the planned-session title and owning program for each link in one batched read. A planned
+     * session can appear in more than one program; the deterministic name-then-id order picks a single
+     * stable program, matching {@link programsBySession}.
+     */
+    private async resolvePlannedLinkViews(
+        links: readonly SessionPlannedLink[],
+        executor: Database,
+    ): Promise<SessionPlannedLinkView[]> {
+        const plannedSessionIds = [
+            ...new Set(links.map(link => link.plannedSessionId).filter((value): value is string => value !== null)),
+        ];
+        if (plannedSessionIds.length === 0) {
+            return links.map(link => ({ ...link, plannedSessionTitle: null, programId: null, programName: null }));
+        }
+        const [titleRows, programRows] = await Promise.all([
+            executor
+                .select({ id: plannedSessions.id, title: plannedSessions.title })
+                .from(plannedSessions)
+                .where(inArray(plannedSessions.id, plannedSessionIds)),
+            executor
+                .select({
+                    plannedSessionId: programPlannedSessions.plannedSessionId,
+                    programId: programs.id,
+                    programName: programs.name,
+                })
+                .from(programPlannedSessions)
+                .innerJoin(programs, eq(programPlannedSessions.programId, programs.id))
+                .where(inArray(programPlannedSessions.plannedSessionId, plannedSessionIds))
+                .orderBy(asc(programs.name), asc(programs.id)),
+        ]);
+        const titleById = new Map(titleRows.map(row => [row.id, row.title]));
+        const programByPlannedSession = new Map<string, { id: string; name: string }>();
+        for (const row of programRows) {
+            if (!programByPlannedSession.has(row.plannedSessionId)) {
+                programByPlannedSession.set(row.plannedSessionId, { id: row.programId, name: row.programName });
+            }
+        }
+        return links.map(link => {
+            const program = link.plannedSessionId === null ? null : programByPlannedSession.get(link.plannedSessionId);
+            return {
+                ...link,
+                plannedSessionTitle:
+                    link.plannedSessionId === null ? null : (titleById.get(link.plannedSessionId) ?? null),
+                programId: program?.id ?? null,
+                programName: program?.name ?? null,
+            };
+        });
     }
 
     async listSessions(filter?: TrainingSessionListFilter): Promise<TrainingSessionListPage> {

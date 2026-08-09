@@ -5,10 +5,11 @@ import {
     TrainingSessionCommands,
     sessionToPrescriptionDraft,
     trainingSessionSerializer,
+    type TrainingSessionDetail,
     type TrainingSessionListFilter,
+    type TrainingSessionListPage,
     type TrainingSessionRepository,
     type TrainingSessionResource,
-    type TrainingSessionSummary,
 } from "#src/modules/training/application/index";
 import {
     SessionPrescription,
@@ -543,8 +544,22 @@ class FakeTrainingSessionRepository implements TrainingSessionRepository<typeof 
         return stored ? { ...structuredClone(stored.state), version: stored.version } : null;
     }
 
-    async listSessions(filter?: TrainingSessionListFilter): Promise<readonly TrainingSessionSummary[]> {
-        return [...this.values.values()]
+    async readSessionDetail(sessionId: EntityId): Promise<TrainingSessionDetail | null> {
+        const resource = await this.readSession(sessionId);
+        if (resource === null) return null;
+        return {
+            ...resource,
+            plannedLinks: resource.plannedLinks.map(link => ({
+                ...link,
+                plannedSessionTitle: null,
+                programId: null,
+                programName: null,
+            })),
+        };
+    }
+
+    async listSessions(filter?: TrainingSessionListFilter): Promise<TrainingSessionListPage> {
+        const items = [...this.values.values()]
             .filter(item => filter?.includeArchived || item.state.archivedAt === null)
             .map(item => {
                 const { activities, painRecords, ...core } = structuredClone(item.state);
@@ -553,8 +568,9 @@ class FakeTrainingSessionRepository implements TrainingSessionRepository<typeof 
                     version: item.version,
                     activityCount: activities.length,
                     painRecordCount: painRecords.length,
-                } as unknown as TrainingSessionSummary;
+                } as unknown as TrainingSessionListPage["items"][number];
             });
+        return { items, nextCursor: null };
     }
 
     async loadForUpdate(_entityType: string, sessionId: EntityId) {

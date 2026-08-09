@@ -1,14 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-import { ActiveWorkout } from "@/components/training/active/active-workout";
+import { SessionDetailRoute } from "@/components/training/session-detail";
 
-export const Route = createFileRoute("/training/sessions/$id")({ component: ActiveWorkoutPage });
+export const Route = createFileRoute("/training/sessions/$id")({ component: SessionPage });
 
-function ActiveWorkoutPage(): React.JSX.Element {
+function SessionPage(): React.JSX.Element {
     const { id } = Route.useParams();
     return (
         <main>
-            <ActiveWorkout sessionId={id} />
+            <SessionDetailRoute sessionId={id} />
         </main>
     );
 }

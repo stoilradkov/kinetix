@@ -604,6 +604,14 @@ const sessionPlannedLinkResponseSchema = z
         plannedSessionId: z.string().uuid().nullable(),
         sourcePrescriptionId: z.string().uuid(),
         resolvedPrescriptionId: z.string().uuid(),
+        // Read-only denormalization resolved through the planned-session mapping (design 11.4; UX2) so
+        // the detail view can name and navigate the link without a second fetch. Title is null for a
+        // template/previous reference (no planned session); the program pair is null when the planned
+        // session is not a program member or its program has been archived away. Mutation responses,
+        // which do not resolve these, default them to null.
+        plannedSessionTitle: z.string().nullable().default(null),
+        programId: z.string().uuid().nullable().default(null),
+        programName: z.string().nullable().default(null),
     })
     .strict();
 

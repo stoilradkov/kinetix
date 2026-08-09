@@ -127,6 +127,115 @@ describe("training session contracts", () => {
         expect(trainingSessionResponseSchema.parse(response)).toEqual(response);
     });
 
+    describe("planned-link denormalization (UX2)", () => {
+        const plannedSessionId = "0198a4db-d8da-7000-8000-0000000070b1";
+        const sourcePrescriptionId = "0198a4db-d8da-7000-8000-0000000070c1";
+        const resolvedPrescriptionId = "0198a4db-d8da-7000-8000-0000000070c2";
+        const programId = "0198a4db-d8da-7000-8000-0000000070d1";
+
+        const withLinks = (links: readonly unknown[]) => ({
+            id: uuid,
+            profileId: "0198a4db-d8da-7000-8000-0000000000d9",
+            status: "completed" as const,
+            title: null,
+            localDate: "2026-08-02",
+            timeZone: "Europe/Sofia",
+            startedAt: null,
+            endedAt: null,
+            durationMinutes: null,
+            readiness: { energy: null, motivation: null, fatigue: null, soreness: null, stress: null, recovery: null },
+            postWorkout: {
+                energy: null,
+                motivation: null,
+                enjoyment: null,
+                difficulty: null,
+                fatigue: null,
+                notes: null,
+            },
+            notes: null,
+            tags: [],
+            sourcePlannedSessionId: null,
+            version: 1,
+            archivedAt: null,
+            createdAt: "2026-08-02T09:00:00.000Z",
+            updatedAt: "2026-08-02T09:00:00.000Z",
+            activities: [],
+            painRecords: [],
+            plannedLinks: links,
+            activityMappings: [],
+            occurrenceMappings: [],
+            setMappings: [],
+            runStepMappings: [],
+        });
+
+        it("round-trips a link resolved to its planned session and program", () => {
+            const response = withLinks([
+                {
+                    plannedSessionId,
+                    sourcePrescriptionId,
+                    resolvedPrescriptionId,
+                    plannedSessionTitle: "Week 3 · Push",
+                    programId,
+                    programName: "Hypertrophy Block",
+                },
+            ]);
+            expect(trainingSessionResponseSchema.parse(response)).toEqual(response);
+        });
+
+        it("keeps title and program null for an unlinked template/previous reference", () => {
+            const parsed = trainingSessionResponseSchema.parse(
+                withLinks([
+                    {
+                        plannedSessionId: null,
+                        sourcePrescriptionId,
+                        resolvedPrescriptionId,
+                        plannedSessionTitle: null,
+                        programId: null,
+                        programName: null,
+                    },
+                ]),
+            );
+            expect(parsed.plannedLinks[0]).toMatchObject({
+                plannedSessionId: null,
+                plannedSessionTitle: null,
+                programId: null,
+                programName: null,
+            });
+        });
+
+        it("keeps the program pair null when the planned session's program is archived away", () => {
+            const parsed = trainingSessionResponseSchema.parse(
+                withLinks([
+                    {
+                        plannedSessionId,
+                        sourcePrescriptionId,
+                        resolvedPrescriptionId,
+                        plannedSessionTitle: "Standalone session",
+                        programId: null,
+                        programName: null,
+                    },
+                ]),
+            );
+            expect(parsed.plannedLinks[0]).toMatchObject({
+                plannedSessionTitle: "Standalone session",
+                programId: null,
+                programName: null,
+            });
+        });
+
+        it("defaults the denormalized fields to null when a mutation response omits them", () => {
+            const parsed = trainingSessionResponseSchema.parse(
+                withLinks([{ plannedSessionId, sourcePrescriptionId, resolvedPrescriptionId }]),
+            );
+            expect(parsed.plannedLinks[0]).toMatchObject({
+                plannedSessionId,
+                plannedSessionTitle: null,
+                programId: null,
+                programName: null,
+            });
+        });
+    });
+
     it("accepts a partial running summary and rejects an unknown metric", () => {
         const parsed = setRunningActivityRequestSchema.parse({
             activityId,

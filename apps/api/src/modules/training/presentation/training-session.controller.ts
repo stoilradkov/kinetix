@@ -265,7 +265,7 @@ export class TrainingSessionController {
         @Param("id") id: string,
         @Res({ passthrough: true }) response: HeaderResponse,
     ): Promise<TrainingSessionResponse> {
-        const session = await this.repository.readSession(sessionId(id));
+        const session = await this.repository.readSessionDetail(sessionId(id));
         if (!session) throw new TrainingSessionNotFoundError(id);
         response.setHeader("ETag", formatRevisionEtag(session.version));
         return trainingSessionResponseSchema.parse(toResponse(session));

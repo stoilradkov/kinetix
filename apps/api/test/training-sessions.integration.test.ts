@@ -1031,6 +1031,89 @@ describe.runIf(testDatabaseUrl)("training session PostgreSQL persistence", () =>
         // The session is cleaned up by profile in afterAll; the immutable prescription row is left as-is.
     });
 
+    it("readSessionDetail denormalizes each planned link's title and owning program (UX2)", async () => {
+        // Seed one prescription reused by every planned session, a program, and two planned sessions:
+        // A belongs to the program; B is a standalone planned session (archived-program analog: no
+        // program membership resolves through, so the program pair stays null).
+        const detailRxId = randomUUID();
+        const detailProgramId = randomUUID();
+        const programMemberPlannedId = randomUUID();
+        const standalonePlannedId = randomUUID();
+        await connection.db.insert(sessionPrescriptions).values({ id: detailRxId, kind: "planned" });
+        await connection.db.insert(programs).values({ id: detailProgramId, profileId, name: "Detail View Program" });
+        await connection.db.insert(plannedSessions).values([
+            { id: programMemberPlannedId, profileId, title: "Week 1 · Lower", currentPrescriptionId: detailRxId },
+            { id: standalonePlannedId, profileId, title: "Ad-hoc session", currentPrescriptionId: detailRxId },
+        ]);
+        await connection.db
+            .insert(programPlannedSessions)
+            .values({ programId: detailProgramId, plannedSessionId: programMemberPlannedId, sequence: 0 });
+
+        const sessionId = randomUUID();
+        await connection.db.insert(trainingSessions).values({
+            id: sessionId,
+            profileId,
+            status: "completed",
+            title: "Detail read",
+            localDate: "2099-05-01",
+            timeZone: "Europe/Sofia",
+            startedAt: now,
+            endedAt: later,
+        });
+        // Three links: program member, standalone planned session, and a template/previous reference.
+        await connection.db.insert(sessionMappings).values([
+            {
+                id: randomUUID(),
+                sessionId,
+                plannedSessionId: programMemberPlannedId,
+                sourcePrescriptionId: detailRxId,
+                resolvedPrescriptionId: detailRxId,
+            },
+            {
+                id: randomUUID(),
+                sessionId,
+                plannedSessionId: standalonePlannedId,
+                sourcePrescriptionId: detailRxId,
+                resolvedPrescriptionId: detailRxId,
+            },
+            {
+                id: randomUUID(),
+                sessionId,
+                plannedSessionId: null,
+                sourcePrescriptionId: detailRxId,
+                resolvedPrescriptionId: detailRxId,
+            },
+        ]);
+
+        const detail = await repository.readSessionDetail(sessionId as never);
+        const byPlanned = new Map(detail!.plannedLinks.map(link => [link.plannedSessionId, link]));
+
+        expect(byPlanned.get(programMemberPlannedId)).toMatchObject({
+            plannedSessionTitle: "Week 1 · Lower",
+            programId: detailProgramId,
+            programName: "Detail View Program",
+        });
+        expect(byPlanned.get(standalonePlannedId)).toMatchObject({
+            plannedSessionTitle: "Ad-hoc session",
+            programId: null,
+            programName: null,
+        });
+        expect(byPlanned.get(null)).toMatchObject({
+            plannedSessionTitle: null,
+            programId: null,
+            programName: null,
+        });
+
+        // Clean up the program/planned rows this test owns (the session is removed by the profile-scoped
+        // afterAll and its mappings cascade with it; the immutable prescription row is left as-is).
+        await connection.db.delete(trainingSessions).where(eq(trainingSessions.id, sessionId));
+        await connection.db.delete(programPlannedSessions).where(eq(programPlannedSessions.programId, detailProgramId));
+        await connection.db.delete(programs).where(eq(programs.id, detailProgramId));
+        await connection.db
+            .delete(plannedSessions)
+            .where(inArray(plannedSessions.id, [programMemberPlannedId, standalonePlannedId]));
+    });
+
     it("drives the live flow: start empty → add exercise → record set → preview → complete", async () => {
         const started = await commands.startEmpty({ title: "Live lift" }, metadata);
         expect(started.status).toBe("in_progress");
