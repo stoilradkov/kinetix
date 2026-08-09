@@ -110,3 +110,54 @@ activity, its type's remaining components are renormalised over the included one
   formula change or a late mapping edit, and blocks the write path on analytics.
 - **A generic key/value metric store now:** premature; typed adherence tables
   keep the projection explainable and foreign-keyed for MVP.
+
+## Addendum (issue #43, A1): generic metric-projection framework
+
+AD1 proved the pattern on adherence's dedicated tables. A1 generalises it into
+the shared framework the strength/running/1RM/finding calculators (A2–A6) reuse,
+without disturbing the adherence tables or path.
+
+- **Calculators are pure, code-registered, and versioned.** A `MetricCalculator`
+  carries a `key`, a `version`, and the `dependencies` (session, exercise,
+  context, zone, plan) whose change stales its results. `calculate(context)` is a
+  deterministic pure function of supplied facts, target coordinates, and versioned
+  config — no repositories, jobs, or aggregate mutation. A `key.vN` registry
+  (mirroring the durable-work handler registries) rejects unknown keys/versions
+  and duplicate registrations; `getCurrent(key)` resolves the latest version so a
+  rebuild always applies the newest formula while stored rows keep the version
+  that produced them. The production registry is empty until A2 registers the
+  first calculator.
+
+- **`derived_metrics` / `derived_metric_inputs` / `findings` projection tables.**
+  A metric row stores the calculator key/version, the polymorphic scope, the
+  period and dimensions (as canonical JSON), a `natural_key` (SHA-256 over the
+  identity — calculator key + scope + period + dimensions, deliberately excluding
+  the version so a new version supersedes rather than coexists), the value
+  (numeric/text/unit/details), a `source_fingerprint` (SHA-256 over the identity +
+  version + config + sorted input revisions), and the `current`/`superseded`
+  state plus a `stale` flag. A partial unique index keeps at most one `current`
+  row per natural key; recomputation supersedes-and-inserts, never mutating in
+  place. `derived_metric_inputs` records each source entity/revision, and its
+  `(entity_type, entity_id)` index powers the source-revision lookup. `findings`
+  mirror the same versioned/superseded shape with evidence, review/expiry, and
+  feedback (schema only in A1; finding calculators land in A5).
+
+- **`analytics_invalidations` is the coalescing queue.** Outbox handlers translate
+  a committed fact into `(dependency, scope_type, scope_id)` rows; a partial unique
+  index over pending rows converges duplicates so overlapping invalidations
+  coalesce. `expandInvalidation` is the pure fan-out (session → session + local
+  day/week + rolling 7/28 windows + program/block/plan links + touched
+  exercises/muscles/gear; exercise → family; context/zone/plan → the sessions a
+  reader resolves). Each handler appends the coalesced scopes, marks matching
+  current projections `stale`, and enqueues one coalesced rebuild job.
+
+- **One idempotent primitive, three rebuild paths.** `RecalculateMetric` recomputes
+  a single natural key: it loads facts through a `MetricContextReader`, runs the
+  registered calculator, and — when the new fingerprint matches the current row —
+  clears `stale` and skips the rewrite so replay is a no-op. Targeted rebuild
+  (drain the pending invalidation batch), scheduled full rebuild (sweep every
+  current projection), and manual rebuild (one explicit scope) all run through
+  this same primitive via PostgreSQL jobs, so every path shares the identical
+  calculators. Job status is exposed by the existing generic `/jobs/:id` surface;
+  the low-level `GET /training/analytics/metrics` query and diagnostic
+  `POST /training/analytics/rebuild` command never invoke a calculator directly.

@@ -23,6 +23,7 @@ export * from "#src/historical-import";
 export * from "#src/import-batch";
 export * from "#src/storage-reconciliation";
 export * from "#src/adherence";
+export * from "#src/analytics";
 export * from "#src/progression-rule";
 export * from "#src/progression-evaluation";
 

@@ -2590,6 +2590,161 @@ export const adherenceComponents = pgTable(
 );
 
 /**
+ * Coalescing invalidation queue for the derived-metric projection framework (issue #43, A1; design §16.2,
+ * §16.3). Outbox handlers translate a committed fact into `(dependency, scope_type, scope_id)` rows; a
+ * partial unique index converges duplicate pending rows so overlapping invalidations coalesce, and the
+ * rebuild worker drains the pending batch and marks it `processed`.
+ */
+export const analyticsInvalidations = pgTable(
+    "analytics_invalidations",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        dependency: text("dependency").notNull(),
+        scopeType: text("scope_type").notNull(),
+        scopeId: text("scope_id").notNull(),
+        reason: text("reason").notNull(),
+        eventId: uuid("event_id"),
+        status: text("status").notNull().default("pending"),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+        processedAt: timestamp("processed_at", { withTimezone: true }),
+    },
+    table => [
+        check(
+            "analytics_invalidations_dependency_valid",
+            sql`${table.dependency} IN ('session', 'exercise', 'context', 'zone', 'plan')`,
+        ),
+        check("analytics_invalidations_status_valid", sql`${table.status} IN ('pending', 'processed')`),
+        // Coalesce overlapping invalidations: at most one pending row per (dependency, scope).
+        uniqueIndex("analytics_invalidations_pending_unique")
+            .on(table.dependency, table.scopeType, table.scopeId)
+            .where(sql`${table.status} = 'pending'`),
+        index("analytics_invalidations_pending_idx")
+            .on(table.createdAt, table.id)
+            .where(sql`${table.status} = 'pending'`),
+    ],
+);
+
+/**
+ * Generic derived-metric projection (issue #43, A1; design §16.2). One row per (calculator, scope, period,
+ * dimensions) natural key scored by a versioned calculator. Derived analytics: the authoritative facts stay
+ * in foreign-keyed domain tables; `natural_key` (a SHA-256 over the identity) and `source_fingerprint` (a
+ * SHA-256 over the scoring inputs) let a partial unique index keep at most one `current` row per natural key
+ * and a recompute skip identical work. Results are never mutated in place — a recompute marks the current
+ * row `superseded` and inserts a new `current` row, preserving history; `stale` flags a current row an
+ * invalidation touched but the worker has not yet rebuilt.
+ */
+export const derivedMetrics = pgTable(
+    "derived_metrics",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id"),
+        calculatorKey: text("calculator_key").notNull(),
+        calculatorVersion: integer("calculator_version").notNull(),
+        scopeType: text("scope_type").notNull(),
+        scopeId: text("scope_id").notNull(),
+        // Stores a domain MetricPeriod; typed `unknown` at the row boundary so the repository narrows it
+        // explicitly (the union is owned by the domain, not the persistence layer).
+        period: jsonb("period").notNull(),
+        dimensions: jsonb("dimensions").$type<Record<string, string>>().notNull().default({}),
+        naturalKey: text("natural_key").notNull(),
+        numericValue: numeric("numeric_value"),
+        textValue: text("text_value"),
+        unit: text("unit"),
+        details: jsonb("details").$type<Record<string, unknown>>().notNull().default({}),
+        sourceFingerprint: text("source_fingerprint").notNull(),
+        state: text("state").notNull().default("current"),
+        stale: boolean("stale").notNull().default(false),
+        calculatedAt: timestamp("calculated_at", { withTimezone: true }).notNull().defaultNow(),
+        supersededAt: timestamp("superseded_at", { withTimezone: true }),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("derived_metrics_state_valid", sql`${table.state} IN ('current', 'superseded')`),
+        check("derived_metrics_version_valid", sql`${table.calculatorVersion} >= 1`),
+        check("derived_metrics_natural_key_valid", sql`${table.naturalKey} ~ '^[0-9a-f]{64}$'`),
+        check("derived_metrics_fingerprint_valid", sql`${table.sourceFingerprint} ~ '^[0-9a-f]{64}$'`),
+        // At most one live projection per natural key; superseded rows keep the history.
+        uniqueIndex("derived_metrics_current_unique")
+            .on(table.naturalKey)
+            .where(sql`${table.state} = 'current'`),
+        index("derived_metrics_scope_idx")
+            .on(table.scopeType, table.scopeId)
+            .where(sql`${table.state} = 'current'`),
+        index("derived_metrics_calculator_idx")
+            .on(table.calculatorKey, table.calculatedAt)
+            .where(sql`${table.state} = 'current'`),
+        index("derived_metrics_profile_idx").on(table.profileId, table.calculatedAt),
+    ],
+);
+
+/**
+ * Metric-to-source-fact references (issue #43, A1; design §16.2). Each row records the authoritative entity
+ * and the exact revision that fed a projection, making it explainable and driving source-revision lookup:
+ * the `(entity_type, entity_id)` index finds every metric a changed fact invalidates.
+ */
+export const derivedMetricInputs = pgTable(
+    "derived_metric_inputs",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        metricId: uuid("metric_id")
+            .notNull()
+            .references(() => derivedMetrics.id, { onDelete: "cascade" }),
+        entityType: text("entity_type").notNull(),
+        entityId: text("entity_id").notNull(),
+        revision: integer("revision").notNull(),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("derived_metric_inputs_revision_valid", sql`${table.revision} >= 0`),
+        index("derived_metric_inputs_metric_idx").on(table.metricId),
+        index("derived_metric_inputs_source_idx").on(table.entityType, table.entityId),
+    ],
+);
+
+/**
+ * Qualitative analytics findings (issue #43, A1; design §16.2, §16.8). Personal records, trends, and other
+ * derived findings store their scope, evidence, review/expiry windows, and user feedback. Like metrics they
+ * are versioned and superseded rather than mutated. A1 registers the schema; the finding calculators land in
+ * the analytics slice (A5).
+ */
+export const findings = pgTable(
+    "findings",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id"),
+        findingKey: text("finding_key").notNull(),
+        findingVersion: integer("finding_version").notNull(),
+        scopeType: text("scope_type").notNull(),
+        scopeId: text("scope_id").notNull(),
+        naturalKey: text("natural_key").notNull(),
+        status: text("status").notNull().default("active"),
+        evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull().default({}),
+        reviewAt: timestamp("review_at", { withTimezone: true }),
+        expiresAt: timestamp("expires_at", { withTimezone: true }),
+        feedback: jsonb("feedback").$type<Record<string, unknown>>(),
+        sourceFingerprint: text("source_fingerprint").notNull(),
+        state: text("state").notNull().default("current"),
+        calculatedAt: timestamp("calculated_at", { withTimezone: true }).notNull().defaultNow(),
+        supersededAt: timestamp("superseded_at", { withTimezone: true }),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check("findings_state_valid", sql`${table.state} IN ('current', 'superseded')`),
+        check("findings_status_valid", sql`${table.status} IN ('active', 'acknowledged', 'dismissed', 'expired')`),
+        check("findings_version_valid", sql`${table.findingVersion} >= 1`),
+        check("findings_natural_key_valid", sql`${table.naturalKey} ~ '^[0-9a-f]{64}$'`),
+        check("findings_fingerprint_valid", sql`${table.sourceFingerprint} ~ '^[0-9a-f]{64}$'`),
+        uniqueIndex("findings_current_unique")
+            .on(table.naturalKey)
+            .where(sql`${table.state} = 'current'`),
+        index("findings_scope_idx")
+            .on(table.scopeType, table.scopeId)
+            .where(sql`${table.state} = 'current'`),
+        index("findings_profile_idx").on(table.profileId, table.calculatedAt),
+    ],
+);
+
+/**
  * ProgressionRule — a versioned, archivable rule root holding a bounded condition AST,
  * an allowlisted action list, a scope/logical-target selector, triggers, flags, and a
  * safety-policy reference as validated JSON (design 15.2, ADR 0007). The database stores
@@ -2769,6 +2924,11 @@ export type ProgressionEvaluationActionRow = typeof progressionEvaluationActions
 
 export type AdherenceResultRow = typeof adherenceResults.$inferSelect;
 export type AdherenceComponentRow = typeof adherenceComponents.$inferSelect;
+
+export type AnalyticsInvalidationRow = typeof analyticsInvalidations.$inferSelect;
+export type DerivedMetricRow = typeof derivedMetrics.$inferSelect;
+export type DerivedMetricInputRow = typeof derivedMetricInputs.$inferSelect;
+export type FindingRow = typeof findings.$inferSelect;
 
 export type WorkoutTemplateRow = typeof workoutTemplates.$inferSelect;
 export type WorkoutTemplatePrescriptionRow = typeof workoutTemplatePrescriptions.$inferSelect;

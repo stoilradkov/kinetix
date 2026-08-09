@@ -93,6 +93,8 @@ import {
     adherenceFormulaResponseSchema,
     adherenceQueryResponseSchema,
     sessionAdherenceResponseSchema,
+    metricQueryResponseSchema,
+    metricRebuildResponseSchema,
     trainingSessionListResponseSchema,
     trainingSessionResponseSchema,
     createTrainingInjuryRequestSchema,
@@ -240,6 +242,7 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
     registerTrainingRunningCommands(training, dependencies);
     registerTrainingInjuryCommands(training, dependencies);
     registerTrainingAdherenceCommands(training, dependencies);
+    registerTrainingAnalyticsCommands(training, dependencies);
     registerTrainingProgressionCommands(training, dependencies);
     registerProgressionRuleCommands(training, dependencies);
     const history = training.command("history").description("Inspect and restore aggregate history");
@@ -2265,6 +2268,100 @@ function registerTrainingAdherenceCommands(training: Command, dependencies: Prog
                 );
                 if (options.json) dependencies.output(JSON.stringify(result));
                 else for (const item of result.results) outputAdherenceResult(dependencies.output, item, false);
+            },
+        );
+}
+
+function registerTrainingAnalyticsCommands(training: Command, dependencies: ProgramDependencies): void {
+    const analytics = training
+        .command("analytics")
+        .description("Read derived-metric projections and drive rebuilds (issue #43, A1)");
+
+    analytics
+        .command("metrics")
+        .description("Query current (and optionally superseded) derived-metric projections")
+        .option("--calculator <key>", "Filter by calculator key (e.g. strength.volume)")
+        .option("--scope-type <type>", "Filter by projection scope type")
+        .option("--scope-id <id>", "Filter by projection scope id")
+        .option("--include-superseded", "Include superseded (historical) projections")
+        .option("--limit <count>", "Maximum results (1-200, default 50)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: {
+                calculator?: string;
+                scopeType?: string;
+                scopeId?: string;
+                includeSuperseded?: boolean;
+                limit?: string;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const params = new URLSearchParams();
+                if (options.calculator !== undefined) params.set("calculatorKey", options.calculator);
+                if (options.scopeType !== undefined) params.set("scopeType", options.scopeType);
+                if (options.scopeId !== undefined) params.set("scopeId", options.scopeId);
+                if (options.includeSuperseded) params.set("includeSuperseded", "true");
+                if (options.limit !== undefined) params.set("limit", options.limit);
+                const query = params.toString();
+                const result = metricQueryResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/analytics/metrics${query ? `?${query}` : ""}`,
+                    ),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else
+                    for (const item of result.items)
+                        dependencies.output(
+                            `metric\t${item.calculatorKey}.v${item.calculatorVersion}\t${item.scope.type}:${item.scope.id}\t` +
+                                `value=${item.numericValue ?? item.textValue ?? "—"}${item.unit ? item.unit : ""}\t` +
+                                `state=${item.state}\tstale=${item.stale}`,
+                        );
+            },
+        );
+
+    analytics
+        .command("rebuild")
+        .description("Force a synchronous derived-metric rebuild (diagnostic)")
+        .option("--mode <mode>", "targeted (drain invalidations), full (sweep all), or scope", "targeted")
+        .option("--dependency <dependency>", "For --mode scope: session|exercise|context|zone|plan")
+        .option("--scope-type <type>", "For --mode scope: the scope type that changed")
+        .option("--scope-id <id>", "For --mode scope: the scope id that changed")
+        .option("--source <source>", "Provenance source (user, agent, import, sync, system)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: {
+                mode?: string;
+                dependency?: string;
+                scopeType?: string;
+                scopeId?: string;
+                source?: string;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const body =
+                    options.mode === "scope"
+                        ? {
+                              mode: "scope",
+                              dependency: options.dependency,
+                              scopeType: options.scopeType,
+                              scopeId: options.scopeId,
+                          }
+                        : { mode: options.mode ?? "targeted" };
+                const result = metricRebuildResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/analytics/rebuild`,
+                        mutationRequest("POST", body, undefined, undefined, provenanceOf(options)),
+                    ),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else
+                    dependencies.output(
+                        `rebuild\trecomputed=${result.recomputed}\tdrained-invalidations=${result.drainedInvalidations}`,
+                    );
             },
         );
 }

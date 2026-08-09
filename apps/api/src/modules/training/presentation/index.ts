@@ -14,6 +14,7 @@ export { PlannedSessionController } from "#src/modules/training/presentation/pla
 export { TrainingSessionController } from "#src/modules/training/presentation/training-session.controller";
 export { RunController } from "#src/modules/training/presentation/run.controller";
 export { AdherenceController } from "#src/modules/training/presentation/adherence.controller";
+export { AnalyticsMetricController } from "#src/modules/training/presentation/analytics-metric.controller";
 export { ProgressionRuleController } from "#src/modules/training/presentation/progression-rule.controller";
 export { ProgressionEvaluationController } from "#src/modules/training/presentation/progression-evaluation.controller";
 

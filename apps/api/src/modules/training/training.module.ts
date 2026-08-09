@@ -196,6 +196,19 @@ import {
     type AdherenceResultRepository,
     type AdherenceResultQueryPort,
     type AdherenceRecalcStateReader,
+    METRIC_CALCULATOR_REGISTRY,
+    METRIC_CONTEXT_READER,
+    DERIVED_METRIC_REPOSITORY,
+    ANALYTICS_INVALIDATION_STORE,
+    METRIC_INVALIDATION_READER,
+    RECALCULATE_METRIC,
+    REBUILD_METRICS,
+    MetricCalculatorRegistry,
+    RecalculateMetric,
+    RebuildMetrics,
+    type MetricContextReader,
+    type DerivedMetricRepository,
+    type AnalyticsInvalidationStore,
     PROGRESSION_RULE_REPOSITORY,
     PROGRESSION_RULE_MUTATION_SERVICE,
     PROGRESSION_RULE_COMMANDS,
@@ -275,6 +288,14 @@ import {
     AdherenceJobRegistrar,
     AdherenceOutboxRegistrar,
 } from "#src/modules/training/infrastructure/adherence-registrars";
+import { DrizzleDerivedMetricRepository } from "#src/modules/training/infrastructure/drizzle-derived-metric-repository";
+import { DrizzleAnalyticsInvalidationStore } from "#src/modules/training/infrastructure/drizzle-analytics-invalidation-store";
+import { DrizzleMetricInvalidationReader } from "#src/modules/training/infrastructure/drizzle-metric-invalidation-reader";
+import { EmptyMetricContextReader } from "#src/modules/training/infrastructure/empty-metric-context-reader";
+import {
+    MetricRebuildJobRegistrar,
+    MetricInvalidationOutboxRegistrar,
+} from "#src/modules/training/infrastructure/metric-projection-registrars";
 import { DrizzleProgressionRuleRepository } from "#src/modules/training/infrastructure/drizzle-progression-rule-repository";
 import { DrizzleProgressionPlanningReader } from "#src/modules/training/infrastructure/drizzle-progression-planning-reader";
 import { ProgressionRuleRevisionRegistrar } from "#src/modules/training/infrastructure/progression-rule-revision-registrar";
@@ -314,6 +335,7 @@ import {
     TrainingSessionController,
     RunController,
     AdherenceController,
+    AnalyticsMetricController,
     ProgressionRuleController,
     ProgressionEvaluationController,
     BulkProgramController,
@@ -354,6 +376,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         TrainingSessionController,
         RunController,
         AdherenceController,
+        AnalyticsMetricController,
         ProgressionRuleController,
         ProgressionEvaluationController,
         BulkProgramController,
@@ -912,6 +935,42 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                 new AdherenceQueryService({ query, stateReader }),
             inject: [ADHERENCE_RESULT_QUERY, ADHERENCE_RECALC_STATE_READER],
         },
+        // Derived-metric projection framework (issue #43, A1; design §16.1–16.3, ADR 0006): the generic
+        // projection store + coalescing invalidation queue + cross-reference reader, the versioned
+        // calculator registry (empty until A2–A4 register real calculators), the RecalculateMetric
+        // primitive every rebuild path shares, the RebuildMetrics use cases, and the job/outbox registrars.
+        DrizzleDerivedMetricRepository,
+        { provide: DERIVED_METRIC_REPOSITORY, useExisting: DrizzleDerivedMetricRepository },
+        DrizzleAnalyticsInvalidationStore,
+        { provide: ANALYTICS_INVALIDATION_STORE, useExisting: DrizzleAnalyticsInvalidationStore },
+        DrizzleMetricInvalidationReader,
+        { provide: METRIC_INVALIDATION_READER, useExisting: DrizzleMetricInvalidationReader },
+        EmptyMetricContextReader,
+        { provide: METRIC_CONTEXT_READER, useExisting: EmptyMetricContextReader },
+        MetricCalculatorRegistry,
+        { provide: METRIC_CALCULATOR_REGISTRY, useExisting: MetricCalculatorRegistry },
+        {
+            provide: RECALCULATE_METRIC,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                registry: MetricCalculatorRegistry,
+                contextReader: MetricContextReader,
+                repository: DerivedMetricRepository,
+            ) => new RecalculateMetric({ unitOfWork, registry, contextReader, repository, generateId: randomUUID }),
+            inject: [UNIT_OF_WORK, MetricCalculatorRegistry, METRIC_CONTEXT_READER, DERIVED_METRIC_REPOSITORY],
+        },
+        {
+            provide: REBUILD_METRICS,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                recalculate: RecalculateMetric,
+                repository: DerivedMetricRepository,
+                invalidations: AnalyticsInvalidationStore,
+            ) => new RebuildMetrics({ unitOfWork, recalculate, repository, invalidations }),
+            inject: [UNIT_OF_WORK, RECALCULATE_METRIC, DERIVED_METRIC_REPOSITORY, ANALYTICS_INVALIDATION_STORE],
+        },
+        MetricRebuildJobRegistrar,
+        MetricInvalidationOutboxRegistrar,
         // Progression evaluation (issue #40, G2): the immutable-context reader, the applicable-rule
         // reader, the append-only evaluation projection, the EvaluateProgression orchestration, and the
         // job/outbox registrars that evaluate rules against a completed session's exact revisions.
