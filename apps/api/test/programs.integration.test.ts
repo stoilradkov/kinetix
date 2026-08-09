@@ -24,7 +24,9 @@ import {
     programBlocks,
     programPlannedSessions,
     programs,
+    sessionMappings,
     sessionPrescriptions,
+    trainingSessions,
     workoutTemplatePrescriptions,
     workoutTemplates,
 } from "@kinetix/db";
@@ -225,7 +227,10 @@ describe.runIf(testDatabaseUrl)("program PostgreSQL persistence", () => {
                 .delete(entityRevisions)
                 .where(inArray(entityRevisions.entityType, [PROGRAM_ENTITY_TYPE, PLANNED_SESSION_ENTITY_TYPE]));
             await connection.db.delete(programs).where(eq(programs.profileId, profileId));
+            // Deleting planned/training sessions cascades their session_mappings before the immutable
+            // prescriptions those mappings reference are torn down below.
             await connection.db.delete(plannedSessions).where(eq(plannedSessions.profileId, profileId));
+            await connection.db.delete(trainingSessions).where(eq(trainingSessions.profileId, profileId));
             await connection.db
                 .delete(entityRevisions)
                 .where(eq(entityRevisions.entityType, "training.workout-template"));
@@ -457,6 +462,115 @@ describe.runIf(testDatabaseUrl)("program PostgreSQL persistence", () => {
 
         const detail = await programQueries.get(programA.program.id);
         expect(detail.warnings.some(warning => warning.code === "schedule_collision")).toBe(true);
+    });
+
+    it("resolves each planned session's forward link to the latest non-archived performed session", async () => {
+        const template = await templateCommands.create({ name: `Fwd ${suffix}`, prescription: draft(5) }, metadata);
+        createdPrescriptionIds.push(template.template.currentPrescriptionId);
+        const program = await programCommands.create({ name: `Fwd program ${suffix}` }, metadata);
+        const activated = await programCommands.activate(
+            program.program.id,
+            1,
+            {
+                sessions: [
+                    { templateId: template.template.id, sequence: 0, localDate: "2026-08-01" },
+                    { templateId: template.template.id, sequence: 1, localDate: "2026-08-08" },
+                ],
+            },
+            metadata,
+        );
+        const [linked, unlinked] = activated.generatedSessions;
+        for (const generated of activated.generatedSessions)
+            createdPrescriptionIds.push(generated.session.currentPrescriptionId);
+        const prescriptionId = linked!.session.currentPrescriptionId;
+
+        // Two actuals map to the first planned session: an older archived attempt, then a newer live one.
+        const archivedActual = randomUUID();
+        const liveActual = randomUUID();
+        await connection.db.insert(trainingSessions).values([
+            {
+                id: archivedActual,
+                profileId,
+                status: "completed",
+                localDate: "2026-08-01",
+                timeZone: "UTC",
+                startedAt: new Date("2026-08-01T10:00:00Z"),
+                endedAt: new Date("2026-08-01T11:00:00Z"),
+                archivedAt: new Date("2026-08-02T00:00:00Z"),
+            },
+            {
+                id: liveActual,
+                profileId,
+                status: "completed",
+                localDate: "2026-08-01",
+                timeZone: "UTC",
+                startedAt: new Date("2026-08-03T10:00:00Z"),
+                endedAt: new Date("2026-08-03T11:00:00Z"),
+            },
+        ]);
+        await connection.db.insert(sessionMappings).values([
+            {
+                sessionId: archivedActual,
+                plannedSessionId: linked!.session.id,
+                sourcePrescriptionId: prescriptionId,
+                resolvedPrescriptionId: prescriptionId,
+                createdAt: new Date("2026-08-01T11:00:00Z"),
+            },
+            {
+                sessionId: liveActual,
+                plannedSessionId: linked!.session.id,
+                sourcePrescriptionId: prescriptionId,
+                resolvedPrescriptionId: prescriptionId,
+                createdAt: new Date("2026-08-03T11:00:00Z"),
+            },
+        ]);
+
+        const sessions = await programQueries.sessions(program.program.id);
+        const linkedView = sessions.find(session => session.plannedSessionId === linked!.session.id)!;
+        const unlinkedView = sessions.find(session => session.plannedSessionId === unlinked!.session.id)!;
+        // Live attempt wins over the archived one; the unmapped planned session has no forward link.
+        expect(linkedView.actualSessionId).toBe(liveActual);
+        expect(linkedView.actualSessionStatus).toBe("completed");
+        expect(unlinkedView.actualSessionId).toBeNull();
+        expect(unlinkedView.actualSessionStatus).toBeNull();
+    });
+
+    it("still resolves the forward link when the only performed session is archived", async () => {
+        const template = await templateCommands.create({ name: `Arch ${suffix}`, prescription: draft(5) }, metadata);
+        createdPrescriptionIds.push(template.template.currentPrescriptionId);
+        const program = await programCommands.create({ name: `Arch program ${suffix}` }, metadata);
+        const activated = await programCommands.activate(
+            program.program.id,
+            1,
+            { sessions: [{ templateId: template.template.id, sequence: 0, localDate: "2026-08-01" }] },
+            metadata,
+        );
+        const planned = activated.generatedSessions[0]!;
+        createdPrescriptionIds.push(planned.session.currentPrescriptionId);
+
+        const archivedActual = randomUUID();
+        await connection.db.insert(trainingSessions).values({
+            id: archivedActual,
+            profileId,
+            status: "completed",
+            localDate: "2026-08-01",
+            timeZone: "UTC",
+            startedAt: new Date("2026-08-01T10:00:00Z"),
+            endedAt: new Date("2026-08-01T11:00:00Z"),
+            archivedAt: new Date("2026-08-02T00:00:00Z"),
+        });
+        await connection.db.insert(sessionMappings).values({
+            sessionId: archivedActual,
+            plannedSessionId: planned.session.id,
+            sourcePrescriptionId: planned.session.currentPrescriptionId,
+            resolvedPrescriptionId: planned.session.currentPrescriptionId,
+            createdAt: new Date("2026-08-01T11:00:00Z"),
+        });
+
+        const sessions = await programQueries.sessions(program.program.id);
+        const view = sessions.find(session => session.plannedSessionId === planned.session.id)!;
+        expect(view.actualSessionId).toBe(archivedActual);
+        expect(view.actualSessionStatus).toBe("completed");
     });
 
     it("rolls back a failed activation, leaving the program in its prior state", async () => {

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { plannedSessionResponseSchema, plannedSessionStatusSchema } from "#src/planned-session";
+import { trainingSessionStatusSchema } from "#src/training-session";
 
 /**
  * Wire contracts for Program, its nested blocks, and membership (design 5.6, 10.3). A program owns
@@ -122,6 +123,14 @@ export const programSessionMembershipSchema = z
         title: z.string().nullable(),
         /** Derived: a still-planned session whose local date is before today (design PR-5). */
         overdue: z.boolean(),
+        /**
+         * Forward link to the performed training session, resolved via a reverse `session_mappings`
+         * lookup (design 11.4, UX4). Null when nothing performed maps back to this planned session.
+         * When several actuals map to it, the latest non-archived one wins; an archived-only link
+         * still resolves so the hub can point at it (see the membership repository read path).
+         */
+        actualSessionId: z.string().uuid().nullable(),
+        actualSessionStatus: trainingSessionStatusSchema.nullable(),
     })
     .strict();
 

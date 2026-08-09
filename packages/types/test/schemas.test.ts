@@ -12,6 +12,7 @@ import {
     jobResourceSchema,
     massSchema,
     paceSchema,
+    programSessionsResponseSchema,
     restoreRevisionRequestSchema,
     revisionHistoryResponseSchema,
     rpeSchema,
@@ -79,6 +80,47 @@ describe("revision schemas", () => {
     it("accepts only restore metadata because the target version is in the route", () => {
         expect(restoreRevisionRequestSchema.parse({ reason: " undo " })).toEqual({ reason: "undo" });
         expect(restoreRevisionRequestSchema.safeParse({ version: 1 }).success).toBe(false);
+    });
+});
+
+describe("program session membership schema", () => {
+    const base = {
+        plannedSessionId: "0198a4db-d8da-7000-8000-000000000010",
+        sequence: 0,
+        relativeWeek: 1,
+        relativeDay: 2,
+        localDate: "2026-08-01",
+        preferredTime: "18:00",
+        status: "completed" as const,
+        title: "Upper A",
+        overdue: false,
+    };
+
+    it("carries a forward link to the performed session when one is resolved", () => {
+        const parsed = programSessionsResponseSchema.parse({
+            items: [
+                {
+                    ...base,
+                    actualSessionId: "0198a4db-d8da-7000-8000-000000000020",
+                    actualSessionStatus: "completed",
+                },
+            ],
+        });
+        expect(parsed.items[0]).toMatchObject({
+            actualSessionId: "0198a4db-d8da-7000-8000-000000000020",
+            actualSessionStatus: "completed",
+        });
+    });
+
+    it("allows the forward link to be null for an unperformed planned session", () => {
+        const parsed = programSessionsResponseSchema.parse({
+            items: [{ ...base, status: "planned", actualSessionId: null, actualSessionStatus: null }],
+        });
+        expect(parsed.items[0]).toMatchObject({ actualSessionId: null, actualSessionStatus: null });
+    });
+
+    it("rejects a membership row missing the forward-link fields", () => {
+        expect(programSessionsResponseSchema.safeParse({ items: [base] }).success).toBe(false);
     });
 });
 

@@ -31,6 +31,7 @@ import {
     type PlannedSessionStatus,
     type SessionDateShift,
     type SessionScheduleInput,
+    type TrainingSessionStatus,
     type UpdateProgramInput,
 } from "#src/modules/training/domain/index";
 import type { PlannedSessionCommands, PlannedSessionDetail } from "#src/modules/training/application/planned-sessions";
@@ -96,6 +97,14 @@ export interface ProgramSessionMembership {
     readonly preferredTime: string | null;
     readonly status: PlannedSessionStatus;
     readonly title: string | null;
+    /**
+     * Forward link to the performed training session (design 11.4, UX4). Mappings are stored on the
+     * actual side, so this is resolved through a reverse `session_mappings` lookup in the read path;
+     * null when nothing maps back. When several actuals map to one planned session, the latest
+     * non-archived one wins (an archived-only link still resolves).
+     */
+    readonly actualSessionId: string | null;
+    readonly actualSessionStatus: TrainingSessionStatus | null;
 }
 
 /** Membership decorated with derived read-only state (overdue) for presentation. */

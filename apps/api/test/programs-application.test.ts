@@ -577,6 +577,8 @@ class FakeMembershipRepository implements ProgramMembershipRepository<typeof tra
                     preferredTime: session?.preferredTime ?? null,
                     status: session?.status ?? "planned",
                     title: session?.title ?? null,
+                    actualSessionId: null,
+                    actualSessionStatus: null,
                 };
             })
             .sort((a, b) => a.sequence - b.sequence);

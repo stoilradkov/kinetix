@@ -1049,7 +1049,7 @@ function registerProgramCommands(training: Command, dependencies: ProgramDepende
             else
                 for (const session of result.items)
                     dependencies.output(
-                        `${session.plannedSessionId}\t${session.sequence}\t${session.status}\t${session.localDate ?? "-"}\t${session.title ?? ""}`,
+                        `${session.plannedSessionId}\t${session.sequence}\t${session.status}\t${session.localDate ?? "-"}\t${session.actualSessionId ?? "-"}\t${session.title ?? ""}`,
                     );
         });
 
