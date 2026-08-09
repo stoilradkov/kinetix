@@ -5,10 +5,12 @@ import { ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 
 import {
     derivedMetricResourceSchema,
+    metricCalculatorCatalogResponseSchema,
     metricQueryResponseSchema,
     metricRebuildRequestSchema,
     metricRebuildResponseSchema,
     type DerivedMetricResource,
+    type MetricCalculatorCatalogResponse,
     type MetricQueryResponse,
     type MetricRebuildRequest,
     type MetricRebuildResponse,
@@ -17,6 +19,7 @@ import {
 import {
     DERIVED_METRIC_REPOSITORY,
     REBUILD_METRICS,
+    strengthMetricCatalogMetadata,
     type DerivedMetricRepository,
     type DerivedMetricView,
     type RebuildMetrics,
@@ -63,6 +66,12 @@ export class AnalyticsMetricController {
             limit: parseLimit(limit),
         });
         return metricQueryResponseSchema.parse({ items: views.map(toResource) });
+    }
+
+    @Get("metrics/catalog")
+    @ApiOperation({ summary: "List the registered metric calculators and their stable display metadata" })
+    catalog(): MetricCalculatorCatalogResponse {
+        return metricCalculatorCatalogResponseSchema.parse(strengthMetricCatalogMetadata());
     }
 
     @Post("rebuild")

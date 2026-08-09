@@ -90,3 +90,31 @@ export const metricRebuildResponseSchema = z
     })
     .strict();
 export type MetricRebuildResponse = z.infer<typeof metricRebuildResponseSchema>;
+
+/**
+ * Stable, versioned display metadata for one registered metric calculator (issue #44, A2). It documents
+ * what a `calculatorKey.vN` computes — its human label, scoring prose, canonical unit, the scope it is
+ * about, and the dimensions each result is broken down by — so a client can label and explain the derived
+ * metrics returned by the query surface without ever re-deriving a value. Evidence itself travels in each
+ * metric's `details`; rich rendering remains A6.
+ */
+export const metricCalculatorMetadataSchema = z
+    .object({
+        key: z.string().min(1).max(180),
+        version: z.number().int().positive(),
+        label: z.string().min(1).max(120),
+        description: z.string().min(1).max(600),
+        unit: z.string().max(40).nullable(),
+        scopeKind: z.enum(["session", "window"]),
+        dimensions: z.array(z.string().min(1).max(80)),
+    })
+    .strict();
+export type MetricCalculatorMetadata = z.infer<typeof metricCalculatorMetadataSchema>;
+
+export const metricCalculatorCatalogResponseSchema = z
+    .object({
+        schemaVersion: z.literal(1),
+        calculators: z.array(metricCalculatorMetadataSchema),
+    })
+    .strict();
+export type MetricCalculatorCatalogResponse = z.infer<typeof metricCalculatorCatalogResponseSchema>;

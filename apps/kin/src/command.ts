@@ -93,6 +93,7 @@ import {
     adherenceFormulaResponseSchema,
     adherenceQueryResponseSchema,
     sessionAdherenceResponseSchema,
+    metricCalculatorCatalogResponseSchema,
     metricQueryResponseSchema,
     metricRebuildResponseSchema,
     trainingSessionListResponseSchema,
@@ -2320,6 +2321,24 @@ function registerTrainingAnalyticsCommands(training: Command, dependencies: Prog
                         );
             },
         );
+
+    analytics
+        .command("catalog")
+        .description("List the registered metric calculators and their stable display metadata")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { apiUrl?: string; json?: boolean }) => {
+            const result = metricCalculatorCatalogResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/analytics/metrics/catalog`),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else
+                for (const calculator of result.calculators)
+                    dependencies.output(
+                        `calculator\t${calculator.key}.v${calculator.version}\t${calculator.scopeKind}\t` +
+                            `${calculator.label}\tunit=${calculator.unit ?? "—"}\tdims=${calculator.dimensions.join(",")}`,
+                    );
+        });
 
     analytics
         .command("rebuild")

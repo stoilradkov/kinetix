@@ -206,9 +206,13 @@ import {
     MetricCalculatorRegistry,
     RecalculateMetric,
     RebuildMetrics,
+    STRENGTH_METRIC_READER,
+    PROJECT_STRENGTH_METRICS,
+    ProjectStrengthMetrics,
     type MetricContextReader,
     type DerivedMetricRepository,
     type AnalyticsInvalidationStore,
+    type StrengthMetricReader,
     PROGRESSION_RULE_REPOSITORY,
     PROGRESSION_RULE_MUTATION_SERVICE,
     PROGRESSION_RULE_COMMANDS,
@@ -291,7 +295,15 @@ import {
 import { DrizzleDerivedMetricRepository } from "#src/modules/training/infrastructure/drizzle-derived-metric-repository";
 import { DrizzleAnalyticsInvalidationStore } from "#src/modules/training/infrastructure/drizzle-analytics-invalidation-store";
 import { DrizzleMetricInvalidationReader } from "#src/modules/training/infrastructure/drizzle-metric-invalidation-reader";
-import { EmptyMetricContextReader } from "#src/modules/training/infrastructure/empty-metric-context-reader";
+import {
+    DrizzleStrengthMetricContextReader,
+    DrizzleStrengthMetricReader,
+} from "#src/modules/training/infrastructure/drizzle-strength-metric-reader";
+import {
+    StrengthCalculatorRegistrar,
+    StrengthMetricsJobRegistrar,
+    StrengthMetricsOutboxRegistrar,
+} from "#src/modules/training/infrastructure/strength-metrics-registrars";
 import {
     MetricRebuildJobRegistrar,
     MetricInvalidationOutboxRegistrar,
@@ -945,8 +957,10 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         { provide: ANALYTICS_INVALIDATION_STORE, useExisting: DrizzleAnalyticsInvalidationStore },
         DrizzleMetricInvalidationReader,
         { provide: METRIC_INVALIDATION_READER, useExisting: DrizzleMetricInvalidationReader },
-        EmptyMetricContextReader,
-        { provide: METRIC_CONTEXT_READER, useExisting: EmptyMetricContextReader },
+        DrizzleStrengthMetricReader,
+        { provide: STRENGTH_METRIC_READER, useExisting: DrizzleStrengthMetricReader },
+        DrizzleStrengthMetricContextReader,
+        { provide: METRIC_CONTEXT_READER, useExisting: DrizzleStrengthMetricContextReader },
         MetricCalculatorRegistry,
         { provide: METRIC_CALCULATOR_REGISTRY, useExisting: MetricCalculatorRegistry },
         {
@@ -971,6 +985,19 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         },
         MetricRebuildJobRegistrar,
         MetricInvalidationOutboxRegistrar,
+        // Strength metric calculators (issue #44, A2; design §16.4): the per-session projection use case
+        // (the discovery path the generic A1 rebuild cannot seed), the bounded snapshot/latest read
+        // adapter, the composite context reader that swaps the empty A1 stub, and the calculator/job/
+        // outbox registrars. Projected metrics surface through the shared A1 query + rebuild endpoints.
+        {
+            provide: PROJECT_STRENGTH_METRICS,
+            useFactory: (unitOfWork: UnitOfWork, reader: StrengthMetricReader, repository: DerivedMetricRepository) =>
+                new ProjectStrengthMetrics({ unitOfWork, reader, repository, generateId: randomUUID }),
+            inject: [UNIT_OF_WORK, STRENGTH_METRIC_READER, DERIVED_METRIC_REPOSITORY],
+        },
+        StrengthCalculatorRegistrar,
+        StrengthMetricsJobRegistrar,
+        StrengthMetricsOutboxRegistrar,
         // Progression evaluation (issue #40, G2): the immutable-context reader, the applicable-rule
         // reader, the append-only evaluation projection, the EvaluateProgression orchestration, and the
         // job/outbox registrars that evaluate rules against a completed session's exact revisions.

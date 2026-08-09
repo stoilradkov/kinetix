@@ -76,6 +76,19 @@ describe("AnalyticsMetricController.metrics", () => {
     });
 });
 
+describe("AnalyticsMetricController.catalog", () => {
+    it("returns the versioned strength calculator metadata parsed through the wire contract", () => {
+        const { controller } = createController([]);
+        const response = controller.catalog();
+        expect(response.schemaVersion).toBe(1);
+        expect(response.calculators.length).toBeGreaterThanOrEqual(11);
+        const workReps = response.calculators.find(c => c.key === "strength.work_reps");
+        expect(workReps).toMatchObject({ version: 1, unit: "reps", scopeKind: "session" });
+        expect(workReps?.dimensions).toContain("basis");
+        expect(response.calculators.some(c => c.scopeKind === "window")).toBe(true);
+    });
+});
+
 describe("AnalyticsMetricController.rebuildMetrics", () => {
     it("drains pending invalidations for a targeted rebuild", async () => {
         const { controller, rebuild } = createController([]);
