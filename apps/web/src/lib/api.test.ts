@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { revertExerciseMerge } from "@/lib/api";
+import { revertExerciseMerge, trainingSessionsInfiniteQueryOptions } from "@/lib/api";
 
 const ids = {
     canonical: "0198a4db-d8da-7000-8000-000000000001",
@@ -36,6 +36,52 @@ describe("exercise catalog API client", () => {
             expectedCanonicalVersion: 5,
             expectedMergedVersion: 7,
         });
+    });
+});
+
+describe("sessions feed query options", () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it("encodes filters into the cache key so a filter change starts a fresh keyset walk", () => {
+        const options = trainingSessionsInfiniteQueryOptions({
+            limit: 50,
+            status: "completed",
+            search: "deadlift",
+            includeArchived: true,
+        });
+        const baseKey = options.queryKey[2];
+        expect(options.queryKey.slice(0, 2)).toEqual(["training-sessions", "feed"]);
+        expect(baseKey).toContain("limit=50");
+        expect(baseKey).toContain("status=completed");
+        expect(baseKey).toContain("search=deadlift");
+        expect(baseKey).toContain("includeArchived=true");
+    });
+
+    it("carries the filters and the page cursor into the request URL", async () => {
+        const request = vi.fn().mockResolvedValue(Response.json({ items: [], nextCursor: null }));
+        vi.stubGlobal("fetch", request);
+
+        const options = trainingSessionsInfiniteQueryOptions({ status: "completed", search: "deadlift" });
+        await options.queryFn!({ pageParam: "cursor-xyz" } as never);
+
+        const [url] = request.mock.calls[0]!;
+        expect(url).toContain("/training/sessions?");
+        expect(url).toContain("status=completed");
+        expect(url).toContain("search=deadlift");
+        expect(url).toContain("cursor=cursor-xyz");
+    });
+
+    it("omits the cursor on the first page", async () => {
+        const request = vi.fn().mockResolvedValue(Response.json({ items: [], nextCursor: null }));
+        vi.stubGlobal("fetch", request);
+
+        const options = trainingSessionsInfiniteQueryOptions({});
+        await options.queryFn!({ pageParam: null } as never);
+
+        const [url] = request.mock.calls[0]!;
+        expect(url).not.toContain("cursor=");
     });
 });
 

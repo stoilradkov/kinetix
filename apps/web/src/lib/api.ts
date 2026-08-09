@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
+import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 
 import {
     apiErrorSchema,
@@ -641,20 +641,33 @@ export interface TrainingSessionListParams {
     search?: string;
 }
 
-export function trainingSessionsQueryOptions(params: TrainingSessionListParams = {}) {
-    const search = new URLSearchParams();
-    if (params.limit !== undefined) search.set("limit", String(params.limit));
-    if (params.cursor !== undefined) search.set("cursor", params.cursor);
-    if (params.status !== undefined) search.set("status", params.status);
-    if (params.from !== undefined) search.set("from", params.from);
-    if (params.to !== undefined) search.set("to", params.to);
-    if (params.search !== undefined) search.set("search", params.search);
-    if (params.includeArchived) search.set("includeArchived", "true");
-    const query = search.toString();
-    return queryOptions({
-        queryKey: ["training-sessions", query],
-        queryFn: async () =>
-            trainingSessionListResponseSchema.parse(await apiRequest(`/training/sessions${query ? `?${query}` : ""}`)),
+/**
+ * Cursor-paginated feed for the sessions page (design UX3; issue #66). Filters live in the base query
+ * key so changing a filter starts a fresh keyset walk, while `nextCursor` drives `getNextPageParam` for
+ * the Load-more control. Keyed under the shared `["training-sessions", …]` prefix so lifecycle
+ * mutations elsewhere invalidate the feed by prefix.
+ */
+export function trainingSessionsInfiniteQueryOptions(params: Omit<TrainingSessionListParams, "cursor"> = {}) {
+    const base = new URLSearchParams();
+    if (params.limit !== undefined) base.set("limit", String(params.limit));
+    if (params.status !== undefined) base.set("status", params.status);
+    if (params.from !== undefined) base.set("from", params.from);
+    if (params.to !== undefined) base.set("to", params.to);
+    if (params.search !== undefined) base.set("search", params.search);
+    if (params.includeArchived) base.set("includeArchived", "true");
+    const baseKey = base.toString();
+    return infiniteQueryOptions({
+        queryKey: ["training-sessions", "feed", baseKey],
+        initialPageParam: null as string | null,
+        queryFn: async ({ pageParam }) => {
+            const search = new URLSearchParams(base);
+            if (pageParam) search.set("cursor", pageParam);
+            const query = search.toString();
+            return trainingSessionListResponseSchema.parse(
+                await apiRequest(`/training/sessions${query ? `?${query}` : ""}`),
+            );
+        },
+        getNextPageParam: lastPage => lastPage.nextCursor,
     });
 }
 

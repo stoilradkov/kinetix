@@ -1,82 +1,65 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { Archive, CheckCircle2, Dumbbell, LoaderCircle, Pencil, Play, Plus, RotateCcw } from "lucide-react";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { Dumbbell, Plus } from "lucide-react";
+import { z } from "zod";
 
-import type { TrainingSessionStatusValue, TrainingSessionSummary } from "@kinetix/types";
+import { trainingSessionStatusSchema, type TrainingSessionStatusValue } from "@kinetix/types";
 
 import { SessionForm } from "@/components/training/session-form";
-import { SessionMappingsDetail } from "@/components/training/session-mappings-detail";
-import { ElapsedTimer } from "@/components/training/session-timers";
-import { RunningActivityDetail } from "@/components/training/running-activity-detail";
-import { StrengthActivityDetail } from "@/components/training/strength-activity-detail";
-import { Badge } from "@/components/ui/badge";
+import { SessionsFeed } from "@/components/training/sessions-feed";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import {
-    completeTrainingSession,
-    createTrainingSession,
-    startEmptyTrainingSession,
-    trainingSessionQueryOptions,
-    trainingSessionRevisionHistoryQueryOptions,
-    trainingSessionsQueryOptions,
-    transitionTrainingSession,
-    updateTrainingSession,
-} from "@/lib/api";
-import {
-    sessionCreateInput,
-    sessionFormDefaults,
-    sessionFormValues,
-    sessionUpdateInput,
-    type SessionFormValues,
-} from "@/lib/session-form";
+import { createTrainingSession, startEmptyTrainingSession, trainingSessionsInfiniteQueryOptions } from "@/lib/api";
+import { sessionCreateInput, sessionFormDefaults, type SessionFormValues } from "@/lib/session-form";
 
-export const Route = createFileRoute("/training/sessions")({ component: SessionsPage });
+/**
+ * URL-persisted feed filters (design UX3; issue #66) so a filtered view is bookmarkable. A malformed
+ * value is dropped rather than crashing the route, falling back to the unfiltered feed.
+ */
+const sessionsSearchSchema = z.object({
+    q: z.string().min(1).optional().catch(undefined),
+    status: trainingSessionStatusSchema.optional().catch(undefined),
+    archived: z.boolean().optional().catch(undefined),
+});
 
-type EditorState = { readonly mode: "create" } | { readonly mode: "edit"; readonly session: TrainingSessionSummary };
+export const Route = createFileRoute("/training/sessions")({
+    component: SessionsPage,
+    validateSearch: sessionsSearchSchema,
+});
 
-type LifecycleAction = "start" | "complete" | "reopen" | "archive" | "restore";
-
-const statusVariant: Record<TrainingSessionStatusValue, "secondary" | "info" | "success"> = {
-    draft: "secondary",
-    in_progress: "info",
-    completed: "success",
-};
-
-const statusLabel: Record<TrainingSessionStatusValue, string> = {
-    draft: "Draft",
-    in_progress: "In progress",
-    completed: "Completed",
-};
-
-const actionLabel: Record<LifecycleAction, string> = {
-    start: "Start",
-    complete: "Complete",
-    reopen: "Reopen",
-    archive: "Archive",
-    restore: "Restore",
-};
-
-/** Contextual lifecycle actions per state; archiving is a separate soft-delete flag. */
-function actionsFor(session: TrainingSessionSummary): readonly LifecycleAction[] {
-    if (session.archivedAt !== null) return ["restore"];
-    switch (session.status) {
-        case "draft":
-            return ["start", "archive"];
-        case "in_progress":
-            return ["complete", "archive"];
-        case "completed":
-            return ["reopen", "archive"];
-    }
-}
+const PAGE_SIZE = 50;
 
 function SessionsPage(): React.JSX.Element {
+    const navigate = useNavigate({ from: Route.fullPath });
+    const search = Route.useSearch();
     const queryClient = useQueryClient();
-    const navigate = useNavigate();
-    const [includeArchived, setIncludeArchived] = useState(false);
-    const [editor, setEditor] = useState<EditorState | null>(null);
-    const sessions = useQuery(trainingSessionsQueryOptions({ includeArchived }));
+    const [creating, setCreating] = useState(false);
+    const [searchText, setSearchText] = useState(search.q ?? "");
+
+    // Debounce the free-text box into the `q` search param so keystrokes don't spam the keyset walk or
+    // the browser history; the URL (and query) only move once typing settles.
+    useEffect(() => {
+        const trimmed = searchText.trim();
+        const next = trimmed === "" ? undefined : trimmed;
+        const handle = setTimeout(() => {
+            void navigate({ search: prev => ({ ...prev, q: next }) });
+        }, 300);
+        return () => clearTimeout(handle);
+    }, [searchText, navigate]);
+
+    const feed = useInfiniteQuery(
+        trainingSessionsInfiniteQueryOptions({
+            limit: PAGE_SIZE,
+            search: search.q,
+            status: search.status,
+            includeArchived: search.archived,
+        }),
+    );
+    const sessions = useMemo(() => feed.data?.pages.flatMap(page => page.items) ?? [], [feed.data]);
 
     const startEmpty = useMutation({
         mutationFn: () => startEmptyTrainingSession(),
@@ -86,16 +69,10 @@ function SessionsPage(): React.JSX.Element {
         },
     });
 
-    const invalidate = () =>
-        queryClient.invalidateQueries({ queryKey: ["training-sessions"] }).then(() => setEditor(null));
-
-    const lifecycle = useMutation({
-        mutationFn: (input: { session: TrainingSessionSummary; action: LifecycleAction }) =>
-            input.action === "complete"
-                ? completeTrainingSession(input.session)
-                : transitionTrainingSession(input.session, input.action),
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ["training-sessions"] }),
-    });
+    const onCreated = async () => {
+        await queryClient.invalidateQueries({ queryKey: ["training-sessions"] });
+        setCreating(false);
+    };
 
     return (
         <main className="mx-auto max-w-4xl px-6 py-10">
@@ -103,18 +80,11 @@ function SessionsPage(): React.JSX.Element {
                 <div>
                     <h1 className="text-2xl font-semibold">Sessions</h1>
                     <p className="text-muted-foreground mt-1 text-sm">
-                        Track live and retrospective workouts. Timers are anchored to server timestamps, so a reload
-                        picks up the elapsed time exactly.
+                        Your training history, newest first. Open any session to review what you did or pick up a live
+                        workout.
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
-                    <Button
-                        onClick={() => setIncludeArchived(value => !value)}
-                        size="sm"
-                        variant={includeArchived ? "default" : "outline"}
-                    >
-                        {includeArchived ? "Showing archived" : "Show archived"}
-                    </Button>
                     <Button
                         disabled={startEmpty.isPending}
                         onClick={() => startEmpty.mutate()}
@@ -124,122 +94,77 @@ function SessionsPage(): React.JSX.Element {
                         <Dumbbell />
                         Start empty
                     </Button>
-                    <Button onClick={() => setEditor({ mode: "create" })} size="sm">
+                    <Button onClick={() => setCreating(true)} size="sm">
                         <Plus />
                         New session
                     </Button>
                 </div>
             </div>
 
-            <div className="mt-8 grid gap-3">
-                {sessions.isPending ? (
-                    <div className="text-muted-foreground flex items-center gap-2 py-10 text-sm">
-                        <LoaderCircle className="animate-spin" /> Loading sessions…
-                    </div>
-                ) : sessions.isError ? (
-                    <div className="border-destructive/30 bg-destructive/10 text-destructive rounded-lg border p-4 text-sm">
-                        {sessions.error.message}
-                    </div>
-                ) : sessions.data.items.length === 0 ? (
-                    <p className="text-muted-foreground py-10 text-sm">
-                        No sessions yet. Create one to start tracking a workout.
-                    </p>
-                ) : (
-                    sessions.data.items.map(session => (
-                        <div
-                            className="border-border flex items-center justify-between gap-3 rounded-lg border p-4"
-                            key={session.id}
-                        >
-                            <div className="min-w-0">
-                                <div className="flex items-center gap-2">
-                                    <span className="truncate font-medium">{session.title ?? "Untitled session"}</span>
-                                    <Badge variant={statusVariant[session.status]}>{statusLabel[session.status]}</Badge>
-                                    {session.archivedAt !== null ? <Badge variant="outline">archived</Badge> : null}
-                                    <span className="text-muted-foreground font-mono text-xs tabular-nums">
-                                        v{session.version}
-                                    </span>
-                                </div>
-                                <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                                    <Badge variant="outline">{session.localDate}</Badge>
-                                    <Badge variant="outline">
-                                        {session.activityCount}{" "}
-                                        {session.activityCount === 1 ? "activity" : "activities"}
-                                    </Badge>
-                                    {session.painRecordCount > 0 ? (
-                                        <Badge variant="warning">
-                                            {session.painRecordCount} pain{" "}
-                                            {session.painRecordCount === 1 ? "record" : "records"}
-                                        </Badge>
-                                    ) : null}
-                                    {session.tags.map(tag => (
-                                        <Badge key={tag} variant="secondary">
-                                            {tag}
-                                        </Badge>
-                                    ))}
-                                    {session.status === "in_progress" && session.startedAt !== null ? (
-                                        <ElapsedTimer startedAt={session.startedAt} />
-                                    ) : null}
-                                </div>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-1">
-                                {session.archivedAt === null && session.status === "in_progress" ? (
-                                    <Button asChild size="sm">
-                                        <Link params={{ id: session.id }} to="/training/sessions/$id">
-                                            <Play />
-                                            Open
-                                        </Link>
-                                    </Button>
-                                ) : null}
-                                {session.archivedAt === null && session.status !== "completed" ? (
-                                    <Button
-                                        onClick={() => setEditor({ mode: "edit", session })}
-                                        size="sm"
-                                        variant="outline"
-                                    >
-                                        <Pencil />
-                                        Edit
-                                    </Button>
-                                ) : null}
-                                {actionsFor(session).map(action => (
-                                    <Button
-                                        disabled={lifecycle.isPending}
-                                        key={action}
-                                        onClick={() => lifecycle.mutate({ session, action })}
-                                        size="sm"
-                                        variant="ghost"
-                                    >
-                                        {action === "start" ? (
-                                            <Play />
-                                        ) : action === "complete" ? (
-                                            <CheckCircle2 />
-                                        ) : action === "restore" ? (
-                                            <RotateCcw />
-                                        ) : action === "archive" ? (
-                                            <Archive />
-                                        ) : null}
-                                        {actionLabel[action]}
-                                    </Button>
-                                ))}
-                            </div>
-                        </div>
-                    ))
-                )}
+            <div className="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center">
+                <Input
+                    aria-label="Search sessions"
+                    className="sm:max-w-xs"
+                    onChange={event => setSearchText(event.target.value)}
+                    placeholder="Search by title, tag, or notes…"
+                    value={searchText}
+                />
+                <div className="flex items-center gap-2">
+                    <Select
+                        onValueChange={value =>
+                            navigate({
+                                search: prev => ({
+                                    ...prev,
+                                    status: value === "all" ? undefined : (value as TrainingSessionStatusValue),
+                                }),
+                            })
+                        }
+                        value={search.status ?? "all"}
+                    >
+                        <SelectTrigger className="w-full sm:w-40" size="sm">
+                            <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                            <SelectItem value="all">All statuses</SelectItem>
+                            <SelectItem value="draft">Draft</SelectItem>
+                            <SelectItem value="in_progress">In progress</SelectItem>
+                            <SelectItem value="completed">Completed</SelectItem>
+                        </SelectContent>
+                    </Select>
+                    <Button
+                        onClick={() =>
+                            navigate({ search: prev => ({ ...prev, archived: prev.archived ? undefined : true }) })
+                        }
+                        size="sm"
+                        variant={search.archived ? "default" : "outline"}
+                    >
+                        {search.archived ? "Showing archived" : "Show archived"}
+                    </Button>
+                </div>
             </div>
 
-            <Sheet onOpenChange={open => (open ? undefined : setEditor(null))} open={editor !== null}>
+            <div className="mt-8">
+                <SessionsFeed
+                    error={feed.error}
+                    hasNextPage={feed.hasNextPage}
+                    isError={feed.isError}
+                    isFetchingNextPage={feed.isFetchingNextPage}
+                    isPending={feed.isPending}
+                    onLoadMore={() => feed.fetchNextPage()}
+                    sessions={sessions}
+                />
+            </div>
+
+            <Sheet onOpenChange={open => (open ? undefined : setCreating(false))} open={creating}>
                 <SheetContent className="flex w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
                     <SheetHeader>
-                        <SheetTitle>{editor?.mode === "edit" ? "Edit session" : "New session"}</SheetTitle>
+                        <SheetTitle>New session</SheetTitle>
                         <SheetDescription>
                             Capture readiness, tags, and notes. Every save creates a new session revision.
                         </SheetDescription>
                     </SheetHeader>
                     <div className="min-h-0 flex-1 overflow-y-auto p-6">
-                        {editor?.mode === "edit" ? (
-                            <EditSession onSaved={invalidate} session={editor.session} />
-                        ) : editor?.mode === "create" ? (
-                            <CreateSession onSaved={invalidate} />
-                        ) : null}
+                        {creating ? <CreateSession onSaved={onCreated} /> : null}
                     </div>
                 </SheetContent>
             </Sheet>
@@ -262,68 +187,5 @@ function CreateSession({ onSaved }: { readonly onSaved: () => void }): React.JSX
             submitError={mutation.error}
             submitLabel="Create session"
         />
-    );
-}
-
-function EditSession({
-    onSaved,
-    session,
-}: {
-    readonly onSaved: () => void;
-    readonly session: TrainingSessionSummary;
-}): React.JSX.Element {
-    const detail = useQuery(trainingSessionQueryOptions(session.id));
-    const history = useQuery(trainingSessionRevisionHistoryQueryOptions(session.id));
-    const mutation = useMutation({
-        mutationFn: (values: SessionFormValues) => updateTrainingSession(session, sessionUpdateInput(values)),
-        onSuccess: onSaved,
-    });
-    if (detail.isPending) return <FormLoading />;
-    if (detail.isError) return <FormError message={detail.error.message} />;
-    return (
-        <div className="grid gap-6">
-            <SessionForm
-                defaultValues={sessionFormValues(detail.data)}
-                isSubmitting={mutation.isPending}
-                key={`${session.id}:${session.version}`}
-                onSubmit={async values => {
-                    await mutation.mutateAsync(values);
-                }}
-                submitError={mutation.error}
-                submitLabel="Save changes"
-            />
-            <StrengthActivityDetail activities={detail.data.activities} />
-            <RunningActivityDetail activities={detail.data.activities} />
-            <SessionMappingsDetail session={detail.data} />
-            {history.data && history.data.items.length > 0 ? (
-                <section className="grid gap-2">
-                    <h3 className="text-sm font-medium">Recent history</h3>
-                    <ul className="grid gap-1">
-                        {history.data.items.slice(0, 5).map(item => (
-                            <li className="text-muted-foreground flex items-center gap-2 text-xs" key={item.version}>
-                                <span className="font-mono tabular-nums">v{item.version}</span>
-                                <span className="truncate">{item.summary}</span>
-                            </li>
-                        ))}
-                    </ul>
-                </section>
-            ) : null}
-        </div>
-    );
-}
-
-function FormLoading(): React.JSX.Element {
-    return (
-        <div className="text-muted-foreground flex items-center gap-2 py-10 text-sm">
-            <LoaderCircle className="animate-spin" /> Loading…
-        </div>
-    );
-}
-
-function FormError({ message }: { readonly message: string }): React.JSX.Element {
-    return (
-        <div className="border-destructive/30 bg-destructive/10 text-destructive rounded-lg border p-4 text-sm">
-            {message}
-        </div>
     );
 }
