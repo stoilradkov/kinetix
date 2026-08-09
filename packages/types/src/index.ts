@@ -24,6 +24,7 @@ export * from "#src/import-batch";
 export * from "#src/storage-reconciliation";
 export * from "#src/adherence";
 export * from "#src/progression-rule";
+export * from "#src/progression-evaluation";
 
 export const healthResponseSchema = z.object({
     status: z.enum(["ok", "error"]),

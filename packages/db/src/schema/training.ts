@@ -2646,7 +2646,104 @@ export const progressionRules = pgTable(
     ],
 );
 
+/**
+ * ProgressionEvaluation — immutable evidence that a rule was evaluated against an exact, versioned
+ * context snapshot (design §15.3, PRD PG-4/PG-7). Each row records the matched/unmatched explanation
+ * tree, the resolved fact snapshot and its input revisions, the trigger and logical target, the
+ * derived status, and a stable context fingerprint that makes event/job replay idempotent — the
+ * unique fingerprint guarantees the same rule version against the same context revisions is stored
+ * once. Safety gating (G3) and applying proposals to targets (G4) are recorded by later work.
+ */
+export const progressionEvaluations = pgTable(
+    "progression_evaluations",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        profileId: uuid("profile_id").notNull(),
+        ruleId: uuid("rule_id")
+            .notNull()
+            .references(() => progressionRules.id),
+        ruleVersion: integer("rule_version").notNull(),
+        ruleName: text("rule_name").notNull(),
+        trainingSessionId: uuid("training_session_id")
+            .notNull()
+            .references(() => trainingSessions.id, { onDelete: "cascade" }),
+        trainingSessionVersion: integer("training_session_version").notNull(),
+        trigger: text("trigger").notNull(),
+        scopeType: text("scope_type").notNull(),
+        scopeId: uuid("scope_id").notNull(),
+        targetMode: text("target_mode").notNull(),
+        targetSelector: jsonb("target_selector").$type<Record<string, unknown>>().notNull(),
+        matched: boolean("matched").notNull(),
+        status: text("status").notNull(),
+        explanation: jsonb("explanation").$type<Record<string, unknown>>().notNull(),
+        missingMetrics: jsonb("missing_metrics").$type<string[]>().notNull().default([]),
+        contextRevisions: jsonb("context_revisions").$type<Record<string, number>>().notNull().default({}),
+        contextFacts: jsonb("context_facts").$type<Record<string, unknown>>().notNull().default({}),
+        contextFingerprint: text("context_fingerprint").notNull(),
+        evaluatedAt: timestamp("evaluated_at", { withTimezone: true }).notNull().defaultNow(),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check(
+            "progression_evaluations_trigger_valid",
+            sql`${table.trigger} IN ('session_completed', 'scheduled', 'manual')`,
+        ),
+        check(
+            "progression_evaluations_scope_type_valid",
+            sql`${table.scopeType} IN ('program', 'block', 'template', 'exercise', 'set')`,
+        ),
+        check(
+            "progression_evaluations_target_mode_valid",
+            sql`${table.targetMode} IN ('next', 'block_future', 'template')`,
+        ),
+        check(
+            "progression_evaluations_status_valid",
+            sql`${table.status} IN ('unmatched', 'pending', 'blocked', 'applied', 'rejected')`,
+        ),
+        check(
+            "progression_evaluations_version_valid",
+            sql`${table.trainingSessionVersion} >= 1 AND ${table.ruleVersion} >= 1`,
+        ),
+        check("progression_evaluations_fingerprint_valid", sql`${table.contextFingerprint} ~ '^[0-9a-f]{64}$'`),
+        // One evaluation per (rule version, trigger, context revisions) — replay writes nothing new.
+        uniqueIndex("progression_evaluations_fingerprint_unique").on(table.contextFingerprint),
+        index("progression_evaluations_session_idx").on(table.trainingSessionId),
+        index("progression_evaluations_rule_idx").on(table.ruleId),
+        // Keyset scan for the approval/status surface: newest first per profile, optionally by status.
+        index("progression_evaluations_profile_idx").on(table.profileId, table.status, table.evaluatedAt),
+    ],
+);
+
+/**
+ * One proposed action of an evaluation (design §15.2). Actions are recorded as validated JSON, never
+ * executable functions; G2 only proposes them (`proposed`), and G4 records approval/application here.
+ */
+export const progressionEvaluationActions = pgTable(
+    "progression_evaluation_actions",
+    {
+        id: uuid("id").defaultRandom().primaryKey(),
+        evaluationId: uuid("evaluation_id")
+            .notNull()
+            .references(() => progressionEvaluations.id, { onDelete: "cascade" }),
+        position: integer("position").notNull(),
+        actionType: text("action_type").notNull(),
+        action: jsonb("action").$type<Record<string, unknown>>().notNull(),
+        status: text("status").notNull().default("proposed"),
+        createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    },
+    table => [
+        check(
+            "progression_evaluation_actions_status_valid",
+            sql`${table.status} IN ('proposed', 'applied', 'rejected')`,
+        ),
+        check("progression_evaluation_actions_position_valid", sql`${table.position} >= 0`),
+        index("progression_evaluation_actions_evaluation_idx").on(table.evaluationId),
+    ],
+);
+
 export type ProgressionRuleRow = typeof progressionRules.$inferSelect;
+export type ProgressionEvaluationRow = typeof progressionEvaluations.$inferSelect;
+export type ProgressionEvaluationActionRow = typeof progressionEvaluationActions.$inferSelect;
 
 export type AdherenceResultRow = typeof adherenceResults.$inferSelect;
 export type AdherenceComponentRow = typeof adherenceComponents.$inferSelect;

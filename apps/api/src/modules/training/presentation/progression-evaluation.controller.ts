@@ -1,0 +1,177 @@
+import { randomUUID } from "node:crypto";
+
+import { Body, Controller, Get, Headers, HttpException, Inject, Param, Post, Query } from "@nestjs/common";
+import { ApiOperation, ApiParam, ApiQuery, ApiTags } from "@nestjs/swagger";
+
+import {
+    evaluateProgressionRequestSchema,
+    progressionEvaluationListQuerySchema,
+    progressionEvaluationListResponseSchema,
+    progressionEvaluationResponseSchema,
+    type ProgressionEvaluationListResponse,
+    type ProgressionEvaluationResponse,
+} from "@kinetix/types";
+
+import {
+    EVALUATE_PROGRESSION,
+    PROGRESSION_EVALUATION_REPOSITORY,
+    ProgressionSubjectUnavailableError,
+    type EvaluateProgression,
+    type ProgressionEvaluationRepository,
+    type ProgressionEvaluationView,
+} from "#src/modules/training/application/index";
+import { PROFILE_READER, type ProfileReader } from "#src/modules/profile/index";
+import { ApplicationValidationError, type CommandContext } from "#src/platform/application/index";
+
+/**
+ * Progression evaluation read/trigger surface (issue #40, G2; design §15.3). Evaluations are immutable
+ * evidence produced by the durable worker off `training.session.*` events; these endpoints expose the
+ * matched/unmatched explanation, retained context, and proposed actions for a session or across the
+ * profile's approval queue, and let a client manually (or scheduled-) trigger evaluation of a completed
+ * session's applicable rules. Rich approval/apply UI remains G4.
+ */
+@ApiTags("training progression")
+@Controller({ path: "training", version: "1" })
+export class ProgressionEvaluationController {
+    constructor(
+        @Inject(EVALUATE_PROGRESSION) private readonly evaluate: EvaluateProgression,
+        @Inject(PROGRESSION_EVALUATION_REPOSITORY) private readonly repository: ProgressionEvaluationRepository,
+        @Inject(PROFILE_READER) private readonly profiles: ProfileReader,
+    ) {}
+
+    @Post("sessions/:sessionId/progression/evaluate")
+    @ApiOperation({ summary: "Manually (or scheduled-) evaluate a completed session's applicable rules" })
+    @ApiParam({ name: "sessionId", format: "uuid" })
+    async evaluateSession(
+        @Param("sessionId") sessionId: string,
+        @Body() rawBody: unknown = {},
+        @Headers("x-correlation-id") correlationId: string | undefined,
+        @Headers("x-kinetix-source") source: string | undefined,
+    ): Promise<ProgressionEvaluationListResponse> {
+        const id = uuid(sessionId, "sessionId");
+        const command = parseContract(evaluateProgressionRequestSchema, rawBody, "Evaluate request validation failed");
+        try {
+            const results = await this.evaluate.evaluateSession(
+                { sessionId: id, trigger: command.trigger, ...(command.ruleId ? { ruleId: command.ruleId } : {}) },
+                commandMetadata(correlationId, source),
+            );
+            return progressionEvaluationListResponseSchema.parse({ items: results.map(toResponse) });
+        } catch (error) {
+            if (error instanceof ProgressionSubjectUnavailableError)
+                throw new HttpException({ code: "NOT_FOUND", message: error.message }, 404);
+            throw error;
+        }
+    }
+
+    @Get("sessions/:sessionId/progression/evaluations")
+    @ApiOperation({ summary: "List the progression evaluations recorded for a session" })
+    @ApiParam({ name: "sessionId", format: "uuid" })
+    async listForSession(@Param("sessionId") sessionId: string): Promise<ProgressionEvaluationListResponse> {
+        const id = uuid(sessionId, "sessionId");
+        const results = await this.repository.listForSession(id);
+        return progressionEvaluationListResponseSchema.parse({ items: results.map(toResponse) });
+    }
+
+    @Get("progression/evaluations")
+    @ApiOperation({ summary: "List progression evaluations across the profile's sessions (approval queue)" })
+    @ApiQuery({ name: "status", required: false, enum: ["unmatched", "pending", "blocked", "applied", "rejected"] })
+    @ApiQuery({ name: "ruleId", required: false, format: "uuid" })
+    @ApiQuery({ name: "limit", required: false })
+    async list(@Query() rawQuery: Record<string, unknown> = {}): Promise<ProgressionEvaluationListResponse> {
+        const query = parseContract(
+            progressionEvaluationListQuerySchema,
+            rawQuery,
+            "Evaluation query validation failed",
+        );
+        const profileId = await this.profiles.requireActiveProfileId();
+        const results = await this.repository.listForProfile({ profileId, ...query });
+        return progressionEvaluationListResponseSchema.parse({ items: results.map(toResponse) });
+    }
+
+    @Get("progression/evaluations/:evaluationId")
+    @ApiOperation({ summary: "Read one progression evaluation with its full explanation and proposed actions" })
+    @ApiParam({ name: "evaluationId", format: "uuid" })
+    async detail(@Param("evaluationId") evaluationId: string): Promise<ProgressionEvaluationResponse> {
+        const id = uuid(evaluationId, "evaluationId");
+        const view = await this.repository.readById(id);
+        if (view === null)
+            throw new HttpException({ code: "NOT_FOUND", message: `Evaluation ${id} was not found` }, 404);
+        return progressionEvaluationResponseSchema.parse(toResponse(view));
+    }
+}
+
+function toResponse(view: ProgressionEvaluationView): unknown {
+    return {
+        id: view.id,
+        ruleId: view.ruleId,
+        ruleVersion: view.ruleVersion,
+        ruleName: view.ruleName,
+        trainingSessionId: view.trainingSessionId,
+        trainingSessionVersion: view.trainingSessionVersion,
+        trigger: view.trigger,
+        scopeType: view.scopeType,
+        scopeId: view.scopeId,
+        target: view.target,
+        matched: view.matched,
+        status: view.status,
+        explanation: view.explanation,
+        missingMetrics: [...view.missingMetrics],
+        contextRevisions: { ...view.contextRevisions },
+        contextFacts: { ...view.contextFacts },
+        contextFingerprint: view.contextFingerprint,
+        actions: view.actions.map(action => ({ ...action, action: { ...action.action } })),
+        evaluatedAt: view.evaluatedAt.toISOString(),
+    };
+}
+
+function commandMetadata(rawCorrelationId: string | undefined, rawSource: string | undefined): CommandContext {
+    return {
+        correlationId: rawCorrelationId?.trim() || randomUUID(),
+        actorId: null,
+        source: normalizeSource(rawSource),
+    };
+}
+
+const COMMAND_SOURCES = ["user", "agent", "import", "sync", "system"] as const;
+
+function normalizeSource(rawSource: string | undefined): (typeof COMMAND_SOURCES)[number] {
+    const normalized = rawSource?.trim().toLowerCase();
+    return COMMAND_SOURCES.find(source => source === normalized) ?? "user";
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function uuid(value: string, field: string): string {
+    const normalized = value.trim();
+    if (!UUID_PATTERN.test(normalized))
+        throw new ApplicationValidationError(`${field} must be a UUID`, { [field]: [`${field} must be a UUID`] });
+    return normalized;
+}
+
+function parseContract<Output>(
+    schema: {
+        safeParse(
+            value: unknown,
+        ):
+            | { success: true; data: Output }
+            | { success: false; error: { issues: readonly { path: readonly PropertyKey[]; message: string }[] } };
+    },
+    value: unknown,
+    message: string,
+): Output {
+    const parsed = schema.safeParse(value);
+    if (!parsed.success) throw contractValidationException(message, parsed.error.issues);
+    return parsed.data;
+}
+
+function contractValidationException(
+    message: string,
+    issues: readonly { path: readonly PropertyKey[]; message: string }[],
+): HttpException {
+    const fieldErrors: Record<string, string[]> = {};
+    for (const issue of issues) {
+        const path = issue.path.length > 0 ? issue.path.map(String).join(".") : "$";
+        (fieldErrors[path] ??= []).push(issue.message);
+    }
+    return new HttpException({ code: "VALIDATION_FAILED", message, fieldErrors }, 422);
+}

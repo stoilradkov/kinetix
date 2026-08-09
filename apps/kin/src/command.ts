@@ -52,6 +52,8 @@ import {
     updateProgressionRuleRequestSchema,
     progressionRuleListResponseSchema,
     progressionRuleResponseSchema,
+    progressionEvaluationListResponseSchema,
+    progressionEvaluationResponseSchema,
     createProgramRequestSchema,
     updateProgramRequestSchema,
     activateProgramRequestSchema,
@@ -238,6 +240,7 @@ export function createProgram(dependencies: ProgramDependencies = defaults): Com
     registerTrainingRunningCommands(training, dependencies);
     registerTrainingInjuryCommands(training, dependencies);
     registerTrainingAdherenceCommands(training, dependencies);
+    registerTrainingProgressionCommands(training, dependencies);
     registerProgressionRuleCommands(training, dependencies);
     const history = training.command("history").description("Inspect and restore aggregate history");
 
@@ -1910,6 +1913,123 @@ function registerPlannedSessionCommands(training: Command, dependencies: Program
                     outputPlannedSession(dependencies.output, result, options.json);
                 },
             );
+}
+
+function registerTrainingProgressionCommands(training: Command, dependencies: ProgramDependencies): void {
+    const progression = training
+        .command("progression")
+        .description("Evaluate progression rules and inspect deterministic evaluation evidence");
+
+    progression
+        .command("evaluate")
+        .description("Manually (or scheduled-) evaluate a completed session's applicable rules")
+        .argument("<session-id>", "Training session UUID")
+        .option("--trigger <trigger>", "Trigger to resolve rules for (manual|scheduled)", "manual")
+        .option("--rule <id>", "Restrict evaluation to a single rule UUID")
+        .option("--source <source>", "Provenance source recorded with the evaluation")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (
+                sessionId: string,
+                options: { trigger?: string; rule?: string; source?: string; apiUrl?: string; json?: boolean },
+            ) => {
+                const body: Record<string, unknown> = { trigger: options.trigger ?? "manual" };
+                if (options.rule !== undefined) body.ruleId = options.rule;
+                const result = progressionEvaluationListResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/progression/evaluate`,
+                        mutationRequest("POST", body, undefined, undefined, provenanceOf(options)),
+                    ),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else for (const item of result.items) outputProgressionEvaluation(dependencies.output, item);
+            },
+        );
+
+    progression
+        .command("session")
+        .description("List the progression evaluations recorded for one session")
+        .argument("<session-id>", "Training session UUID")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (sessionId: string, options: { apiUrl?: string; json?: boolean }) => {
+            const result = progressionEvaluationListResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/sessions/${encodeURIComponent(sessionId)}/progression/evaluations`,
+                ),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else for (const item of result.items) outputProgressionEvaluation(dependencies.output, item);
+        });
+
+    progression
+        .command("list")
+        .description("List progression evaluations across the profile (approval queue)")
+        .option("--status <status>", "Filter by status (unmatched|pending|blocked|applied|rejected)")
+        .option("--rule <id>", "Filter by rule UUID")
+        .option("--limit <count>", "Maximum results (1-200)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: { status?: string; rule?: string; limit?: string; apiUrl?: string; json?: boolean }) => {
+                const params = new URLSearchParams();
+                if (options.status !== undefined) params.set("status", options.status);
+                if (options.rule !== undefined) params.set("ruleId", options.rule);
+                if (options.limit !== undefined) params.set("limit", options.limit);
+                const query = params.toString() ? `?${params.toString()}` : "";
+                const result = progressionEvaluationListResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/progression/evaluations${query}`,
+                    ),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else for (const item of result.items) outputProgressionEvaluation(dependencies.output, item);
+            },
+        );
+
+    progression
+        .command("show")
+        .description("Show one progression evaluation with its explanation and proposed actions")
+        .argument("<evaluation-id>", "Progression evaluation UUID")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (evaluationId: string, options: { apiUrl?: string; json?: boolean }) => {
+            const result = progressionEvaluationResponseSchema.parse(
+                await responseJson(
+                    dependencies,
+                    `${resolveApiUrl(options.apiUrl)}/training/progression/evaluations/${encodeURIComponent(evaluationId)}`,
+                ),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else {
+                outputProgressionEvaluation(dependencies.output, result);
+                for (const action of result.actions)
+                    dependencies.output(`  action[${action.position}]\t${action.actionType}\t${action.status}`);
+                if (result.missingMetrics.length > 0)
+                    dependencies.output(`  missing\t${result.missingMetrics.join(", ")}`);
+            }
+        });
+}
+
+function outputProgressionEvaluation(
+    output: (line: string) => void,
+    evaluation: {
+        id: string;
+        ruleName: string;
+        ruleVersion: number;
+        status: string;
+        matched: boolean;
+        trigger: string;
+        evaluatedAt: string;
+    },
+): void {
+    output(
+        `${evaluation.id}\t${evaluation.status}\t${evaluation.matched ? "matched" : "no-match"}\t${evaluation.trigger}\t${evaluation.ruleName} v${evaluation.ruleVersion}\t${evaluation.evaluatedAt}`,
+    );
 }
 
 function registerTrainingAdherenceCommands(training: Command, dependencies: ProgramDependencies): void {

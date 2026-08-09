@@ -206,6 +206,14 @@ import {
     progressionRuleSerializer,
     type ProgressionRuleRepository,
     type ProgressionPlanningReader,
+    PROGRESSION_EVALUATION_REPOSITORY,
+    PROGRESSION_CONTEXT_READER,
+    APPLICABLE_PROGRESSION_RULE_READER,
+    EVALUATE_PROGRESSION,
+    EvaluateProgression,
+    type ProgressionContextReader,
+    type ApplicableProgressionRuleReader,
+    type ProgressionEvaluationRepository,
 } from "#src/modules/training/application/index";
 import type {
     ExerciseDefinitionState,
@@ -263,6 +271,12 @@ import {
 import { DrizzleProgressionRuleRepository } from "#src/modules/training/infrastructure/drizzle-progression-rule-repository";
 import { DrizzleProgressionPlanningReader } from "#src/modules/training/infrastructure/drizzle-progression-planning-reader";
 import { ProgressionRuleRevisionRegistrar } from "#src/modules/training/infrastructure/progression-rule-revision-registrar";
+import { DrizzleProgressionEvaluationRepository } from "#src/modules/training/infrastructure/drizzle-progression-evaluation-repository";
+import { DrizzleProgressionContextReader } from "#src/modules/training/infrastructure/drizzle-progression-context-reader";
+import {
+    ProgressionEvaluationJobRegistrar,
+    ProgressionEvaluationOutboxRegistrar,
+} from "#src/modules/training/infrastructure/progression-evaluation-registrars";
 import { DrizzleProgramRepository } from "#src/modules/training/infrastructure/drizzle-program-repository";
 import { DrizzleProgramMembershipRepository } from "#src/modules/training/infrastructure/drizzle-program-membership-repository";
 import { DrizzleProgramGoalValidator } from "#src/modules/training/infrastructure/drizzle-program-goal-validator";
@@ -292,6 +306,7 @@ import {
     RunController,
     AdherenceController,
     ProgressionRuleController,
+    ProgressionEvaluationController,
     BulkProgramController,
     ImportBatchController,
     HistoricalImportController,
@@ -329,6 +344,7 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         RunController,
         AdherenceController,
         ProgressionRuleController,
+        ProgressionEvaluationController,
         BulkProgramController,
         ImportBatchController,
         HistoricalImportController,
@@ -885,6 +901,32 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                 new AdherenceQueryService({ query, stateReader }),
             inject: [ADHERENCE_RESULT_QUERY, ADHERENCE_RECALC_STATE_READER],
         },
+        // Progression evaluation (issue #40, G2): the immutable-context reader, the applicable-rule
+        // reader, the append-only evaluation projection, the EvaluateProgression orchestration, and the
+        // job/outbox registrars that evaluate rules against a completed session's exact revisions.
+        DrizzleProgressionEvaluationRepository,
+        { provide: PROGRESSION_EVALUATION_REPOSITORY, useExisting: DrizzleProgressionEvaluationRepository },
+        DrizzleProgressionContextReader,
+        { provide: PROGRESSION_CONTEXT_READER, useExisting: DrizzleProgressionContextReader },
+        // The applicable-rule reader is served by the rule repository itself (it owns rule hydration).
+        { provide: APPLICABLE_PROGRESSION_RULE_READER, useExisting: DrizzleProgressionRuleRepository },
+        {
+            provide: EVALUATE_PROGRESSION,
+            useFactory: (
+                unitOfWork: UnitOfWork,
+                contextReader: ProgressionContextReader,
+                ruleReader: ApplicableProgressionRuleReader,
+                repository: ProgressionEvaluationRepository,
+            ) => new EvaluateProgression({ unitOfWork, contextReader, ruleReader, repository, generateId: randomUUID }),
+            inject: [
+                UNIT_OF_WORK,
+                PROGRESSION_CONTEXT_READER,
+                APPLICABLE_PROGRESSION_RULE_READER,
+                PROGRESSION_EVALUATION_REPOSITORY,
+            ],
+        },
+        ProgressionEvaluationJobRegistrar,
+        ProgressionEvaluationOutboxRegistrar,
         DrizzleProgramRepository,
         DrizzleProgramMembershipRepository,
         DrizzleProgramGoalValidator,

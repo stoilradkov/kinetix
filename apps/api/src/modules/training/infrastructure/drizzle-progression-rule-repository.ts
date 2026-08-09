@@ -1,11 +1,12 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 
 import { progressionRules, type Database, type ProgressionRuleRow } from "@kinetix/db";
 
 import { DatabaseService } from "#src/database/database.service";
 import {
     PROGRESSION_RULE_ENTITY_TYPE,
+    type ApplicableProgressionRuleReader,
     type ProgressionRuleListFilter,
     type ProgressionRuleRepository,
     type ProgressionRuleResource,
@@ -26,11 +27,38 @@ import {
     ruleTargetModes,
 } from "#src/modules/training/domain/index";
 import { VersionConflictError } from "#src/platform/application/index";
-import type { EntityId } from "#src/platform/domain/index";
+import { entityId, type EntityId } from "#src/platform/domain/index";
 
+/**
+ * Persistence adapter for the ProgressionRule root (issue #39, G1) that also serves the applicable-rule
+ * reads the evaluation pipeline needs (issue #40, G2). Every row is revalidated through the domain model
+ * on hydration; Drizzle rows never escape the boundary.
+ */
 @Injectable()
-export class DrizzleProgressionRuleRepository implements ProgressionRuleRepository {
+export class DrizzleProgressionRuleRepository implements ProgressionRuleRepository, ApplicableProgressionRuleReader {
     constructor(@Inject(DatabaseService) private readonly database: DatabaseService) {}
+
+    async findEnabledByTrigger(
+        trigger: RuleTrigger,
+        transaction?: unknown,
+    ): Promise<readonly ProgressionRuleResource[]> {
+        const executor = this.executor(transaction);
+        const rows = await executor
+            .select()
+            .from(progressionRules)
+            .where(
+                and(
+                    eq(progressionRules.status, "active"),
+                    eq(progressionRules.enabled, true),
+                    sql`${progressionRules.triggers} @> ${JSON.stringify([trigger])}::jsonb`,
+                ),
+            );
+        return rows.map(row => this.toResource(row));
+    }
+
+    findById(ruleId: string, transaction?: unknown): Promise<ProgressionRuleResource | null> {
+        return this.readRule(entityId(ruleId), transaction);
+    }
 
     async readRule(id: EntityId, transaction?: unknown): Promise<ProgressionRuleResource | null> {
         const executor = this.executor(transaction);

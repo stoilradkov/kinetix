@@ -31,3 +31,4 @@ export * from "#src/modules/training/application/historical-import";
 export * from "#src/modules/training/application/adherence";
 export * from "#src/modules/training/application/adherence-queries";
 export * from "#src/modules/training/application/progression-rules";
+export * from "#src/modules/training/application/progression-evaluation";
