@@ -8,6 +8,7 @@ import type {
     ProgressionEvaluationRepository,
     ProgressionEvaluationSubject,
     ProgressionEvaluationView,
+    ProgressionHealthReader,
     ProgressionRuleResource,
     SessionScopeChain,
 } from "#src/modules/training/application/index";
@@ -229,17 +230,32 @@ function subjectFor(overrides: Partial<ProgressionEvaluationSubject> = {}): Prog
         sessionVersion: 1,
         completed: true,
         scope: scopeChain(),
+        recoveryIntervalHours: null,
+        weeklyVolume: null,
         ...overrides,
     };
 }
 
-function service(reader: FakeContextReader, rules: FakeRuleReader, repository: FakeEvaluationRepository) {
+class FakeHealthReader implements ProgressionHealthReader {
+    constructor(private readonly sleepHours: number | null = null) {}
+    readSleepHours(): Promise<number | null> {
+        return Promise.resolve(this.sleepHours);
+    }
+}
+
+function service(
+    reader: FakeContextReader,
+    rules: FakeRuleReader,
+    repository: FakeEvaluationRepository,
+    healthReader: ProgressionHealthReader = new FakeHealthReader(),
+) {
     let counter = 0;
     return new EvaluateProgression({
         unitOfWork,
         contextReader: reader,
         ruleReader: rules,
         repository,
+        healthReader,
         generateId: () => id(500 + counter++),
         clock: { now: () => new Date("2026-08-09T10:00:00.000Z") },
     });
@@ -351,6 +367,80 @@ describe("EvaluateProgression", () => {
                 repository,
             ).evaluateSession({ sessionId: SESSION, trigger: "session_completed" }, metadata),
         ).rejects.toBeInstanceOf(ProgressionSubjectUnavailableError);
+    });
+
+    it("blocks a matched rule whose load increase exceeds its safety limit", async () => {
+        const repository = new FakeEvaluationRepository();
+        const results = await service(
+            new FakeContextReader(sessionState(), subjectFor()),
+            new FakeRuleReader([
+                rule({
+                    actions: [{ type: "adjust_load", mode: "percent", value: 20 }],
+                    safetyPolicy: { policyKey: null, config: { maxLoadIncreasePercent: 5 } },
+                }),
+            ]),
+            repository,
+        ).evaluateSession({ sessionId: SESSION, trigger: "session_completed" }, metadata);
+
+        expect(results[0]).toMatchObject({ matched: true, status: "blocked", autoApplyEligible: false });
+        expect(results[0]!.safety.outcome).toBe("block");
+        expect(results[0]!.safety.findings.find(f => f.policyKey === "max_load_increase")?.outcome).toBe("block");
+    });
+
+    it("requires approval and names the missing input when active pain was not assessed", async () => {
+        const repository = new FakeEvaluationRepository();
+        const results = await service(
+            new FakeContextReader(
+                sessionState({
+                    readiness: {
+                        energy: null,
+                        motivation: null,
+                        fatigue: null,
+                        soreness: null,
+                        stress: null,
+                        recovery: null,
+                    },
+                }),
+                subjectFor(),
+            ),
+            new FakeRuleReader([rule()]),
+            repository,
+        ).evaluateSession({ sessionId: SESSION, trigger: "session_completed" }, metadata);
+
+        expect(results[0]!.status).toBe("pending");
+        expect(results[0]!.safety.outcome).toBe("requires_approval");
+        expect(results[0]!.safety.missingInputs).toContain("readiness");
+        expect(results[0]!.autoApplyEligible).toBe(false);
+    });
+
+    it("marks a safe, non-conflicting, enabled, non-template rule as auto-apply eligible", async () => {
+        const repository = new FakeEvaluationRepository();
+        const results = await service(
+            new FakeContextReader(sessionState(), subjectFor()),
+            new FakeRuleReader([rule({ autoApply: true })]),
+            repository,
+        ).evaluateSession({ sessionId: SESSION, trigger: "session_completed" }, metadata);
+
+        expect(results[0]).toMatchObject({ status: "pending", autoApplyEligible: true });
+        expect(results[0]!.autoApplyReason).toBeNull();
+    });
+
+    it("blocks both rules that propose overlapping changes to the same target field", async () => {
+        const repository = new FakeEvaluationRepository();
+        const results = await service(
+            new FakeContextReader(sessionState(), subjectFor()),
+            new FakeRuleReader([
+                rule({ id: id(40), autoApply: true, actions: [{ type: "adjust_load", mode: "percent", value: 2.5 }] }),
+                rule({ id: id(41), autoApply: true, actions: [{ type: "adjust_load", mode: "percent", value: 5 }] }),
+            ]),
+            repository,
+        ).evaluateSession({ sessionId: SESSION, trigger: "session_completed" }, metadata);
+
+        expect(results).toHaveLength(2);
+        expect(results.every(r => r.status === "blocked")).toBe(true);
+        expect(results.every(r => r.conflict.conflicting && !r.autoApplyEligible)).toBe(true);
+        expect(results[0]!.conflict.ruleIds).toContain(id(41));
+        expect(results[1]!.conflict.ruleIds).toContain(id(40));
     });
 });
 

@@ -1,11 +1,12 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, lt, ne } from "drizzle-orm";
 
 import {
     plannedSessionBlocks,
     prescribedExercises,
     prescribedSets,
     programPlannedSessions,
+    trainingSessions,
     type Database,
 } from "@kinetix/db";
 
@@ -49,8 +50,45 @@ export class DrizzleProgressionContextReader implements ProgressionContextReader
             sessionVersion: resource.version,
             completed: resource.status === "completed" && resource.archivedAt === null,
             scope,
+            recoveryIntervalHours: await this.resolveRecoveryIntervalHours(resource, transaction),
+            // Baseline weekly volume needs the analytics window not built in the MVP, so it stays absent
+            // and the weekly-volume safety policy reports it as a missing input (design §15.4).
+            weeklyVolume: null,
         };
         return { subject, session: resource };
+    }
+
+    /**
+     * Hours between the previous completed session's end and this session's start (design §15.4). Returns
+     * `null` when either timestamp is missing, so the minimum-recovery safety policy reports the input as
+     * unavailable rather than assuming an interval.
+     */
+    private async resolveRecoveryIntervalHours(
+        resource: TrainingSessionState,
+        transaction?: unknown,
+    ): Promise<number | null> {
+        if (resource.startedAt === null) return null;
+        const startedAt = new Date(resource.startedAt);
+        const executor = (transaction ?? this.database.db) as Database;
+        const previous = (
+            await executor
+                .select({ endedAt: trainingSessions.endedAt })
+                .from(trainingSessions)
+                .where(
+                    and(
+                        eq(trainingSessions.profileId, resource.profileId),
+                        eq(trainingSessions.status, "completed"),
+                        ne(trainingSessions.id, resource.id),
+                        isNotNull(trainingSessions.endedAt),
+                        lt(trainingSessions.endedAt, startedAt),
+                    ),
+                )
+                .orderBy(desc(trainingSessions.endedAt))
+                .limit(1)
+        )[0];
+        if (!previous?.endedAt) return null;
+        const hours = (startedAt.getTime() - previous.endedAt.getTime()) / 3_600_000;
+        return Number.isFinite(hours) && hours >= 0 ? hours : null;
     }
 
     private async resolveScopeChain(

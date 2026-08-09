@@ -30,3 +30,4 @@ export * from "#src/modules/training/domain/import-batch";
 export * from "#src/modules/training/domain/storage-reconciliation";
 export * from "#src/modules/training/domain/progression-rule";
 export * from "#src/modules/training/domain/progression-evaluation";
+export * from "#src/modules/training/domain/progression-safety";

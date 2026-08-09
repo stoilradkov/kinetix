@@ -159,6 +159,7 @@ export interface SafetyPolicyConfig {
     readonly maxWeeklyVolumeIncreasePercent?: number;
     readonly minRecoveryHours?: number;
     readonly minReadiness?: number;
+    readonly minSleepHours?: number;
 }
 
 export interface SafetyPolicy {

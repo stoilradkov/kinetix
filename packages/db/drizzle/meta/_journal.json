@@ -253,6 +253,13 @@
       "when": 1786273155298,
       "tag": "0035_chilly_jazinda",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1786275592356,
+      "tag": "0036_dashing_katie_power",
+      "breakpoints": true
     }
   ]
 }

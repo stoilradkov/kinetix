@@ -2680,6 +2680,16 @@ export const progressionEvaluations = pgTable(
         contextRevisions: jsonb("context_revisions").$type<Record<string, number>>().notNull().default({}),
         contextFacts: jsonb("context_facts").$type<Record<string, unknown>>().notNull().default({}),
         contextFingerprint: text("context_fingerprint").notNull(),
+        // Safety gating (G3, design §15.4): the aggregate outcome, the explainable per-policy findings,
+        // and the target-field conflict verdict, all recorded so an evaluation stays fully explainable.
+        safetyOutcome: text("safety_outcome").notNull().default("pass"),
+        safetyFindings: jsonb("safety_findings").$type<Record<string, unknown>[]>().notNull().default([]),
+        safetyMissingInputs: jsonb("safety_missing_inputs").$type<string[]>().notNull().default([]),
+        conflict: boolean("conflict").notNull().default(false),
+        conflictingRuleIds: jsonb("conflicting_rule_ids").$type<string[]>().notNull().default([]),
+        conflictFields: jsonb("conflict_fields").$type<string[]>().notNull().default([]),
+        autoApplyEligible: boolean("auto_apply_eligible").notNull().default(false),
+        autoApplyReason: text("auto_apply_reason"),
         evaluatedAt: timestamp("evaluated_at", { withTimezone: true }).notNull().defaultNow(),
         createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     },
@@ -2687,6 +2697,10 @@ export const progressionEvaluations = pgTable(
         check(
             "progression_evaluations_trigger_valid",
             sql`${table.trigger} IN ('session_completed', 'scheduled', 'manual')`,
+        ),
+        check(
+            "progression_evaluations_safety_outcome_valid",
+            sql`${table.safetyOutcome} IN ('pass', 'requires_approval', 'block')`,
         ),
         check(
             "progression_evaluations_scope_type_valid",

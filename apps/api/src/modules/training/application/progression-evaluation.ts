@@ -14,11 +14,15 @@ import type { UnitOfWork } from "#src/platform/application/unit-of-work";
 import type { Clock } from "#src/platform/domain/index";
 
 import {
+    assessSafety,
+    autoApplyDecision,
     buildEvaluationFingerprintSeed,
     canonicalMetricKey,
+    detectConflicts,
     evaluateProgressionRule,
     type ActionV1,
     type ConditionEvaluation,
+    type ConflictCandidate,
     type MetricFact,
     type MetricLookup,
     type PerformedSetState,
@@ -29,6 +33,10 @@ import {
     type RuleScope,
     type RuleTarget,
     type RuleTrigger,
+    type SafetyContext,
+    type SafetyFinding,
+    type SafetyOutcome,
+    type SafetyPainArea,
     type TrainingSessionState,
 } from "#src/modules/training/domain/index";
 import type { ProgressionRuleResource } from "#src/modules/training/application/progression-rules";
@@ -39,6 +47,7 @@ import type { ProgressionRuleResource } from "#src/modules/training/application/
 
 export const PROGRESSION_EVALUATION_REPOSITORY = Symbol("PROGRESSION_EVALUATION_REPOSITORY");
 export const PROGRESSION_CONTEXT_READER = Symbol("PROGRESSION_CONTEXT_READER");
+export const PROGRESSION_HEALTH_READER = Symbol("PROGRESSION_HEALTH_READER");
 export const APPLICABLE_PROGRESSION_RULE_READER = Symbol("APPLICABLE_PROGRESSION_RULE_READER");
 export const EVALUATE_PROGRESSION = Symbol("EVALUATE_PROGRESSION");
 export const PROGRESSION_EVALUATION_ENTITY_TYPE = "training.progression-evaluation";
@@ -56,6 +65,22 @@ export interface ProgressionEvaluationActionView {
     readonly actionType: ProgressionActionType;
     readonly action: ActionV1;
     readonly status: "proposed";
+}
+
+/** The safety verdict retained with an evaluation (design §15.4). */
+export interface ProgressionSafetyView {
+    readonly outcome: SafetyOutcome;
+    readonly findings: readonly SafetyFinding[];
+    readonly missingInputs: readonly string[];
+}
+
+/** The cross-evaluation target-field overlap retained with an evaluation (design §15.4). */
+export interface ProgressionConflictView {
+    readonly conflicting: boolean;
+    /** Other rules whose proposed actions touch the same target field(s). */
+    readonly ruleIds: readonly string[];
+    /** Canonical target-field keys that overlap. */
+    readonly fields: readonly string[];
 }
 
 export interface ProgressionEvaluationView {
@@ -77,6 +102,10 @@ export interface ProgressionEvaluationView {
     readonly contextRevisions: Readonly<Record<string, number>>;
     readonly contextFacts: Readonly<Record<string, MetricFact>>;
     readonly contextFingerprint: string;
+    readonly safety: ProgressionSafetyView;
+    readonly conflict: ProgressionConflictView;
+    readonly autoApplyEligible: boolean;
+    readonly autoApplyReason: string | null;
     readonly actions: readonly ProgressionEvaluationActionView[];
     readonly evaluatedAt: Date;
 }
@@ -101,6 +130,10 @@ export interface ProgressionEvaluationSubject {
     readonly sessionVersion: number;
     readonly completed: boolean;
     readonly scope: SessionScopeChain;
+    /** Hours since the previous completed session; `null` when it cannot be resolved (design §15.4). */
+    readonly recoveryIntervalHours: number | null;
+    /** Baseline weekly training volume; `null` when analytics context is unavailable (MVP). */
+    readonly weeklyVolume: number | null;
 }
 
 /**
@@ -119,6 +152,15 @@ export interface ProgressionContextReader<Transaction = unknown> {
 export interface ApplicableProgressionRuleReader<Transaction = unknown> {
     findEnabledByTrigger(trigger: RuleTrigger, transaction?: Transaction): Promise<readonly ProgressionRuleResource[]>;
     findById(ruleId: string, transaction?: Transaction): Promise<ProgressionRuleResource | null>;
+}
+
+/**
+ * Reads recovery-relevant Health-Data context through the public HealthContextReader port, never the
+ * Health Data tables directly (ADR 0005, design §16.3). Returns sleep hours for the day of the session,
+ * or `null` when nothing was recorded — the safety policies treat that absence as a missing input.
+ */
+export interface ProgressionHealthReader {
+    readSleepHours(profileId: string, localDate: string): Promise<number | null>;
 }
 
 /** One persisted evaluation plus its proposed actions; `evaluatedAt` is stamped by the service. */
@@ -141,6 +183,10 @@ export interface ProgressionEvaluationRecord {
     readonly contextRevisions: Readonly<Record<string, number>>;
     readonly contextFacts: Readonly<Record<string, MetricFact>>;
     readonly contextFingerprint: string;
+    readonly safety: ProgressionSafetyView;
+    readonly conflict: ProgressionConflictView;
+    readonly autoApplyEligible: boolean;
+    readonly autoApplyReason: string | null;
     readonly evaluatedAt: Date;
     readonly actions: readonly ProgressionEvaluationActionView[];
 }
@@ -228,6 +274,28 @@ function collectPerformedSets(session: TrainingSessionState): readonly Performed
     return sets;
 }
 
+/**
+ * Derive the session-recorded safety inputs the policies read (design §15.4). A completed session always
+ * carries an explicit pain assessment (an empty record set means "assessed, none"), so reported pain is
+ * `0` rather than missing; readiness is the mean of the recorded subscores, or `null` when none was
+ * recorded so the missing-inputs policy can flag it.
+ */
+export function deriveSessionSafetyInputs(session: TrainingSessionState): {
+    readonly reportedPainSeverity: number;
+    readonly painAreas: readonly SafetyPainArea[];
+    readonly readiness: number | null;
+} {
+    const painAreas = session.painRecords.map(record => ({
+        bodyArea: record.bodyArea,
+        severity: record.severity,
+        onsetDuringSession: record.onsetDuringSession,
+        stoppedActivity: record.stoppedActivity,
+    }));
+    const reportedPainSeverity =
+        session.painRecords.length > 0 ? Math.max(...session.painRecords.map(record => record.severity)) : 0;
+    return { reportedPainSeverity, painAreas, readiness: meanOf(Object.values(session.readiness)) };
+}
+
 function meanOf(values: readonly (number | null)[]): number | null {
     const present = values.filter((value): value is number => typeof value === "number");
     if (present.length === 0) return null;
@@ -273,7 +341,22 @@ interface EvaluateProgressionRuntime<Transaction> {
     readonly ruleReader: ApplicableProgressionRuleReader<Transaction>;
     readonly repository: ProgressionEvaluationRepository<Transaction>;
     readonly generateId: () => string;
+    /** Reads sleep context through the public Health-Data port; absent = sleep always unavailable. */
+    readonly healthReader?: ProgressionHealthReader;
     readonly clock?: Clock;
+}
+
+/** Neutral safety verdict for an unmatched rule — no actions, so nothing to check. */
+const PASSED_SAFETY: ProgressionSafetyView = { outcome: "pass", findings: [], missingInputs: [] };
+const NO_CONFLICT: ProgressionConflictView = { conflicting: false, ruleIds: [], fields: [] };
+
+/** A newly-evaluated rule staged for conflict detection and persistence in the current run. */
+interface StagedEvaluation {
+    readonly id: string;
+    readonly rule: ProgressionRuleResource;
+    readonly fingerprint: string;
+    readonly outcome: ReturnType<typeof evaluateProgressionRule>;
+    readonly safety: ProgressionSafetyView;
 }
 
 /**
@@ -302,20 +385,113 @@ export class EvaluateProgression<Transaction = unknown> {
 
             const rules = await this.resolveApplicableRules(command, subject, activeTransaction);
             const { facts, revisions } = deriveSessionMetricFacts(session, subject.sessionVersion);
+            const safetyBase = await this.buildSafetyBase(subject, session);
             const now = this.clock.now();
 
+            // Evaluate every applicable rule not already persisted, running each rule's safety policies.
+            const staged: StagedEvaluation[] = [];
             for (const rule of rules) {
                 const fingerprint = this.fingerprint(rule, command.trigger, subject, revisions);
                 if (await this.runtime.repository.existsByFingerprint(fingerprint, activeTransaction)) continue;
                 const outcome = evaluateProgressionRule({ condition: rule.condition, actions: rule.actions, facts });
+                const safety = outcome.matched
+                    ? summariseSafety(
+                          assessSafety(
+                              outcome.proposedActions.map(action => action.action),
+                              {
+                                  ...safetyBase,
+                                  targetMode: rule.target.mode,
+                                  config: rule.safetyPolicy.config,
+                              },
+                          ),
+                      )
+                    : PASSED_SAFETY;
+                staged.push({ id: this.runtime.generateId(), rule, fingerprint, outcome, safety });
+            }
+
+            // Detect overlapping target fields across the newly-staged matches and the session's existing
+            // pending/blocked evaluations, so a later rule sees earlier proposals (design §15.4).
+            const conflicts = await this.resolveConflicts(command.sessionId, staged, activeTransaction);
+
+            for (const entry of staged)
                 await this.runtime.repository.insert(
-                    this.toRecord(rule, command.trigger, subject, revisions, facts, fingerprint, outcome, now),
+                    this.toRecord(
+                        entry,
+                        command.trigger,
+                        subject,
+                        revisions,
+                        facts,
+                        conflicts.get(entry.id) ?? NO_CONFLICT,
+                        now,
+                    ),
                     activeTransaction,
                 );
-            }
 
             return this.runtime.repository.listForSession(command.sessionId, activeTransaction);
         });
+    }
+
+    /** Resolve the shared safety inputs read once per session (sleep comes from the public health port). */
+    private async buildSafetyBase(
+        subject: ProgressionEvaluationSubject,
+        session: TrainingSessionState,
+    ): Promise<Omit<SafetyContext, "targetMode" | "config">> {
+        const inputs = deriveSessionSafetyInputs(session);
+        const sleepHours =
+            (await this.runtime.healthReader?.readSleepHours(subject.profileId, session.localDate)) ?? null;
+        return {
+            reportedPainSeverity: inputs.reportedPainSeverity,
+            painAreas: inputs.painAreas,
+            readiness: inputs.readiness,
+            sleepHours,
+            recoveryIntervalHours: subject.recoveryIntervalHours,
+            weeklyVolume: subject.weeklyVolume,
+        };
+    }
+
+    /**
+     * Build the conflict verdict per staged evaluation by comparing its matched proposals against the
+     * other staged matches and the session's already-persisted pending/blocked evaluations. Persisted
+     * evaluations are read-only here (MVP): a new proposal that overlaps one is flagged, without rewriting
+     * the earlier row.
+     */
+    private async resolveConflicts(
+        sessionId: string,
+        staged: readonly StagedEvaluation[],
+        transaction: Transaction,
+    ): Promise<Map<string, ProgressionConflictView>> {
+        const stagedMatches = staged.filter(entry => entry.outcome.matched);
+        if (stagedMatches.length === 0) return new Map();
+
+        const existing = (await this.runtime.repository.listForSession(sessionId, transaction)).filter(
+            view => view.matched && (view.status === "pending" || view.status === "blocked"),
+        );
+        const candidates: ConflictCandidate[] = [
+            ...stagedMatches.map(entry => ({
+                ref: entry.id,
+                ruleId: entry.rule.id,
+                scope: entry.rule.scope,
+                target: entry.rule.target,
+                actions: entry.outcome.proposedActions.map(action => action.action),
+            })),
+            ...existing.map(view => ({
+                ref: view.id,
+                ruleId: view.ruleId,
+                scope: { type: view.scopeType, id: view.scopeId },
+                target: view.target,
+                actions: view.actions.map(action => action.action),
+            })),
+        ];
+        const refToRuleId = new Map(candidates.map(candidate => [candidate.ref, candidate.ruleId]));
+        const results = new Map<string, ProgressionConflictView>();
+        for (const result of detectConflicts(candidates)) {
+            if (!stagedMatches.some(entry => entry.id === result.ref)) continue;
+            const ruleIds = [
+                ...new Set(result.conflictsWith.map(ref => refToRuleId.get(ref)).filter((id): id is string => !!id)),
+            ].sort();
+            results.set(result.ref, { conflicting: result.conflictsWith.length > 0, ruleIds, fields: result.fields });
+        }
+        return results;
     }
 
     private async resolveApplicableRules(
@@ -365,17 +541,24 @@ export class EvaluateProgression<Transaction = unknown> {
     }
 
     private toRecord(
-        rule: ProgressionRuleResource,
+        entry: StagedEvaluation,
         trigger: RuleTrigger,
         subject: ProgressionEvaluationSubject,
         contextRevisions: Readonly<Record<string, number>>,
         facts: MetricLookup,
-        fingerprint: string,
-        outcome: ReturnType<typeof evaluateProgressionRule>,
+        conflict: ProgressionConflictView,
         now: Date,
     ): ProgressionEvaluationRecord {
+        const { id, rule, fingerprint, outcome, safety } = entry;
+        const decision = autoApplyDecision({
+            matched: outcome.matched,
+            autoApply: rule.autoApply,
+            targetMode: rule.target.mode,
+            safetyOutcome: safety.outcome,
+            hasConflict: conflict.conflicting,
+        });
         return {
-            id: this.runtime.generateId(),
+            id,
             profileId: subject.profileId,
             ruleId: rule.id,
             ruleVersion: rule.version,
@@ -387,12 +570,16 @@ export class EvaluateProgression<Transaction = unknown> {
             scopeId: rule.scope.id,
             target: rule.target,
             matched: outcome.matched,
-            status: outcome.status,
+            status: settleStatus(outcome.matched, safety.outcome, conflict.conflicting),
             explanation: outcome.explanation,
             missingMetrics: outcome.missingMetrics,
             contextRevisions,
             contextFacts: Object.fromEntries(facts),
             contextFingerprint: fingerprint,
+            safety,
+            conflict,
+            autoApplyEligible: decision.eligible,
+            autoApplyReason: decision.reason,
             evaluatedAt: now,
             actions: outcome.proposedActions.map(toActionView),
         };
@@ -413,6 +600,22 @@ function toActionView(proposed: ProposedProgressionAction): ProgressionEvaluatio
         action: proposed.action,
         status: "proposed",
     };
+}
+
+/** Copy a domain safety assessment into the application view retained with the evaluation. */
+function summariseSafety(assessment: ReturnType<typeof assessSafety>): ProgressionSafetyView {
+    return { outcome: assessment.outcome, findings: assessment.findings, missingInputs: assessment.missingInputs };
+}
+
+/**
+ * Settle the evaluation status from the match, safety, and conflict results (design §15.3). An unmatched
+ * rule is `unmatched`; a matched rule whose safety blocks or that conflicts with another proposal is
+ * `blocked`; everything else (safe or awaiting approval) is `pending`. Applying is G4.
+ */
+function settleStatus(matched: boolean, safety: SafetyOutcome, conflicting: boolean): ProgressionEvaluationStatus {
+    if (!matched) return "unmatched";
+    if (safety === "block" || conflicting) return "blocked";
+    return "pending";
 }
 
 // -------------------------------------------------------------------------------------------------

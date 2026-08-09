@@ -94,6 +94,42 @@ export const progressionEvaluationActionResponseSchema = z
     .strict();
 export type ProgressionEvaluationActionResponse = z.infer<typeof progressionEvaluationActionResponseSchema>;
 
+/** Aggregate safety outcome for a matched evaluation (design §15.4). */
+export const progressionSafetyOutcomeSchema = z.enum(["pass", "requires_approval", "block"]);
+export type ProgressionSafetyOutcome = z.infer<typeof progressionSafetyOutcomeSchema>;
+
+/** One safety policy's explainable verdict against the proposed actions and context. */
+export const progressionSafetyFindingSchema = z
+    .object({
+        policyKey: z.string(),
+        outcome: progressionSafetyOutcomeSchema,
+        message: z.string(),
+        evidence: z.record(z.string(), z.union([z.number(), z.string(), z.boolean()])),
+        missingInputs: z.array(z.string()),
+    })
+    .strict();
+export type ProgressionSafetyFinding = z.infer<typeof progressionSafetyFindingSchema>;
+
+/** The safety assessment retained with every evaluation. */
+export const progressionSafetySchema = z
+    .object({
+        outcome: progressionSafetyOutcomeSchema,
+        findings: z.array(progressionSafetyFindingSchema),
+        missingInputs: z.array(z.string()),
+    })
+    .strict();
+export type ProgressionSafety = z.infer<typeof progressionSafetySchema>;
+
+/** Overlapping-target-field verdict across the pending evaluation set (no hidden priority). */
+export const progressionConflictSchema = z
+    .object({
+        conflicting: z.boolean(),
+        ruleIds: z.array(z.string().uuid()),
+        fields: z.array(z.string()),
+    })
+    .strict();
+export type ProgressionConflict = z.infer<typeof progressionConflictSchema>;
+
 export const progressionEvaluationResponseSchema = z
     .object({
         id: z.string().uuid(),
@@ -113,6 +149,10 @@ export const progressionEvaluationResponseSchema = z
         contextRevisions: z.record(z.string(), z.number().int()),
         contextFacts: z.record(z.string(), progressionMetricFactSchema),
         contextFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+        safety: progressionSafetySchema,
+        conflict: progressionConflictSchema,
+        autoApplyEligible: z.boolean(),
+        autoApplyReason: z.string().nullable(),
         actions: z.array(progressionEvaluationActionResponseSchema),
         evaluatedAt: z.string().datetime(),
     })

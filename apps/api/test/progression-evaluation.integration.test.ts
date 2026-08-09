@@ -48,6 +48,22 @@ function record(overrides: Partial<ProgressionEvaluationRecord> = {}): Progressi
         contextRevisions: { session: 1 },
         contextFacts: { [explanation.canonicalKey]: { value: 7, sourceRevision: 1 } },
         contextFingerprint: fingerprint,
+        safety: {
+            outcome: "pass",
+            findings: [
+                {
+                    policyKey: "active_pain",
+                    outcome: "pass",
+                    message: "No active pain",
+                    evidence: {},
+                    missingInputs: [],
+                },
+            ],
+            missingInputs: [],
+        },
+        conflict: { conflicting: false, ruleIds: [], fields: [] },
+        autoApplyEligible: false,
+        autoApplyReason: "Rule is not enabled for automatic application",
         evaluatedAt: now,
         actions: [
             {
@@ -140,6 +156,10 @@ describe.runIf(testDatabaseUrl)("progression evaluations PostgreSQL persistence"
             expect(read!.contextFacts[explanation.canonicalKey]).toEqual({ value: 7, sourceRevision: 1 });
             expect(read!.actions).toHaveLength(1);
             expect(read!.actions[0]).toMatchObject({ actionType: "adjust_load", status: "proposed" });
+            expect(read!.safety).toMatchObject({ outcome: "pass", missingInputs: [] });
+            expect(read!.safety.findings[0]).toMatchObject({ policyKey: "active_pain", outcome: "pass" });
+            expect(read!.conflict).toEqual({ conflicting: false, ruleIds: [], fields: [] });
+            expect(read!.autoApplyEligible).toBe(false);
 
             const forSession = await repository.listForSession(sessionId, tx);
             expect(forSession).toHaveLength(1);

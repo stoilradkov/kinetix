@@ -2011,6 +2011,19 @@ function registerTrainingProgressionCommands(training: Command, dependencies: Pr
                     dependencies.output(`  action[${action.position}]\t${action.actionType}\t${action.status}`);
                 if (result.missingMetrics.length > 0)
                     dependencies.output(`  missing\t${result.missingMetrics.join(", ")}`);
+                dependencies.output(`  safety\t${result.safety.outcome}`);
+                for (const finding of result.safety.findings) {
+                    const missing =
+                        finding.missingInputs.length > 0 ? ` (missing: ${finding.missingInputs.join(", ")})` : "";
+                    dependencies.output(`    ${finding.policyKey}\t${finding.outcome}\t${finding.message}${missing}`);
+                }
+                if (result.conflict.conflicting)
+                    dependencies.output(
+                        `  conflict\twith rules ${result.conflict.ruleIds.join(", ")} on ${result.conflict.fields.join(", ")}`,
+                    );
+                dependencies.output(
+                    `  auto-apply\t${result.autoApplyEligible ? "eligible" : `blocked${result.autoApplyReason ? ` (${result.autoApplyReason})` : ""}`}`,
+                );
             }
         });
 }
@@ -2025,10 +2038,18 @@ function outputProgressionEvaluation(
         matched: boolean;
         trigger: string;
         evaluatedAt: string;
+        safety?: { outcome: string };
+        conflict?: { conflicting: boolean };
+        autoApplyEligible?: boolean;
     },
 ): void {
+    const flags: string[] = [];
+    if (evaluation.safety && evaluation.safety.outcome !== "pass") flags.push(`safety:${evaluation.safety.outcome}`);
+    if (evaluation.conflict?.conflicting) flags.push("conflict");
+    if (evaluation.autoApplyEligible) flags.push("auto-apply");
+    const suffix = flags.length > 0 ? `\t[${flags.join(", ")}]` : "";
     output(
-        `${evaluation.id}\t${evaluation.status}\t${evaluation.matched ? "matched" : "no-match"}\t${evaluation.trigger}\t${evaluation.ruleName} v${evaluation.ruleVersion}\t${evaluation.evaluatedAt}`,
+        `${evaluation.id}\t${evaluation.status}\t${evaluation.matched ? "matched" : "no-match"}\t${evaluation.trigger}\t${evaluation.ruleName} v${evaluation.ruleVersion}\t${evaluation.evaluatedAt}${suffix}`,
     );
 }
 

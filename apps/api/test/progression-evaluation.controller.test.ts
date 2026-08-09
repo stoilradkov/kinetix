@@ -48,6 +48,10 @@ function view(overrides: Partial<ProgressionEvaluationView> = {}): ProgressionEv
         contextRevisions: { session: 1 },
         contextFacts: { "rpe|session|w:-|f:-": { value: 7, sourceRevision: 1 } },
         contextFingerprint: "a".repeat(64),
+        safety: { outcome: "pass", findings: [], missingInputs: [] },
+        conflict: { conflicting: false, ruleIds: [], fields: [] },
+        autoApplyEligible: false,
+        autoApplyReason: "Rule is not enabled for automatic application",
         actions: [
             {
                 position: 0,
@@ -132,5 +136,38 @@ describe("ProgressionEvaluationController", () => {
     it("rejects a non-UUID session id", async () => {
         const controller = new ProgressionEvaluationController(evaluator(), repository(), profiles);
         await expect(controller.evaluateSession("not-a-uuid", {}, undefined, undefined)).rejects.toBeTruthy();
+    });
+
+    it("exposes the safety, conflict, and auto-apply verdict on the response", async () => {
+        const blocked = view({
+            status: "blocked",
+            safety: {
+                outcome: "block",
+                findings: [
+                    {
+                        policyKey: "max_load_increase",
+                        outcome: "block",
+                        message: "Proposed load increase of 20% exceeds the 5% limit",
+                        evidence: { proposedPercent: 20, limitPercent: 5 },
+                        missingInputs: [],
+                    },
+                ],
+                missingInputs: [],
+            },
+            conflict: { conflicting: true, ruleIds: [ids.rule], fields: ["next|scope:program:" + ids.scope + "|load"] },
+            autoApplyEligible: false,
+            autoApplyReason: "A safety policy blocked the change",
+        });
+        const controller = new ProgressionEvaluationController(
+            evaluator(),
+            repository({ readById: async () => blocked }),
+            profiles,
+        );
+        const detail = await controller.detail(ids.evaluation);
+        expect(detail.safety.outcome).toBe("block");
+        expect(detail.safety.findings[0]).toMatchObject({ policyKey: "max_load_increase", outcome: "block" });
+        expect(detail.conflict).toMatchObject({ conflicting: true, ruleIds: [ids.rule] });
+        expect(detail.autoApplyEligible).toBe(false);
+        expect(detail.autoApplyReason).toBe("A safety policy blocked the change");
     });
 });

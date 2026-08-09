@@ -208,10 +208,12 @@ import {
     type ProgressionPlanningReader,
     PROGRESSION_EVALUATION_REPOSITORY,
     PROGRESSION_CONTEXT_READER,
+    PROGRESSION_HEALTH_READER,
     APPLICABLE_PROGRESSION_RULE_READER,
     EVALUATE_PROGRESSION,
     EvaluateProgression,
     type ProgressionContextReader,
+    type ProgressionHealthReader,
     type ApplicableProgressionRuleReader,
     type ProgressionEvaluationRepository,
 } from "#src/modules/training/application/index";
@@ -229,6 +231,7 @@ import type {
     ProgressionRuleState,
 } from "#src/modules/training/domain/index";
 import { PROFILE_READER, ProfileModule, type ProfileReader } from "#src/modules/profile/index";
+import { HealthDataModule } from "#src/modules/health-data/index";
 import { DrizzleTrainingCatalogRepository } from "#src/modules/training/infrastructure/drizzle-training-catalog-repository";
 import { DrizzleBulkDryRunRepository } from "#src/modules/training/infrastructure/drizzle-bulk-dry-run-repository";
 import { DrizzleBulkExternalIdRegistry } from "#src/modules/training/infrastructure/drizzle-bulk-external-id-registry";
@@ -273,6 +276,7 @@ import { DrizzleProgressionPlanningReader } from "#src/modules/training/infrastr
 import { ProgressionRuleRevisionRegistrar } from "#src/modules/training/infrastructure/progression-rule-revision-registrar";
 import { DrizzleProgressionEvaluationRepository } from "#src/modules/training/infrastructure/drizzle-progression-evaluation-repository";
 import { DrizzleProgressionContextReader } from "#src/modules/training/infrastructure/drizzle-progression-context-reader";
+import { DrizzleProgressionHealthReader } from "#src/modules/training/infrastructure/drizzle-progression-health-reader";
 import {
     ProgressionEvaluationJobRegistrar,
     ProgressionEvaluationOutboxRegistrar,
@@ -325,7 +329,7 @@ import type { DomainEvent } from "#src/platform/domain/index";
 export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
 
 @Module({
-    imports: [ProfileModule],
+    imports: [ProfileModule, HealthDataModule],
     controllers: [
         TrainingCatalogController,
         ExerciseDefinitionController,
@@ -908,6 +912,8 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         { provide: PROGRESSION_EVALUATION_REPOSITORY, useExisting: DrizzleProgressionEvaluationRepository },
         DrizzleProgressionContextReader,
         { provide: PROGRESSION_CONTEXT_READER, useExisting: DrizzleProgressionContextReader },
+        DrizzleProgressionHealthReader,
+        { provide: PROGRESSION_HEALTH_READER, useExisting: DrizzleProgressionHealthReader },
         // The applicable-rule reader is served by the rule repository itself (it owns rule hydration).
         { provide: APPLICABLE_PROGRESSION_RULE_READER, useExisting: DrizzleProgressionRuleRepository },
         {
@@ -917,12 +923,22 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
                 contextReader: ProgressionContextReader,
                 ruleReader: ApplicableProgressionRuleReader,
                 repository: ProgressionEvaluationRepository,
-            ) => new EvaluateProgression({ unitOfWork, contextReader, ruleReader, repository, generateId: randomUUID }),
+                healthReader: ProgressionHealthReader,
+            ) =>
+                new EvaluateProgression({
+                    unitOfWork,
+                    contextReader,
+                    ruleReader,
+                    repository,
+                    healthReader,
+                    generateId: randomUUID,
+                }),
             inject: [
                 UNIT_OF_WORK,
                 PROGRESSION_CONTEXT_READER,
                 APPLICABLE_PROGRESSION_RULE_READER,
                 PROGRESSION_EVALUATION_REPOSITORY,
+                PROGRESSION_HEALTH_READER,
             ],
         },
         ProgressionEvaluationJobRegistrar,

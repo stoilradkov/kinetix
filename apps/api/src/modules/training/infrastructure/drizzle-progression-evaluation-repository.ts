@@ -26,6 +26,8 @@ import type {
     RuleScope,
     RuleTargetSelector,
     RuleTrigger,
+    SafetyFinding,
+    SafetyOutcome,
 } from "#src/modules/training/domain/index";
 
 const DEFAULT_LIST_LIMIT = 50;
@@ -76,6 +78,14 @@ export class DrizzleProgressionEvaluationRepository implements ProgressionEvalua
             contextRevisions: record.contextRevisions,
             contextFacts: record.contextFacts,
             contextFingerprint: record.contextFingerprint,
+            safetyOutcome: record.safety.outcome,
+            safetyFindings: record.safety.findings as unknown as Record<string, unknown>[],
+            safetyMissingInputs: [...record.safety.missingInputs],
+            conflict: record.conflict.conflicting,
+            conflictingRuleIds: [...record.conflict.ruleIds],
+            conflictFields: [...record.conflict.fields],
+            autoApplyEligible: record.autoApplyEligible,
+            autoApplyReason: record.autoApplyReason,
             evaluatedAt: record.evaluatedAt,
         });
         if (record.actions.length > 0)
@@ -185,6 +195,10 @@ function toView(record: ProgressionEvaluationRecord): ProgressionEvaluationView 
         contextRevisions: record.contextRevisions,
         contextFacts: record.contextFacts,
         contextFingerprint: record.contextFingerprint,
+        safety: record.safety,
+        conflict: record.conflict,
+        autoApplyEligible: record.autoApplyEligible,
+        autoApplyReason: record.autoApplyReason,
         actions: record.actions,
         evaluatedAt: record.evaluatedAt,
     };
@@ -213,6 +227,18 @@ function hydrate(
         contextRevisions: row.contextRevisions,
         contextFacts: row.contextFacts as unknown as Record<string, MetricFact>,
         contextFingerprint: row.contextFingerprint,
+        safety: {
+            outcome: row.safetyOutcome as SafetyOutcome,
+            findings: row.safetyFindings as unknown as SafetyFinding[],
+            missingInputs: row.safetyMissingInputs,
+        },
+        conflict: {
+            conflicting: row.conflict,
+            ruleIds: row.conflictingRuleIds,
+            fields: row.conflictFields,
+        },
+        autoApplyEligible: row.autoApplyEligible,
+        autoApplyReason: row.autoApplyReason,
         actions: actionRows.map(toActionView),
         evaluatedAt: row.evaluatedAt,
     };

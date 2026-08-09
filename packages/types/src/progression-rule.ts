@@ -252,6 +252,7 @@ export const safetyPolicySchema = z
                 maxWeeklyVolumeIncreasePercent: nonNegative.optional(),
                 minRecoveryHours: nonNegative.optional(),
                 minReadiness: nonNegative.optional(),
+                minSleepHours: nonNegative.optional(),
             })
             .strict(),
     })

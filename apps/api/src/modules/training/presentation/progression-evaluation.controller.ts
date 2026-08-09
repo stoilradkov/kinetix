@@ -119,6 +119,18 @@ function toResponse(view: ProgressionEvaluationView): unknown {
         contextRevisions: { ...view.contextRevisions },
         contextFacts: { ...view.contextFacts },
         contextFingerprint: view.contextFingerprint,
+        safety: {
+            outcome: view.safety.outcome,
+            findings: view.safety.findings.map(finding => ({ ...finding, missingInputs: [...finding.missingInputs] })),
+            missingInputs: [...view.safety.missingInputs],
+        },
+        conflict: {
+            conflicting: view.conflict.conflicting,
+            ruleIds: [...view.conflict.ruleIds],
+            fields: [...view.conflict.fields],
+        },
+        autoApplyEligible: view.autoApplyEligible,
+        autoApplyReason: view.autoApplyReason,
         actions: view.actions.map(action => ({ ...action, action: { ...action.action } })),
         evaluatedAt: view.evaluatedAt.toISOString(),
     };
