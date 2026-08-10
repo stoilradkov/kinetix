@@ -13,6 +13,8 @@ import {
     STRENGTH_WINDOW_FREQUENCY,
     STRENGTH_WINDOW_MUSCLE_SETS,
     STRENGTH_WORK_REPS,
+    ESTIMATED_1RM_PRIMARY,
+    estimated1RMFormulaKey,
     strengthWindowPeriod,
     strengthWindowScope,
     type ExerciseLoadModel,
@@ -145,7 +147,7 @@ function sessionFacts(
     };
 }
 
-const CONFIG = { rpeThreshold: 7, rirThreshold: 3 };
+const CONFIG: Readonly<Record<string, unknown>> = { rpeThreshold: 7, rirThreshold: 3 };
 
 function calculator(key: string): MetricCalculator {
     const found = STRENGTH_CALCULATORS.find(item => item.key === key);
@@ -153,7 +155,11 @@ function calculator(key: string): MetricCalculator {
     return found;
 }
 
-function runSession(key: string, facts: StrengthSessionFacts, config = CONFIG): readonly MetricResult[] {
+function runSession(
+    key: string,
+    facts: StrengthSessionFacts,
+    config: Readonly<Record<string, unknown>> = CONFIG,
+): readonly MetricResult[] {
     return calculator(key).calculate({
         target: { scope: { type: "session", id: facts.sessionId }, period: { kind: "all_time" }, dimensions: {} },
         facts,
@@ -467,5 +473,67 @@ describe("strength window calculators", () => {
         const result = historical(runWindow(STRENGTH_WINDOW_EXERCISE_VOLUME, facts))[0]!;
         expect(result!.scope).toEqual(strengthWindowScope("rolling-7", id(600), "2026-03-16"));
         expect(result!.period).toEqual({ kind: "rolling", days: 7, end: "2026-03-16" });
+    });
+});
+
+// -------------------------------------------------------------------------------------------------
+// estimated 1RM (issue #45, A3)
+// -------------------------------------------------------------------------------------------------
+
+describe("estimated_1rm.primary", () => {
+    it("takes the exercise's best eligible set and exposes every formula", () => {
+        const facts = sessionFacts([
+            occurrence(snapshot(), [
+                set({ reps: 5, externalLoad: { value: 100, unit: "kg" } }),
+                set({ reps: 8, externalLoad: { value: 80, unit: "kg" } }),
+            ]),
+        ]);
+        const result = historical(runSession(ESTIMATED_1RM_PRIMARY, facts))[0]!;
+        expect(result.value.numeric).toBe(116.63);
+        expect(result.value.unit).toBe("kg");
+        expect(result.value.details).toMatchObject({ reps: 5, loadKg: 100, basis: "historical" });
+        expect(result.value.details.formulas).toMatchObject({ epley: 116.67, brzycki: 112.5, oconner: 112.5 });
+        expect(result.dimensions).toEqual({ exercise: EX_A, basis: "historical" });
+    });
+
+    it("excludes warm-ups and out-of-range reps, emitting nothing when none are eligible", () => {
+        const facts = sessionFacts([
+            occurrence(snapshot(), [
+                set({ reps: 15, externalLoad: { value: 60, unit: "kg" } }),
+                set({ reps: 5, externalLoad: { value: 100, unit: "kg" } }, { setType: "warm_up" }),
+            ]),
+        ]);
+        expect(historical(runSession(ESTIMATED_1RM_PRIMARY, facts))).toEqual([]);
+    });
+
+    it("records the excluded sets and their reasons on the chosen result", () => {
+        const facts = sessionFacts([
+            occurrence(snapshot(), [
+                set({ reps: 5, externalLoad: { value: 100, unit: "kg" } }),
+                set({ reps: 15, externalLoad: { value: 60, unit: "kg" } }),
+            ]),
+        ]);
+        const result = historical(runSession(ESTIMATED_1RM_PRIMARY, facts))[0]!;
+        expect(result.value.details.excludedSets).toEqual([expect.objectContaining({ reason: "reps_out_of_range" })]);
+    });
+
+    it("honours a configured repetition cutoff", () => {
+        const facts = sessionFacts([
+            occurrence(snapshot(), [set({ reps: 8, externalLoad: { value: 90, unit: "kg" } })]),
+        ]);
+        expect(historical(runSession(ESTIMATED_1RM_PRIMARY, facts, { ...CONFIG, repCutoff: 5 }))).toEqual([]);
+        expect(historical(runSession(ESTIMATED_1RM_PRIMARY, facts)).length).toBe(1);
+    });
+});
+
+describe("estimated_1rm formula calculators", () => {
+    it("retains each formula's estimate for the primary-best set", () => {
+        const facts = sessionFacts([
+            occurrence(snapshot(), [set({ reps: 5, externalLoad: { value: 100, unit: "kg" } })]),
+        ]);
+        const epley = historical(runSession(estimated1RMFormulaKey("epley"), facts))[0]!;
+        expect(epley.value.numeric).toBe(116.67);
+        expect(epley.value.unit).toBe("kg");
+        expect(epley.value.details).toMatchObject({ formula: "epley", reps: 5, loadKg: 100 });
     });
 });

@@ -118,3 +118,66 @@ export const metricCalculatorCatalogResponseSchema = z
     })
     .strict();
 export type MetricCalculatorCatalogResponse = z.infer<typeof metricCalculatorCatalogResponseSchema>;
+
+/** The lifecycle status of a finding (design §16.8). */
+export const findingStatusSchema = z.enum(["active", "acknowledged", "dismissed", "expired"]);
+export type FindingStatusValue = z.infer<typeof findingStatusSchema>;
+
+/**
+ * One qualitative finding (issue #45, A3; design §16.2, §16.8) — a personal record and, later, trends. Like
+ * a derived metric it carries its identity, polymorphic scope, dimensions, comparison value, and lifecycle
+ * state; unlike a metric it also carries a review/feedback status and its evidence (the exact source set,
+ * session revision, and — for a personal record — the per-formula estimates and family labelling).
+ */
+export const findingResourceSchema = z
+    .object({
+        id: z.string().uuid(),
+        profileId: z.string().uuid().nullable(),
+        findingKey: z.string().min(1).max(180),
+        findingVersion: z.number().int().positive(),
+        scope: metricScopeSchema,
+        dimensions: metricDimensionsSchema,
+        numericValue: z.number().nullable(),
+        unit: z.string().max(40).nullable(),
+        status: findingStatusSchema,
+        evidence: z.record(z.string(), z.unknown()),
+        sourceFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+        state: metricStateSchema,
+        calculatedAt: z.string().datetime(),
+        supersededAt: z.string().datetime().nullable(),
+    })
+    .strict();
+export type FindingResource = z.infer<typeof findingResourceSchema>;
+
+export const findingQueryResponseSchema = z
+    .object({
+        items: z.array(findingResourceSchema),
+    })
+    .strict();
+export type FindingQueryResponse = z.infer<typeof findingQueryResponseSchema>;
+
+/**
+ * Stable, versioned display metadata for one personal-record type (issue #45, A3). It documents what a
+ * `record.*.vN` finding asserts — its label, prose, canonical unit, and the dimensions each record is broken
+ * down by — so a client can label and explain a record without re-deriving any value. Formulas and source
+ * evidence travel in each finding's `evidence`; rich rendering remains A6.
+ */
+export const personalRecordMetadataSchema = z
+    .object({
+        key: z.string().min(1).max(180),
+        version: z.number().int().positive(),
+        label: z.string().min(1).max(120),
+        description: z.string().min(1).max(600),
+        unit: z.string().min(1).max(40),
+        dimensions: z.array(z.string().min(1).max(80)),
+    })
+    .strict();
+export type PersonalRecordMetadata = z.infer<typeof personalRecordMetadataSchema>;
+
+export const personalRecordCatalogResponseSchema = z
+    .object({
+        schemaVersion: z.literal(1),
+        records: z.array(personalRecordMetadataSchema),
+    })
+    .strict();
+export type PersonalRecordCatalogResponse = z.infer<typeof personalRecordCatalogResponseSchema>;

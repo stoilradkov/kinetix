@@ -5,23 +5,33 @@ import { ApiOperation, ApiQuery, ApiTags } from "@nestjs/swagger";
 
 import {
     derivedMetricResourceSchema,
+    findingQueryResponseSchema,
+    findingResourceSchema,
     metricCalculatorCatalogResponseSchema,
     metricQueryResponseSchema,
     metricRebuildRequestSchema,
     metricRebuildResponseSchema,
+    personalRecordCatalogResponseSchema,
     type DerivedMetricResource,
+    type FindingQueryResponse,
+    type FindingResource,
     type MetricCalculatorCatalogResponse,
     type MetricQueryResponse,
     type MetricRebuildRequest,
     type MetricRebuildResponse,
+    type PersonalRecordCatalogResponse,
 } from "@kinetix/types";
 
 import {
     DERIVED_METRIC_REPOSITORY,
+    FINDING_REPOSITORY,
     REBUILD_METRICS,
+    personalRecordCatalogMetadata,
     strengthMetricCatalogMetadata,
     type DerivedMetricRepository,
     type DerivedMetricView,
+    type FindingRepository,
+    type FindingView,
     type RebuildMetrics,
 } from "#src/modules/training/application/index";
 import { ApplicationValidationError, type CommandContext } from "#src/platform/application/index";
@@ -40,6 +50,8 @@ export class AnalyticsMetricController {
     constructor(
         @Inject(DERIVED_METRIC_REPOSITORY)
         private readonly repository: DerivedMetricRepository,
+        @Inject(FINDING_REPOSITORY)
+        private readonly findings: FindingRepository,
         @Inject(REBUILD_METRICS)
         private readonly rebuild: RebuildMetrics,
     ) {}
@@ -72,6 +84,36 @@ export class AnalyticsMetricController {
     @ApiOperation({ summary: "List the registered metric calculators and their stable display metadata" })
     catalog(): MetricCalculatorCatalogResponse {
         return metricCalculatorCatalogResponseSchema.parse(strengthMetricCatalogMetadata());
+    }
+
+    @Get("records")
+    @ApiOperation({ summary: "Query current (and optionally superseded) personal-record findings" })
+    @ApiQuery({ name: "findingKey", required: false })
+    @ApiQuery({ name: "scopeType", required: false })
+    @ApiQuery({ name: "scopeId", required: false })
+    @ApiQuery({ name: "includeSuperseded", required: false })
+    @ApiQuery({ name: "limit", required: false })
+    async records(
+        @Query("findingKey") findingKey: string | undefined,
+        @Query("scopeType") scopeType: string | undefined,
+        @Query("scopeId") scopeId: string | undefined,
+        @Query("includeSuperseded") includeSuperseded: string | undefined,
+        @Query("limit") limit: string | undefined,
+    ): Promise<FindingQueryResponse> {
+        const views = await this.findings.query({
+            findingKey: nonEmpty(findingKey),
+            scopeType: nonEmpty(scopeType),
+            scopeId: nonEmpty(scopeId),
+            includeSuperseded: includeSuperseded === "true",
+            limit: parseLimit(limit),
+        });
+        return findingQueryResponseSchema.parse({ items: views.map(toFindingResource) });
+    }
+
+    @Get("records/catalog")
+    @ApiOperation({ summary: "List the personal-record types and their stable display metadata" })
+    recordsCatalog(): PersonalRecordCatalogResponse {
+        return personalRecordCatalogResponseSchema.parse(personalRecordCatalogMetadata());
     }
 
     @Post("rebuild")
@@ -118,6 +160,25 @@ function toResource(view: DerivedMetricView): DerivedMetricResource {
         sourceFingerprint: view.sourceFingerprint,
         state: view.state,
         stale: view.stale,
+        calculatedAt: view.calculatedAt.toISOString(),
+        supersededAt: view.supersededAt?.toISOString() ?? null,
+    });
+}
+
+function toFindingResource(view: FindingView): FindingResource {
+    return findingResourceSchema.parse({
+        id: view.id,
+        profileId: view.profileId,
+        findingKey: view.findingKey,
+        findingVersion: view.findingVersion,
+        scope: view.scope,
+        dimensions: view.dimensions,
+        numericValue: view.numericValue,
+        unit: view.unit,
+        status: view.status,
+        evidence: view.evidence,
+        sourceFingerprint: view.sourceFingerprint,
+        state: view.state,
         calculatedAt: view.calculatedAt.toISOString(),
         supersededAt: view.supersededAt?.toISOString() ?? null,
     });

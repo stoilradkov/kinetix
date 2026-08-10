@@ -199,7 +199,7 @@ function toView(record: DerivedMetricRecord): DerivedMetricView {
 class FakeReader implements StrengthMetricReader {
     sessionFacts: StrengthSessionFacts | null;
     windowSessions: StrengthWindowSessionFacts[] = [];
-    config: StrengthMetricConfig = { rpeThreshold: 7, rirThreshold: 3, calculatorVersion: 1 };
+    config: StrengthMetricConfig = { rpeThreshold: 7, rirThreshold: 3, repMin: 1, repCutoff: 12, calculatorVersion: 1 };
 
     constructor(sessionFacts: StrengthSessionFacts | null) {
         this.sessionFacts = sessionFacts;

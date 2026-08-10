@@ -93,8 +93,10 @@ import {
     adherenceFormulaResponseSchema,
     adherenceQueryResponseSchema,
     sessionAdherenceResponseSchema,
+    findingQueryResponseSchema,
     metricCalculatorCatalogResponseSchema,
     metricQueryResponseSchema,
+    personalRecordCatalogResponseSchema,
     metricRebuildResponseSchema,
     trainingSessionListResponseSchema,
     trainingSessionResponseSchema,
@@ -2337,6 +2339,70 @@ function registerTrainingAnalyticsCommands(training: Command, dependencies: Prog
                     dependencies.output(
                         `calculator\t${calculator.key}.v${calculator.version}\t${calculator.scopeKind}\t` +
                             `${calculator.label}\tunit=${calculator.unit ?? "—"}\tdims=${calculator.dimensions.join(",")}`,
+                    );
+        });
+
+    analytics
+        .command("records")
+        .description("Query current (and optionally superseded) personal-record findings (issue #45, A3)")
+        .option("--record <key>", "Filter by record key (e.g. record.max_load)")
+        .option("--scope-type <type>", "Filter by finding scope type (profile-exercise, profile-exercise-family)")
+        .option("--scope-id <id>", "Filter by finding scope id (profileId:exerciseId)")
+        .option("--include-superseded", "Include superseded (historical) records")
+        .option("--limit <count>", "Maximum results (1-200, default 50)")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(
+            async (options: {
+                record?: string;
+                scopeType?: string;
+                scopeId?: string;
+                includeSuperseded?: boolean;
+                limit?: string;
+                apiUrl?: string;
+                json?: boolean;
+            }) => {
+                const params = new URLSearchParams();
+                if (options.record !== undefined) params.set("findingKey", options.record);
+                if (options.scopeType !== undefined) params.set("scopeType", options.scopeType);
+                if (options.scopeId !== undefined) params.set("scopeId", options.scopeId);
+                if (options.includeSuperseded) params.set("includeSuperseded", "true");
+                if (options.limit !== undefined) params.set("limit", options.limit);
+                const query = params.toString();
+                const result = findingQueryResponseSchema.parse(
+                    await responseJson(
+                        dependencies,
+                        `${resolveApiUrl(options.apiUrl)}/training/analytics/records${query ? `?${query}` : ""}`,
+                    ),
+                );
+                if (options.json) dependencies.output(JSON.stringify(result));
+                else
+                    for (const item of result.items)
+                        dependencies.output(
+                            `record\t${item.findingKey}.v${item.findingVersion}\t${item.scope.type}:${item.scope.id}\t` +
+                                `value=${item.numericValue ?? "—"}${item.unit ?? ""}\t` +
+                                `dims=${Object.entries(item.dimensions)
+                                    .map(([key, value]) => `${key}=${value}`)
+                                    .join(",")}\tstate=${item.state}`,
+                        );
+            },
+        );
+
+    analytics
+        .command("records-catalog")
+        .description("List the personal-record types and their stable display metadata")
+        .option("--api-url <url>", "Override the Kinetix API URL")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (options: { apiUrl?: string; json?: boolean }) => {
+            const result = personalRecordCatalogResponseSchema.parse(
+                await responseJson(dependencies, `${resolveApiUrl(options.apiUrl)}/training/analytics/records/catalog`),
+            );
+            if (options.json) dependencies.output(JSON.stringify(result));
+            else
+                for (const record of result.records)
+                    dependencies.output(
+                        `record\t${record.key}.v${record.version}\t${record.label}\tunit=${record.unit}\t` +
+                            `dims=${record.dimensions.join(",")}`,
                     );
         });
 

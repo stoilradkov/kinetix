@@ -199,6 +199,47 @@ export function metricFingerprintDescriptor(
     };
 }
 
+/**
+ * The stable descriptor of a *finding's* identity — its key plus its natural coordinates (scope and
+ * dimensions; findings carry no period). Hashing this yields the natural key a partial unique index guards
+ * so at most one `current` finding exists per (key, scope, dimensions); the finding version is excluded so a
+ * new version supersedes rather than coexists (design §5.10, mirroring {@link metricNaturalKeyDescriptor}).
+ */
+export function findingNaturalKeyDescriptor(
+    findingKey: string,
+    scope: MetricScope,
+    dimensions: MetricDimensions,
+): Readonly<Record<string, unknown>> {
+    return { key: findingKey, scopeType: scope.type, scopeId: scope.id, dimensions };
+}
+
+/**
+ * The stable descriptor of everything a finding *depends on* — its identity, version, the versioned config,
+ * the value/evidence it asserts, and the sorted source revisions. Hashing this yields the finding source
+ * fingerprint; an unchanged fingerprint lets a recompute skip the rewrite, so a personal record that is not
+ * beaten is a no-op on replay while a genuinely improved record supersedes the old one (design §16.8).
+ */
+export function findingFingerprintDescriptor(
+    findingKey: string,
+    version: number,
+    config: Readonly<Record<string, unknown>>,
+    scope: MetricScope,
+    dimensions: MetricDimensions,
+    evidence: Readonly<Record<string, unknown>>,
+    inputs: readonly MetricInputRef[],
+): Readonly<Record<string, unknown>> {
+    return {
+        key: findingKey,
+        version,
+        config,
+        scopeType: scope.type,
+        scopeId: scope.id,
+        dimensions,
+        evidence,
+        inputs: sortInputRefs(inputs),
+    };
+}
+
 // -------------------------------------------------------------------------------------------------
 // Invalidation scopes
 // -------------------------------------------------------------------------------------------------

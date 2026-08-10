@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import type {
     DerivedMetricRepository,
     DerivedMetricView,
+    FindingRepository,
+    FindingView,
     RebuildMetrics,
 } from "#src/modules/training/application/index";
 import { AnalyticsMetricController } from "#src/modules/training/presentation/index";
@@ -32,8 +34,31 @@ function view(overrides: Partial<DerivedMetricView> = {}): DerivedMetricView {
     };
 }
 
-function createController(views: DerivedMetricView[]) {
+function finding(overrides: Partial<FindingView> = {}): FindingView {
+    return {
+        id: "0198a4db-d8da-7000-8000-00000000f010",
+        profileId: "0198a4db-d8da-7000-8000-00000000e001",
+        findingKey: "record.max_load",
+        findingVersion: 1,
+        scope: { type: "profile-exercise", id: "p:e" },
+        dimensions: { basis: "historical", aggregation: "exercise" },
+        numericValue: 140,
+        unit: "kg",
+        status: "active",
+        evidence: { exerciseId: "e", numericValue: 140, unit: "kg" },
+        sourceFingerprint: "b".repeat(64),
+        state: "current",
+        reviewAt: null,
+        expiresAt: null,
+        calculatedAt: now,
+        supersededAt: null,
+        ...overrides,
+    };
+}
+
+function createController(views: DerivedMetricView[], findings: FindingView[] = []) {
     const repository = { query: vi.fn(async () => views) };
+    const findingRepository = { query: vi.fn(async () => findings) };
     const rebuild = {
         fromPendingInvalidations: vi.fn(async () => ({ recomputed: 3, drainedInvalidations: 2 })),
         full: vi.fn(async () => ({ recomputed: 9, drainedInvalidations: 0 })),
@@ -41,9 +66,10 @@ function createController(views: DerivedMetricView[]) {
     };
     const controller = new AnalyticsMetricController(
         repository as unknown as DerivedMetricRepository,
+        findingRepository as unknown as FindingRepository,
         rebuild as unknown as RebuildMetrics,
     );
-    return { controller, repository, rebuild };
+    return { controller, repository, findingRepository, rebuild };
 }
 
 describe("AnalyticsMetricController.metrics", () => {
@@ -86,6 +112,57 @@ describe("AnalyticsMetricController.catalog", () => {
         expect(workReps).toMatchObject({ version: 1, unit: "reps", scopeKind: "session" });
         expect(workReps?.dimensions).toContain("basis");
         expect(response.calculators.some(c => c.scopeKind === "window")).toBe(true);
+    });
+
+    it("includes the six 1RM formulas and the primary estimate", () => {
+        const { controller } = createController([]);
+        const keys = controller.catalog().calculators.map(c => c.key);
+        for (const key of [
+            "estimated_1rm.primary",
+            "estimated_1rm.epley",
+            "estimated_1rm.brzycki",
+            "estimated_1rm.lombardi",
+            "estimated_1rm.mayhew",
+            "estimated_1rm.oconner",
+            "estimated_1rm.wathan",
+        ])
+            expect(keys).toContain(key);
+    });
+});
+
+describe("AnalyticsMetricController.records", () => {
+    it("maps current record findings to the wire resource and defaults the limit", async () => {
+        const { controller, findingRepository } = createController([], [finding()]);
+        const response = await controller.records(
+            "record.max_load",
+            "profile-exercise",
+            undefined,
+            undefined,
+            undefined,
+        );
+        expect(response.items).toHaveLength(1);
+        expect(response.items[0]!).toMatchObject({ findingKey: "record.max_load", numericValue: 140, unit: "kg" });
+        expect(findingRepository.query).toHaveBeenCalledWith({
+            findingKey: "record.max_load",
+            scopeType: "profile-exercise",
+            scopeId: undefined,
+            includeSuperseded: false,
+            limit: 50,
+        });
+    });
+});
+
+describe("AnalyticsMetricController.recordsCatalog", () => {
+    it("returns the versioned record metadata parsed through the wire contract", () => {
+        const { controller } = createController([]);
+        const response = controller.recordsCatalog();
+        expect(response.schemaVersion).toBe(1);
+        expect(response.records.map(r => r.key)).toEqual([
+            "record.max_load",
+            "record.estimated_1rm",
+            "record.rep_max_at_load",
+            "record.exercise_volume",
+        ]);
     });
 });
 

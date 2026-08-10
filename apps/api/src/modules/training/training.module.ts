@@ -209,10 +209,16 @@ import {
     STRENGTH_METRIC_READER,
     PROJECT_STRENGTH_METRICS,
     ProjectStrengthMetrics,
+    FINDING_REPOSITORY,
+    PERSONAL_RECORDS_READER,
+    PROJECT_PERSONAL_RECORDS,
+    ProjectPersonalRecords,
     type MetricContextReader,
     type DerivedMetricRepository,
     type AnalyticsInvalidationStore,
     type StrengthMetricReader,
+    type FindingRepository,
+    type PersonalRecordsReader,
     PROGRESSION_RULE_REPOSITORY,
     PROGRESSION_RULE_MUTATION_SERVICE,
     PROGRESSION_RULE_COMMANDS,
@@ -304,6 +310,12 @@ import {
     StrengthMetricsJobRegistrar,
     StrengthMetricsOutboxRegistrar,
 } from "#src/modules/training/infrastructure/strength-metrics-registrars";
+import { DrizzleFindingRepository } from "#src/modules/training/infrastructure/drizzle-finding-repository";
+import { DrizzlePersonalRecordsReader } from "#src/modules/training/infrastructure/drizzle-personal-records-reader";
+import {
+    PersonalRecordsJobRegistrar,
+    PersonalRecordsOutboxRegistrar,
+} from "#src/modules/training/infrastructure/personal-records-registrars";
 import {
     MetricRebuildJobRegistrar,
     MetricInvalidationOutboxRegistrar,
@@ -998,6 +1010,23 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         StrengthCalculatorRegistrar,
         StrengthMetricsJobRegistrar,
         StrengthMetricsOutboxRegistrar,
+        // Personal records + estimated 1RM (issue #45, A3; design §16.5, §16.8): the findings projection
+        // store, the bounded eligible-history/family/config reader, the per-session records projection use
+        // case, and the job/outbox registrars. The six 1RM formula + primary calculators register through
+        // the strength bundle above and surface via the shared A1 metric query + rebuild endpoints; records
+        // surface as findings through the analytics controller's records endpoints.
+        DrizzleFindingRepository,
+        { provide: FINDING_REPOSITORY, useExisting: DrizzleFindingRepository },
+        DrizzlePersonalRecordsReader,
+        { provide: PERSONAL_RECORDS_READER, useExisting: DrizzlePersonalRecordsReader },
+        {
+            provide: PROJECT_PERSONAL_RECORDS,
+            useFactory: (unitOfWork: UnitOfWork, reader: PersonalRecordsReader, repository: FindingRepository) =>
+                new ProjectPersonalRecords({ unitOfWork, reader, repository, generateId: randomUUID }),
+            inject: [UNIT_OF_WORK, PERSONAL_RECORDS_READER, FINDING_REPOSITORY],
+        },
+        PersonalRecordsJobRegistrar,
+        PersonalRecordsOutboxRegistrar,
         // Progression evaluation (issue #40, G2): the immutable-context reader, the applicable-rule
         // reader, the append-only evaluation projection, the EvaluateProgression orchestration, and the
         // job/outbox registrars that evaluate rules against a completed session's exact revisions.

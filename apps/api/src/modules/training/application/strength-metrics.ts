@@ -12,6 +12,9 @@ import type { UnitOfWork } from "#src/platform/application/unit-of-work";
 import type { Clock } from "#src/platform/domain/index";
 
 import {
+    ESTIMATED_1RM_PRIMARY,
+    ONE_RM_FORMULAS,
+    estimated1RMFormulaKey,
     STRENGTH_CALCULATOR_KEYS,
     STRENGTH_DIRECT_MUSCLE_SETS,
     STRENGTH_EFFECTIVE_VOLUME,
@@ -362,6 +365,16 @@ export interface StrengthMetricCatalogMetadata {
     readonly calculators: readonly StrengthCalculatorMetadataView[];
 }
 
+/** Human labels for the six retained estimated-1RM formulas (design §16.5). */
+const ONE_RM_FORMULA_LABELS: Record<(typeof ONE_RM_FORMULAS)[number], string> = {
+    epley: "Epley",
+    brzycki: "Brzycki",
+    lombardi: "Lombardi",
+    mayhew: "Mayhew",
+    oconner: "O'Conner",
+    wathan: "Wathan",
+};
+
 const CALCULATOR_METADATA: readonly StrengthCalculatorMetadataView[] = [
     m(
         STRENGTH_WORK_REPS,
@@ -428,6 +441,24 @@ const CALCULATOR_METADATA: readonly StrengthCalculatorMetadataView[] = [
         "Occurrences of the exercise that carried eligible working sets this session.",
     ),
     m(
+        ESTIMATED_1RM_PRIMARY,
+        "Estimated 1RM (primary)",
+        "kg",
+        "session",
+        ["exercise", "basis"],
+        "Median of the six formula estimates for the exercise's best eligible set (completed non-warm-up, 1–cutoff reps); details expose every formula and eligibility decision.",
+    ),
+    ...ONE_RM_FORMULAS.map(formula =>
+        m(
+            estimated1RMFormulaKey(formula),
+            `Estimated 1RM (${ONE_RM_FORMULA_LABELS[formula]})`,
+            "kg",
+            "session",
+            ["exercise", "basis"],
+            `${ONE_RM_FORMULA_LABELS[formula]}'s estimated one-rep max for the exercise's primary-best eligible set; retained alongside the other five formulas.`,
+        ),
+    ),
+    m(
         STRENGTH_WINDOW_EXERCISE_VOLUME,
         "Windowed exercise volume",
         "kg",
@@ -478,6 +509,8 @@ function configRecord(config: StrengthMetricConfig): Readonly<Record<string, unk
     return {
         rpeThreshold: config.rpeThreshold,
         rirThreshold: config.rirThreshold,
+        repMin: config.repMin,
+        repCutoff: config.repCutoff,
         calculatorVersion: config.calculatorVersion,
     };
 }

@@ -19,6 +19,17 @@ import type { ExerciseSnapshotV1 } from "#src/modules/training/domain/exercise-d
 import type { RepetitionSemantics } from "#src/modules/training/domain/catalog";
 import { effectiveLoadKg, workReps, type PerformedSetState } from "#src/modules/training/domain/session-strength";
 import {
+    ESTIMATED_1RM_DEFAULT_REP_CUTOFF,
+    ESTIMATED_1RM_DEFAULT_REP_MIN,
+    ESTIMATED_1RM_PRIMARY,
+    ONE_RM_FORMULAS,
+    estimated1RMFormulaKey,
+    is1RMEligibleReps,
+    oneRmEstimate,
+    type OneRmEstimate,
+    type OneRmFormula,
+} from "#src/modules/training/domain/estimated-1rm";
+import {
     isoWeekStart,
     type MetricCalculator,
     type MetricDependency,
@@ -38,11 +49,17 @@ export type MetricBasis = "historical" | "latest";
 export const METRIC_BASES: readonly MetricBasis[] = ["historical", "latest"];
 
 /**
- * Default hard-set thresholds when a profile omits them (design §16.4: "RPE ≥ 7 or RIR ≤ 3"). The `V1`
- * suffix pins these to the calculator version, mirroring adherence's `*_V1` domain constants; a profile
- * may override them through the loaded {@link StrengthMetricConfig}, which folds into the fingerprint.
+ * Default hard-set thresholds and 1RM eligibility window when a profile omits them (design §16.4: "RPE ≥ 7
+ * or RIR ≤ 3"; §16.5: "1–12 work repetitions by default"). The `V1` suffix pins these to the calculator
+ * version, mirroring adherence's `*_V1` domain constants; a profile may override them through the loaded
+ * {@link StrengthMetricConfig}, which folds into the fingerprint.
  */
-export const STRENGTH_METRIC_DEFAULTS_V1 = { rpeThreshold: 7, rirThreshold: 3 } as const;
+export const STRENGTH_METRIC_DEFAULTS_V1 = {
+    rpeThreshold: 7,
+    rirThreshold: 3,
+    repMin: ESTIMATED_1RM_DEFAULT_REP_MIN,
+    repCutoff: ESTIMATED_1RM_DEFAULT_REP_CUTOFF,
+} as const;
 
 /** Source-entity types recorded as input references (they double as invalidation-scope keys). */
 export const STRENGTH_METRIC_SESSION_ENTITY = "session";
@@ -104,6 +121,9 @@ export interface StrengthWindowFacts {
 export interface StrengthMetricConfig {
     readonly rpeThreshold: number;
     readonly rirThreshold: number;
+    /** Inclusive 1RM eligibility repetition window (design §16.5); `repCutoff` is the configurable cutoff. */
+    readonly repMin: number;
+    readonly repCutoff: number;
     readonly calculatorVersion: number;
 }
 
@@ -322,6 +342,151 @@ const frequencyCalculator: MetricCalculator<StrengthSessionFacts> = strengthSess
 );
 
 // -------------------------------------------------------------------------------------------------
+// Estimated-1RM session calculators (issue #45, A3; design §16.5; PRD AN-3)
+// -------------------------------------------------------------------------------------------------
+
+/** The chosen 1RM estimate for one exercise group plus the eligibility decisions that produced it. */
+interface OneRmReading {
+    readonly estimate: OneRmEstimate;
+    readonly setId: string;
+    readonly excludedSets: readonly ExcludedSet[];
+    readonly eligibleSetCount: number;
+}
+
+/**
+ * Choose the 1RM estimate for one exercise group (design §16.5): the eligible set — completed/partial,
+ * non-warm-up (already filtered), load present, raw reps in the configured `[repMin, repCutoff]` window —
+ * whose primary median estimate is highest, ties broken by load then set id for determinism. Every excluded
+ * set's reason is recorded. Reps use the raw recorded count: 1RM formulas are calibrated per performed set,
+ * so the per-side work-rep doubling used for volume never applies here. Returns null when no set is eligible.
+ */
+function oneRmReading(group: ExerciseGroup, config: StrengthMetricConfig): OneRmReading | null {
+    const excluded: ExcludedSet[] = [];
+    let best: { estimate: OneRmEstimate; setId: string } | null = null;
+    let eligibleCount = 0;
+    for (const set of group.eligibleSets) {
+        const reps = set.measurements.reps;
+        if (reps === null) {
+            excluded.push({ setId: set.id, reason: "missing_reps" });
+            continue;
+        }
+        if (!is1RMEligibleReps(reps, config.repMin, config.repCutoff)) {
+            excluded.push({ setId: set.id, reason: "reps_out_of_range" });
+            continue;
+        }
+        const load = effectiveLoadKg(set, group.snapshot.loadModel);
+        if (load === null || load.compare(0) <= 0) {
+            excluded.push({ setId: set.id, reason: "missing_load" });
+            continue;
+        }
+        const estimate = oneRmEstimate(load.toNumber(), reps);
+        if (estimate.primary === null) {
+            excluded.push({ setId: set.id, reason: "not_estimable" });
+            continue;
+        }
+        eligibleCount += 1;
+        const candidate = { estimate, setId: set.id };
+        if (best === null || beatsOneRm(candidate, best)) best = candidate;
+    }
+    return best === null
+        ? null
+        : { estimate: best.estimate, setId: best.setId, excludedSets: excluded, eligibleSetCount: eligibleCount };
+}
+
+/** Deterministic "is a better session-best 1RM set": higher primary, then heavier load, then lower set id. */
+function beatsOneRm(
+    candidate: { estimate: OneRmEstimate; setId: string },
+    best: { estimate: OneRmEstimate; setId: string },
+): boolean {
+    const candidatePrimary = candidate.estimate.primary ?? Number.NEGATIVE_INFINITY;
+    const bestPrimary = best.estimate.primary ?? Number.NEGATIVE_INFINITY;
+    if (candidatePrimary !== bestPrimary) return candidatePrimary > bestPrimary;
+    if (candidate.estimate.loadKg !== best.estimate.loadKg) return candidate.estimate.loadKg > best.estimate.loadKg;
+    return candidate.setId < best.setId;
+}
+
+/** Emit one 1RM result per (exercise, basis) that carries a 1RM-eligible set, from a per-group reading. */
+function perExercise1RM(
+    facts: StrengthSessionFacts,
+    config: StrengthMetricConfig,
+    reading: (group: ExerciseGroup, chosen: OneRmReading) => Reading,
+): MetricResult[] {
+    const results: MetricResult[] = [];
+    const scope: MetricScope = { type: "session", id: facts.sessionId };
+    const period: MetricPeriod = { kind: "point", at: facts.localDate };
+    for (const basis of METRIC_BASES) {
+        for (const group of exerciseGroups(facts.occurrences, basis)) {
+            const chosen = oneRmReading(group, config);
+            if (chosen === null) continue; // no 1RM-eligible set for this exercise on this basis
+            const read = reading(group, chosen);
+            results.push({
+                scope,
+                period,
+                dimensions: { exercise: group.exerciseId, basis },
+                value: {
+                    numeric: read.numeric,
+                    text: null,
+                    unit: read.unit,
+                    details: { basis, exerciseVersion: group.exerciseVersion, ...read.details },
+                },
+                inputs: sessionExerciseInputs(facts, group.exerciseId, group.exerciseVersion),
+            });
+        }
+    }
+    return results;
+}
+
+/**
+ * The primary estimated 1RM per exercise: the median of the six formula results (design §16.5) for the
+ * exercise's best eligible set. Details expose every formula, the chosen set, the eligibility window, and
+ * the excluded sets — so the primary is fully explainable without re-deriving any value.
+ */
+const primary1RMCalculator: MetricCalculator<StrengthSessionFacts> = strengthSessionCalculator(
+    ESTIMATED_1RM_PRIMARY,
+    (facts, config) =>
+        perExercise1RM(facts, config, (_group, chosen) => ({
+            numeric: chosen.estimate.primary,
+            unit: KG_UNIT,
+            details: {
+                setId: chosen.setId,
+                reps: chosen.estimate.reps,
+                loadKg: chosen.estimate.loadKg,
+                formulas: chosen.estimate.formulas,
+                repMin: config.repMin,
+                repCutoff: config.repCutoff,
+                eligibleSetCount: chosen.eligibleSetCount,
+                excludedSets: chosen.excludedSets,
+            },
+        })),
+);
+
+/** One retained calculator per formula (design §16.5): that formula's estimate for the primary-best set. */
+const formula1RMCalculators: readonly MetricCalculator<StrengthSessionFacts>[] = ONE_RM_FORMULAS.map(
+    (formula: OneRmFormula) =>
+        strengthSessionCalculator(estimated1RMFormulaKey(formula), (facts, config) =>
+            perExercise1RM(facts, config, (_group, chosen) => ({
+                numeric: chosen.estimate.formulas[formula] ?? null,
+                unit: KG_UNIT,
+                details: {
+                    formula,
+                    setId: chosen.setId,
+                    reps: chosen.estimate.reps,
+                    loadKg: chosen.estimate.loadKg,
+                    repMin: config.repMin,
+                    repCutoff: config.repCutoff,
+                    excludedSets: chosen.excludedSets,
+                },
+            })),
+        ),
+);
+
+/** Every estimated-1RM session calculator (six formulas + the primary median), in stable order. */
+export const ESTIMATED_1RM_CALCULATORS: readonly MetricCalculator[] = [
+    ...formula1RMCalculators,
+    primary1RMCalculator,
+] as MetricCalculator[];
+
+// -------------------------------------------------------------------------------------------------
 // Window-scope calculators
 // -------------------------------------------------------------------------------------------------
 
@@ -384,6 +549,7 @@ export const STRENGTH_SESSION_CALCULATORS: readonly MetricCalculator[] = [
     hardSetsCalculator,
     timeUnderTensionCalculator,
     frequencyCalculator,
+    ...ESTIMATED_1RM_CALCULATORS,
 ] as MetricCalculator[];
 
 export const STRENGTH_WINDOW_CALCULATORS: readonly MetricCalculator[] = [
@@ -785,6 +951,8 @@ export function resolveConfig(config: Readonly<Record<string, unknown>>): Streng
     return {
         rpeThreshold: numberOr(config.rpeThreshold, STRENGTH_METRIC_DEFAULTS_V1.rpeThreshold),
         rirThreshold: numberOr(config.rirThreshold, STRENGTH_METRIC_DEFAULTS_V1.rirThreshold),
+        repMin: numberOr(config.repMin, STRENGTH_METRIC_DEFAULTS_V1.repMin),
+        repCutoff: numberOr(config.repCutoff, STRENGTH_METRIC_DEFAULTS_V1.repCutoff),
         calculatorVersion: numberOr(config.calculatorVersion, 1),
     };
 }

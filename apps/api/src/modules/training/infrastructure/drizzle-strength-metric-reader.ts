@@ -16,6 +16,7 @@ import {
 import { entityId } from "#src/platform/domain/index";
 
 import {
+    STRENGTH_METRIC_DEFAULTS_V1,
     strengthWindowBounds,
     type ExerciseSnapshotV1,
     type MetricTarget,
@@ -75,13 +76,27 @@ export class DrizzleStrengthMetricReader implements StrengthMetricReader {
             .select({
                 rpe: trainingProfiles.hardSetRpeThreshold,
                 rir: trainingProfiles.hardSetRirThreshold,
+                repCutoff: trainingProfiles.oneRepMaxRepCutoff,
                 calculatorVersion: trainingProfiles.calculatorVersion,
             })
             .from(trainingProfiles)
             .where(eq(trainingProfiles.profileId, profileId))
             .limit(1);
-        if (row === undefined) return { rpeThreshold: 7, rirThreshold: 3, calculatorVersion: 1 };
-        return { rpeThreshold: Number(row.rpe), rirThreshold: row.rir, calculatorVersion: row.calculatorVersion };
+        if (row === undefined)
+            return {
+                rpeThreshold: STRENGTH_METRIC_DEFAULTS_V1.rpeThreshold,
+                rirThreshold: STRENGTH_METRIC_DEFAULTS_V1.rirThreshold,
+                repMin: STRENGTH_METRIC_DEFAULTS_V1.repMin,
+                repCutoff: STRENGTH_METRIC_DEFAULTS_V1.repCutoff,
+                calculatorVersion: 1,
+            };
+        return {
+            rpeThreshold: Number(row.rpe),
+            rirThreshold: row.rir,
+            repMin: STRENGTH_METRIC_DEFAULTS_V1.repMin,
+            repCutoff: row.repCutoff,
+            calculatorVersion: row.calculatorVersion,
+        };
     }
 
     async sessionDatesInRange(
@@ -247,6 +262,8 @@ function configRecord(config: StrengthMetricConfig): Readonly<Record<string, unk
     return {
         rpeThreshold: config.rpeThreshold,
         rirThreshold: config.rirThreshold,
+        repMin: config.repMin,
+        repCutoff: config.repCutoff,
         calculatorVersion: config.calculatorVersion,
     };
 }
