@@ -33,6 +33,8 @@ export * from "#src/modules/training/application/adherence-queries";
 export * from "#src/modules/training/application/metric-projection";
 export * from "#src/modules/training/application/strength-metrics";
 export * from "#src/modules/training/application/personal-records";
+export * from "#src/modules/training/application/running-metrics";
+export * from "#src/modules/training/application/running-records";
 export * from "#src/modules/training/application/progression-rules";
 export * from "#src/modules/training/application/progression-evaluation";
 export * from "#src/modules/training/application/progression-approval";

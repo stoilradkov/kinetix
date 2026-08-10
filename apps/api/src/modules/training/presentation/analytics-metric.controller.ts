@@ -27,6 +27,8 @@ import {
     FINDING_REPOSITORY,
     REBUILD_METRICS,
     personalRecordCatalogMetadata,
+    runningMetricCatalogMetadata,
+    runningRecordCatalogMetadata,
     strengthMetricCatalogMetadata,
     type DerivedMetricRepository,
     type DerivedMetricView,
@@ -83,7 +85,13 @@ export class AnalyticsMetricController {
     @Get("metrics/catalog")
     @ApiOperation({ summary: "List the registered metric calculators and their stable display metadata" })
     catalog(): MetricCalculatorCatalogResponse {
-        return metricCalculatorCatalogResponseSchema.parse(strengthMetricCatalogMetadata());
+        return metricCalculatorCatalogResponseSchema.parse({
+            schemaVersion: 1,
+            calculators: [
+                ...strengthMetricCatalogMetadata().calculators,
+                ...runningMetricCatalogMetadata().calculators,
+            ],
+        });
     }
 
     @Get("records")
@@ -113,7 +121,10 @@ export class AnalyticsMetricController {
     @Get("records/catalog")
     @ApiOperation({ summary: "List the personal-record types and their stable display metadata" })
     recordsCatalog(): PersonalRecordCatalogResponse {
-        return personalRecordCatalogResponseSchema.parse(personalRecordCatalogMetadata());
+        return personalRecordCatalogResponseSchema.parse({
+            schemaVersion: 1,
+            records: [...personalRecordCatalogMetadata().records, ...runningRecordCatalogMetadata().records],
+        });
     }
 
     @Post("rebuild")

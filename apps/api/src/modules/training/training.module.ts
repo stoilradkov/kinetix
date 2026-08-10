@@ -213,12 +213,20 @@ import {
     PERSONAL_RECORDS_READER,
     PROJECT_PERSONAL_RECORDS,
     ProjectPersonalRecords,
+    RUNNING_METRIC_READER,
+    PROJECT_RUNNING_METRICS,
+    ProjectRunningMetrics,
+    RUNNING_RECORDS_READER,
+    PROJECT_RUNNING_RECORDS,
+    ProjectRunningRecords,
     type MetricContextReader,
     type DerivedMetricRepository,
     type AnalyticsInvalidationStore,
     type StrengthMetricReader,
     type FindingRepository,
     type PersonalRecordsReader,
+    type RunningMetricReader,
+    type RunningRecordsReader,
     PROGRESSION_RULE_REPOSITORY,
     PROGRESSION_RULE_MUTATION_SERVICE,
     PROGRESSION_RULE_COMMANDS,
@@ -316,6 +324,21 @@ import {
     PersonalRecordsJobRegistrar,
     PersonalRecordsOutboxRegistrar,
 } from "#src/modules/training/infrastructure/personal-records-registrars";
+import {
+    DrizzleRunningMetricContextReader,
+    DrizzleRunningMetricReader,
+} from "#src/modules/training/infrastructure/drizzle-running-metric-reader";
+import { CompositeMetricContextReader } from "#src/modules/training/infrastructure/composite-metric-context-reader";
+import { DrizzleRunningRecordsReader } from "#src/modules/training/infrastructure/drizzle-running-records-reader";
+import {
+    RunningCalculatorRegistrar,
+    RunningMetricsJobRegistrar,
+    RunningMetricsOutboxRegistrar,
+} from "#src/modules/training/infrastructure/running-metrics-registrars";
+import {
+    RunningRecordsJobRegistrar,
+    RunningRecordsOutboxRegistrar,
+} from "#src/modules/training/infrastructure/running-records-registrars";
 import {
     MetricRebuildJobRegistrar,
     MetricInvalidationOutboxRegistrar,
@@ -972,7 +995,18 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         DrizzleStrengthMetricReader,
         { provide: STRENGTH_METRIC_READER, useExisting: DrizzleStrengthMetricReader },
         DrizzleStrengthMetricContextReader,
-        { provide: METRIC_CONTEXT_READER, useExisting: DrizzleStrengthMetricContextReader },
+        DrizzleRunningMetricReader,
+        { provide: RUNNING_METRIC_READER, useExisting: DrizzleRunningMetricReader },
+        DrizzleRunningMetricContextReader,
+        // The generic A1 rebuild resolves facts through one context reader; a session/window scope alone
+        // can't tell a strength metric from a running metric (both share those scope types), so the
+        // composite routes by calculator-key prefix to the strength or running context reader (issue #46).
+        {
+            provide: METRIC_CONTEXT_READER,
+            useFactory: (strength: MetricContextReader, running: MetricContextReader) =>
+                new CompositeMetricContextReader(strength, running),
+            inject: [DrizzleStrengthMetricContextReader, DrizzleRunningMetricContextReader],
+        },
         MetricCalculatorRegistry,
         { provide: METRIC_CALCULATOR_REGISTRY, useExisting: MetricCalculatorRegistry },
         {
@@ -1027,6 +1061,31 @@ export const TRAINING_MODULE_DEFINITION = Symbol("TRAINING_MODULE_DEFINITION");
         },
         PersonalRecordsJobRegistrar,
         PersonalRecordsOutboxRegistrar,
+        // Running metrics + records (issue #46, A4; design §16.6): the per-session running projection use
+        // case (the discovery path the generic A1 rebuild cannot seed), the bounded running read adapter,
+        // the running context reader that the composite routes `running.*` keys to, and the calculator/job/
+        // outbox registrars. Running metrics surface through the shared A1 metric query + rebuild endpoints;
+        // running records surface as findings through the analytics controller's records endpoints. Two
+        // separate load models (session-RPE, Edwards) stay separately keyed and are never combined (§16.6).
+        {
+            provide: PROJECT_RUNNING_METRICS,
+            useFactory: (unitOfWork: UnitOfWork, reader: RunningMetricReader, repository: DerivedMetricRepository) =>
+                new ProjectRunningMetrics({ unitOfWork, reader, repository, generateId: randomUUID }),
+            inject: [UNIT_OF_WORK, RUNNING_METRIC_READER, DERIVED_METRIC_REPOSITORY],
+        },
+        RunningCalculatorRegistrar,
+        RunningMetricsJobRegistrar,
+        RunningMetricsOutboxRegistrar,
+        DrizzleRunningRecordsReader,
+        { provide: RUNNING_RECORDS_READER, useExisting: DrizzleRunningRecordsReader },
+        {
+            provide: PROJECT_RUNNING_RECORDS,
+            useFactory: (unitOfWork: UnitOfWork, reader: RunningRecordsReader, repository: FindingRepository) =>
+                new ProjectRunningRecords({ unitOfWork, reader, repository, generateId: randomUUID }),
+            inject: [UNIT_OF_WORK, RUNNING_RECORDS_READER, FINDING_REPOSITORY],
+        },
+        RunningRecordsJobRegistrar,
+        RunningRecordsOutboxRegistrar,
         // Progression evaluation (issue #40, G2): the immutable-context reader, the applicable-rule
         // reader, the append-only evaluation projection, the EvaluateProgression orchestration, and the
         // job/outbox registrars that evaluate rules against a completed session's exact revisions.

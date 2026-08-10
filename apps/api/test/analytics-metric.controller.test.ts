@@ -128,6 +128,24 @@ describe("AnalyticsMetricController.catalog", () => {
         ])
             expect(keys).toContain(key);
     });
+
+    it("merges the running calculators (session metrics + rolling windows + two load models)", () => {
+        const { controller } = createController([]);
+        const calculators = controller.catalog().calculators;
+        const running = calculators.find(c => c.key === "running.distance");
+        expect(running).toMatchObject({ version: 1, unit: "m", scopeKind: "session" });
+        const keys = calculators.map(c => c.key);
+        for (const key of [
+            "running.average_pace",
+            "running.zone_time",
+            "running.session_rpe_load",
+            "running.edwards_hr_load",
+            "running.window.frequency",
+            "running.window.session_rpe_load",
+            "running.window.edwards_hr_load",
+        ])
+            expect(keys).toContain(key);
+    });
 });
 
 describe("AnalyticsMetricController.records", () => {
@@ -153,16 +171,25 @@ describe("AnalyticsMetricController.records", () => {
 });
 
 describe("AnalyticsMetricController.recordsCatalog", () => {
-    it("returns the versioned record metadata parsed through the wire contract", () => {
+    it("returns the versioned record metadata parsed through the wire contract, strength then running", () => {
         const { controller } = createController([]);
         const response = controller.recordsCatalog();
         expect(response.schemaVersion).toBe(1);
-        expect(response.records.map(r => r.key)).toEqual([
+        const keys = response.records.map(r => r.key);
+        expect(keys.slice(0, 4)).toEqual([
             "record.max_load",
             "record.estimated_1rm",
             "record.rep_max_at_load",
             "record.exercise_volume",
         ]);
+        for (const key of [
+            "record.running_standard_distance",
+            "record.running_best_pace",
+            "record.running_longest_distance",
+            "record.running_longest_duration",
+            "record.running_highest_power",
+        ])
+            expect(keys).toContain(key);
     });
 });
 

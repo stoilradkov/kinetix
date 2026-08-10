@@ -22,6 +22,8 @@ export * from "#src/modules/training/domain/estimated-1rm";
 export * from "#src/modules/training/domain/session-strength-metrics";
 export * from "#src/modules/training/domain/personal-records";
 export * from "#src/modules/training/domain/session-running";
+export * from "#src/modules/training/domain/running-metrics";
+export * from "#src/modules/training/domain/running-records";
 export * from "#src/modules/training/domain/session-mapping";
 export * from "#src/modules/training/domain/session-adherence";
 export * from "#src/modules/training/domain/metric-projection";
